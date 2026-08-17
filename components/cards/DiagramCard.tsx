@@ -11,7 +11,8 @@ export function DiagramView({ card, entered, onAskAbout, onDial }: CardViewProps
   const shown = useEnterOnce(entered);
   return (
     <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} align="start" gap={14} footer={<Dials onDial={onDial} />}>
-      <Rise>
+      {/* top-anchored card: clear the feed's back chevron (~64px tall incl. its offset) */}
+      <Rise style={{ paddingTop: 44 }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {card.eyebrow && <Eyebrow>{card.eyebrow}</Eyebrow>}
           <h2 style={{ ...headlineStyle(24, 1.1), fontWeight: 600 }}>{card.title}</h2>
