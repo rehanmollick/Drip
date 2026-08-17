@@ -127,7 +127,7 @@ export async function ingestYoutube(input: string): Promise<IngestData> {
   if (!videoId) throw new HttpError(400, "bad_youtube_url", "that doesn't look like a youtube link");
   let raw: TranscriptSegment[];
   try {
-    raw = await YoutubeTranscript.fetchTranscript(videoId);
+    raw = await fetchPreferringEnglish(videoId);
   } catch (e) {
     throw mapYoutubeError(e, videoId);
   }
@@ -149,6 +149,16 @@ export async function ingestYoutube(input: string): Promise<IngestData> {
       lang,
     },
   };
+}
+
+/** The library returns the first track it finds (often auto-translated); ask for english first, then take whatever exists. */
+async function fetchPreferringEnglish(videoId: string): Promise<TranscriptSegment[]> {
+  try {
+    return await YoutubeTranscript.fetchTranscript(videoId, { lang: "en" });
+  } catch (e) {
+    if (e instanceof YoutubeTranscriptNotAvailableLanguageError) return await YoutubeTranscript.fetchTranscript(videoId);
+    throw e;
+  }
 }
 
 export function mapYoutubeError(e: unknown, videoId: string): HttpError {
