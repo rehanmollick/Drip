@@ -7,7 +7,7 @@ import {
   learnerSummary, personaBlock, sliceCorpus, themeGroundingBlock, type Prompt,
 } from "./shared";
 
-export const PROMPT_VERSION = "write.v2";
+export const PROMPT_VERSION = "write.v3";
 
 /** Corpus budget for one writer call (chars). The caller already slices per node; this is a hard ceiling. */
 export const WRITE_CORPUS_CHARS = 12_000;
@@ -101,6 +101,8 @@ function modeInstructions(ctx: WriteContext): string {
     case "recap":
       return [
         `mode: recap. they missed the same idea twice (or stalled on it). write EXACTLY 1 "recap" card: headline + 3 beats that re-explain it through a NEW metaphor. never the earlier wording, never a used metaphor.`,
+        // beats render as three short lines on one phone screen; long ones fail validation and cost a whole retry
+        `each beat is ONE short sentence, 120 characters MAX — count them. this is the shape and length: "a cache is the sticky note on your fridge: the answer you keep reaching for." three beats, three angles, no beat longer than that example by much.`,
         `the idea: ${missed.length ? missed.join("; ") : ctx.learnerState.directives.recapDue ?? node?.title ?? "(see recent cards)"}.`,
         `topicNodeId "${node?.id ?? "recap"}".`,
       ].join("\n");
