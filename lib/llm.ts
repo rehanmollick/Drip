@@ -36,7 +36,8 @@ export const WRITE_MODEL = () => process.env.LLM_WRITE_MODEL ?? "claude-haiku-4-
 export const isMockMode = () => process.env.LLM_MODE === "mock";
 export const dailyCallCap = () => Number(process.env.LLM_DAILY_CALL_CAP ?? 500);
 
-const MAX_TOKENS = { plan: 8_000, batch: 4_000, triage: 600, toast: 200 } as const;
+// plan runs with adaptive thinking on Sonnet, and thinking tokens count against max_tokens — give it headroom.
+const MAX_TOKENS = { plan: 12_000, batch: 4_000, triage: 600, toast: 200 } as const;
 const REQUEST_TIMEOUT_MS = 120_000;
 
 // ── dependency injection (tests) ──────────────────────────────────────────────
