@@ -37,7 +37,7 @@ export function devSession(theme: Theme, title = "how a cache keeps a site alive
     outline: [{ id: "n1", title: "caching", estCards: 8, dependsOn: [] }],
     settings: { chillMode: false, depthPreset: "standard", soundOn: false },
     learnerState: defaultLearnerState(),
-    progress: { nodeIdx: 0, cardsInNode: 0, totalGenerated: SAMPLE_CARDS.length, exhausted: false, extensions: 0, lastIdx: null },
+    progress: { nodeIdx: 0, cardsInNode: 0, totalGenerated: SAMPLE_CARDS.length, exhausted: false, extensions: 0, lastIdx: null, epoch: 0, pendingReplan: false },
     clarifierAnswers: {},
     status: "active",
     error: null,

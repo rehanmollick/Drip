@@ -20,6 +20,11 @@ export const ProgressSchema = z.object({
   exhausted: z.boolean().default(false),          // outline done → infinite-scroll continuation mode
   extensions: z.number().int().default(0),        // "adjacent waters" extensions accepted
   lastIdx: z.string().nullable().default(null),   // fractional index of the last generated main-thread card
+  /** Bumped whenever the unviewed runway is invalidated (replan, dial, chill toggle). Part of every frontier key
+   *  so a batch claimed/done under an old epoch is never handed back after its cards were deleted. */
+  epoch: z.number().int().default(0),
+  /** True while a re-plan (after clarifier answers) is running; the client waits for it to clear before re-syncing. */
+  pendingReplan: z.boolean().default(false),
 });
 export type Progress = z.infer<typeof ProgressSchema>;
 

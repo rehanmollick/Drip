@@ -18,7 +18,7 @@ const session: Session = {
   outline: [{ id: "n1", title: "one", estCards: 4, dependsOn: [] }],
   settings: { chillMode: true, depthPreset: "deep", soundOn: false },
   learnerState: defaultLearnerState(),
-  progress: { nodeIdx: 1, cardsInNode: 2, totalGenerated: 6, exhausted: false, extensions: 0, lastIdx: "a3" },
+  progress: { nodeIdx: 1, cardsInNode: 2, totalGenerated: 6, exhausted: false, extensions: 0, lastIdx: "a3", epoch: 0, pendingReplan: false },
   clarifierAnswers: { audience: "me" },
   status: "active",
   error: null,

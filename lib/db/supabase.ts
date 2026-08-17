@@ -40,7 +40,7 @@ export function rowToSession(r: Row): Session {
     settings: obj<Session["settings"]>(r.settings, { chillMode: false, depthPreset: "standard", soundOn: false }),
     learnerState: obj<Session["learnerState"]>(r.learner_state, {} as Session["learnerState"]),
     progress: obj<Session["progress"]>(r.progress, {
-      nodeIdx: 0, cardsInNode: 0, totalGenerated: 0, exhausted: false, extensions: 0, lastIdx: null,
+      nodeIdx: 0, cardsInNode: 0, totalGenerated: 0, exhausted: false, extensions: 0, lastIdx: null, epoch: 0, pendingReplan: false,
     }),
     clarifierAnswers: obj<Record<string, string>>(r.clarifier_answers, {}),
     status: str(r.status, "planning") as Session["status"],

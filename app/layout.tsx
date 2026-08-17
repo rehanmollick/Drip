@@ -11,6 +11,8 @@ export const metadata: Metadata = {
   appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "drip" },
   manifest: "/manifest.webmanifest",
   icons: { icon: "/icons/icon-192.png", apple: "/icons/apple-touch-icon.png" },
+  // Next 15 emits mobile-web-app-capable; older iOS still keys standalone launch off the apple-* meta.
+  other: { "apple-mobile-web-app-capable": "yes" },
 };
 
 export const viewport: Viewport = {

@@ -67,7 +67,13 @@ export const GenerateBody = z.object({
   after: z.string().nullable().optional(),    // client's known frontier (informational; server computes the real one)
 });
 export const GenerateData = z.object({
-  batch: z.object({ id: z.string(), status: z.enum(["pending", "done", "failed"]), frontierKey: z.string() }),
+  batch: z.object({
+    id: z.string(),
+    status: z.enum(["pending", "done", "failed"]),
+    frontierKey: z.string(),
+    /** Why a done batch carries no cards: "runway_full" (≥16 unviewed rows — post views first), "budget", "superseded" (epoch moved). */
+    reason: z.string().optional(),
+  }),
   cards: z.array(CardRowSchema),              // the batch's cards when done (may include a single fallback/notice card)
 });
 export type GenerateData = z.infer<typeof GenerateData>;

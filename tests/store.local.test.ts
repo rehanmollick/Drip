@@ -21,7 +21,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     outline: [],
     settings: { chillMode: false, depthPreset: "standard", soundOn: false },
     learnerState: defaultLearnerState(),
-    progress: { nodeIdx: 0, cardsInNode: 0, totalGenerated: 0, exhausted: false, extensions: 0, lastIdx: null },
+    progress: { nodeIdx: 0, cardsInNode: 0, totalGenerated: 0, exhausted: false, extensions: 0, lastIdx: null, epoch: 0, pendingReplan: false },
     clarifierAnswers: {},
     status: "planning",
     error: null,
