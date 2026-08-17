@@ -280,7 +280,7 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
   // Interacts that fail (offline, blip) wait in an outbox and drain on `online` / before the next
   // generate: the server's runway math counts unviewed rows, so `viewed` must eventually land.
   const outbox = useRef<Array<{ rowId: string; body: InteractBody }>>([]);
-  const draining = useRef(false);
+  const draining = useRef<Promise<void> | null>(null);
   const sendInteract = useCallback(
     async (rowId: string, body: InteractBody) => {
       const res = await api.post<InteractData>(`/api/cards/${rowId}/interact`, body);
@@ -288,22 +288,26 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
     },
     [mergeIn],
   );
-  const drainOutbox = useCallback(async () => {
-    if (draining.current || staticMode) return;
-    draining.current = true;
-    try {
-      while (outbox.current.length) {
-        const next = outbox.current[0];
-        try {
-          await sendInteract(next.rowId, next.body);
-          outbox.current.shift();
-        } catch {
-          break; // still down; try again later
+  const drainOutbox = useCallback((): Promise<void> => {
+    if (staticMode) return Promise.resolve();
+    if (draining.current) return draining.current;
+    const run = (async () => {
+      try {
+        while (outbox.current.length) {
+          const next = outbox.current[0];
+          try {
+            await sendInteract(next.rowId, next.body);
+            outbox.current.shift();
+          } catch {
+            break; // still down; try again later
+          }
         }
+      } finally {
+        draining.current = null;
       }
-    } finally {
-      draining.current = false;
-    }
+    })();
+    draining.current = run;
+    return run;
   }, [sendInteract, staticMode]);
   const interact = useCallback(
     (rowId: string, body: InteractBody, keepalive = false) => {
@@ -476,7 +480,6 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
       if (!row) return;
       const now = new Date().toISOString();
       patchCard(rowId, { interaction: { ...(row.interaction ?? {}), ...r, at: now } });
-      if (r.correct === true) ticks.correct();
       if (staticMode) return;
       const body: InteractBody = { choice: r.choice, correct: r.correct, value: r.value };
       const card = row.payload as Card;
@@ -506,6 +509,19 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
       pump();
     },
     [post, sessionId, showToast, setCards, qc, pump],
+  );
+
+  /** fallback card "pull to retry": mark it seen (the server won't regenerate behind an unviewed fallback), then generate. */
+  const onRetryFrom = useCallback(
+    (rowId: string) => {
+      if (!viewedSent.current.has(rowId)) {
+        viewedSent.current.add(rowId);
+        patchCard(rowId, { viewedAt: new Date().toISOString() });
+        if (!staticMode) outbox.current.push({ rowId, body: { viewed: true } });
+      }
+      pump();
+    },
+    [patchCard, staticMode, pump],
   );
 
   const onAskAbout = useCallback(() => {
@@ -578,11 +594,11 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
         onInteract: (r) => onInteract(rowId, r),
         onDial: (dir) => void onDial(rowId, dir),
         onAskAbout,
-        onRetry: pump,
+        onRetry: () => onRetryFrom(rowId),
         onAction: pump,
       };
     },
-    [onInteract, onDial, onAskAbout, pump, onRetrySession],
+    [onInteract, onDial, onAskAbout, onRetryFrom, pump, onRetrySession],
   );
 
   return (
