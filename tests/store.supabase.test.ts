@@ -77,7 +77,7 @@ function fakeClient(script: Array<() => Result | Promise<Result>>) {
   };
   const builder = (table: string) => {
     const b: Record<string, unknown> = {};
-    const chain = (name: string) => (b[name] = (..._args: unknown[]) => { calls.push(`${table}.${name}`); return b; });
+    const chain = (name: string) => (b[name] = () => { calls.push(`${table}.${name}`); return b; });
     for (const m of ["select", "insert", "update", "delete", "eq", "gt", "gte", "is", "order", "limit", "maybeSingle"]) chain(m);
     b.then = (res: (v: Result) => void, rej: (e: unknown) => void) => Promise.resolve().then(next).then(res, rej);
     return b;
