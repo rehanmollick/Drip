@@ -22,3 +22,9 @@ Setup: push a branch → Vercel preview URL (HTTPS is required for the service w
 - [ ] New session shows its first card after exactly one wait (plan), never a second wait for the first batch
 - [ ] Kill the API key in Vercel env → feed degrades to the fallback card, app does not crash
 - [ ] Spam-scroll to the frontier repeatedly → no duplicate cards ever (check `cards` table for duplicate payload ids)
+
+## Before the first real deploy
+
+- [ ] Apply the schema: open the Supabase SQL editor and run `supabase/migrations/0001_init.sql`, then `0002_idx_collation.sql` (`pnpm db:migrate` prints them). Until that's done every route answers `schema_missing` with instructions — that's expected, not a bug.
+- [ ] Set `ANTHROPIC_API_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` in the Vercel project (never `NEXT_PUBLIC_*`), leave `LLM_MODE` empty, and confirm the first session creates a row in `sessions`.
+- [ ] Watch `llm_calls` after the first real session: `ok=false` rows tell you which prompt is overshooting a cap, and the daily cap (500) is computed from this table.
