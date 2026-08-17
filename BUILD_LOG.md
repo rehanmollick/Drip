@@ -28,3 +28,24 @@ One entry per phase (spec §13). Each entry: what was checked, what was fixed, w
 - Built and unit-tested (313→316 tests): learner reducer rules (§8), engine idempotency under 5 concurrent generates, budget → single notice, failure → single fallback, dial deletes unviewed only, detour splice/nesting order, local store, supabase mapping round-trips, ingestion parsers, SW compiles, expr evaluator, banned words over samples + component strings.
 - E2E (`e2e/flow.spec.ts`, mock LLM): create → one wait → first cards → runway grows past 12 with no duplicate ids; ask → inline bubble; "why…" → detour markers spliced right after the current card; chill mode → zero interactive cards; `[[BUDGET]]` / `[[FAIL]]` → themed notice / fallback with retry, no error strings on screen.
 - Adversarial review pass (see next entry) ran after this.
+
+## Phase 8 — adversarial review + fixes
+- Seven independent reviewers (feed mechanics, engine/API, adaptation, LLM/prompts, persistence, ingest/PWA/security, client↔server contract) produced 127 candidate findings against the spec. A refuter panel and my own triage cut them to the ones that reproduce; five fixers applied them in disjoint areas.
+- The class of bug that mattered most was **the feed dead-ending**: a permanently-failing interact post blocked the outbox forever → the server never saw views → the runway guard returned nothing → a permanent "catching up…" tail. Fixed by dropping non-retryable 4xx from the outbox, plus a `progress.epoch` that invalidates superseded batches and a `reason` on empty generate responses so the client can react instead of backing off blindly.
+- Others worth naming: clarifier answers went through two paths and raced the server's re-plan (one path now, and the client waits for `pendingReplan` to clear); the recap trigger could be consumed twice (interact owns it); `pinnedFetch` skipped its address pin for IP-literal hosts *and* could ride a pooled keep-alive socket opened for a different vetted set (one non-pooling agent per request); reduced-motion turned looping keyframes into 6.7 Hz strobes; entry staggers replayed on remount.
+- Verified: 444 unit tests, 8 Playwright e2e (WebKit, 393×852), typecheck, lint, `pnpm build` — all green. Screenshot review of the sample deck (both themes) and a worst-case deck built from schema-maximum copy: no card overflows, no internal scrolling, no horizontal scroll.
+
+## Phase 9 — real-model verification (Sonnet 4.6 + Haiku 4.5)
+Three live sessions against the real API (local JSON store; Supabase project has no tables yet).
+
+- **Per-session identity works**: "how kubernetes schedules pods" → *cluster ops console* (phosphor green on near-black, Space Grotesk/JetBrains Mono, mechanical motion, bracket signature, persona "ctrl"); "how tide pools survive between high tides" → *waterproof field notebook* (kelp green on dark teal, Fraunces/Source Serif, fluid motion, water-lines signature, persona "dr. cold-and-wet"). Unmistakably different decks, as §4 requires.
+- Timings: plan 31–45s (one Sonnet call), batches 8–16s (4 cards), triage 1–4s, detour 19s end-to-end (triage + 4 spliced cards), recap 7s.
+- Fixes this surfaced, each verified after the change:
+  - adaptive thinking + a 12k cap on the plan call blew the 90s watchdog → no thinking, streamed, 8k cap (31s, first attempt);
+  - length-cap failures on never-on-screen fields (mood, briefs, traits) → word-boundary soft clamps;
+  - recap beats came back ~200 chars against a 120 cap and burned both attempts → the prompt now *shows* the right size, and it lands first try;
+  - triage answered "how does X work" questions inline (the killer feature under-firing) → a mechanical two-sentence test, now correctly returns detour;
+  - the detour writer overshot `nodes[].label`/`body` → concrete examples for the four most-overshot fields, plus a **salvage pass**: one over-long card no longer discards three good ones;
+  - a real compare diagram put its edge label on top of both columns → the gutter now sizes to its label.
+- Not verified live: Supabase persistence (tables not created yet — an un-migrated project now answers with an actionable `schema_missing` message instead of a generic 500); URL/repo/YouTube ingestion against live sites (unit-tested against fixtures and a local HTTP server).
+- Note on measurement: several long calls recorded 600–970s. That is this Mac DarkWaking mid-request, not the app — `caffeinate` makes the same calls finish in 15–20s. The deadline handling behaved correctly throughout: bounded wait, clean error, retryable session.
