@@ -7,6 +7,7 @@ import {
   flowLevels,
   flowOrientation,
   edgeLabelWidth,
+  layoutCompare,
   layoutDiagram,
   rectsOverlap,
   validEdges,
@@ -355,4 +356,27 @@ describe("edge labels stay inside the box", () => {
       }
     });
   }
+});
+
+describe("compare: cross-connector labels ride the gutter, not the nodes", () => {
+  it("widens the gutter so a schema-max label never lands on a column", () => {
+    const nodes = [
+      { id: "a", label: "splash zone", sub: "rare wet events" },
+      { id: "b", label: "low intertidal", sub: "flooded twice daily" },
+    ];
+    for (const box of [{ w: 361, h: 460 }, { w: 345, h: 520 }] as Box[]) {
+      for (const label of ["predictable rescue", "x".repeat(20)]) {
+        const layout = layoutCompare(nodes, [{ from: "a", to: "b", label }], box);
+        const [e] = layout.edges;
+        const halfW = edgeLabelWidth(label) / 2;
+        const l = e.labelAt.x - halfW;
+        const r = e.labelAt.x + halfW;
+        for (const n of layout.nodes) {
+          const overlapsX = r > n.x && l < n.x + n.w;
+          const overlapsY = e.labelAt.y + 9 > n.y && e.labelAt.y - 9 < n.y + n.h;
+          expect(overlapsX && overlapsY, `${box.w}px "${label}" overlaps ${n.id}`).toBe(false);
+        }
+      }
+    }
+  });
 });

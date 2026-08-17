@@ -700,7 +700,11 @@ export function layoutCompare(nodes: readonly DiagramNodeSpec[], edges: readonly
   const es = validEdges(nodes, edges);
   // the divider gutter grows to hold the widest cross-connector label (labels ride the divider)
   const widestLabel = es.reduce((m, e) => Math.max(m, e.label ? edgeLabelWidth(e.label) : 0), 0);
-  const gutter = clamp(widestLabel + 12, 40, Math.max(40, Math.floor(box.w * 0.3)));
+  // The label rides the divider, so anything wider than the gutter lands on top of both columns.
+  // A schema-max 20-char label is ~143px: give the gutter room for it, keeping the columns readable.
+  const MIN_COL = 76;
+  const gutterMax = Math.max(40, Math.min(Math.floor(box.w * 0.46), box.w - 2 * MIN_COL));
+  const gutter = clamp(widestLabel + 12, 40, gutterMax);
   const colW = Math.floor((box.w - gutter) / 2);
   const leftX = 0;
   const rightX = box.w - colW;
