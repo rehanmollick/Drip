@@ -14,8 +14,8 @@ export function ProgressHairline({ fraction, onRefresh, refreshing }: { fraction
   const f = Math.max(0.02, Math.min(1, fraction || 0));
   return (
     <div
-      className="fixed inset-x-0 top-0 z-50 touch-none"
-      style={{ height: "calc(env(safe-area-inset-top, 0px) + 18px)" }}
+      className="no-select fixed inset-x-0 top-0 z-50"
+      style={{ height: "calc(env(safe-area-inset-top, 0px) + 12px)" }}
       aria-hidden
       {...press}
     >

@@ -9,7 +9,7 @@ import { useTheme } from "@/components/theme/ThemeRoot";
 export function InlineBubble({ text, onDismiss }: { text: string | null; onDismiss: () => void }) {
   const { spring, reduced } = useTheme();
   return (
-    <div className="pointer-events-none fixed inset-x-0 z-40 flex justify-center px-5" style={{ bottom: "calc(max(env(safe-area-inset-bottom), 16px) + 64px)" }}>
+    <div className="pointer-events-none fixed inset-x-0 z-40 flex justify-center px-5" style={{ bottom: "calc(max(env(safe-area-inset-bottom), 16px) + 76px)" }}>
       <AnimatePresence>
         {text && (
           <motion.button

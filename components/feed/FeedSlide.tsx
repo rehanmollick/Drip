@@ -58,8 +58,7 @@ export const FeedSlide = memo(function FeedSlide({
     return () => observe(null, slide.key);
   }, [observe, slide.key]);
 
-  const detour = slide.kind !== "pseudo" && slide.card.detourId !== null && slide.card.type !== "detour_marker";
-
+  // Safe-area padding + the detour left-border tag live in the card views (CardFrame); the slide is a bare snap unit.
   return (
     <section
       ref={ref}
@@ -67,10 +66,9 @@ export const FeedSlide = memo(function FeedSlide({
       data-slide-key={slide.key}
       data-slide-kind={slide.kind}
       data-card-type={slide.card.type}
-      style={detour ? { boxShadow: "inset 3px 0 0 0 var(--accent)" } : undefined}
     >
       {mounted && (
-        <div className="relative z-[1] flex h-full w-full flex-col" style={{ paddingTop: "max(env(safe-area-inset-top), 16px)", paddingBottom: "calc(max(env(safe-area-inset-bottom), 16px) + 72px)" }}>
+        <div className="relative z-[1] flex h-full w-full flex-col">
           <SafeCard resetKey={slide.key} fallbackView={<CardView card={FALLBACK} entered active={active} />}>
             {slide.kind === "predict_reveal" ? (
               <PredictRevealView card={slide.card} interaction={interaction ?? null} entered={entered} />

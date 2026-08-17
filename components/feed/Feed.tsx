@@ -67,12 +67,14 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
   const active = status === "active" || status === "archived";
 
   // ── cards + generation loop ─────────────────────────────────────────────
+  const syncBeforeGenerate = useRef<() => Promise<void>>(async () => {});
   const feed = useFeedCards({
     sessionId,
     initialCards,
     initialHasMore: initialCards.length < (initialSession.cardCount ?? 0),
     enabled: active,
     staticMode,
+    beforeGenerate: () => syncBeforeGenerate.current(),
   });
   const { cards, mergeIn, patchCard, setCards, online, setWantMore, pump, refetchAll } = feed;
   const cardsRef = useRef(cards);
@@ -90,12 +92,16 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const [entered, setEntered] = useState<Set<string>>(() => new Set());
 
-  const activeRowIndex = useMemo(() => {
-    if (!activeKey) return -1;
-    return rowSlides.findIndex((s) => s.key === activeKey);
-  }, [rowSlides, activeKey]);
-  // slides of real cards still ahead of the active position
-  const runway = activeRowIndex < 0 ? rowSlides.length : rowSlides.length - 1 - activeRowIndex;
+  const headCount = (status === "planning" ? 1 : 0) + (status === "error" ? 1 : 0);
+  const activeIndexRef = useRef(0);
+  // real-card slides still ahead of the active position (pseudo tail active → 0; head notice active → all)
+  const runway = useMemo(() => {
+    if (!activeKey) return rowSlides.length;
+    if (activeKey.startsWith("pseudo:")) return activeKey === "pseudo:planning" || activeKey === "pseudo:error" ? rowSlides.length : 0;
+    const i = rowSlides.findIndex((s) => s.key === activeKey);
+    if (i >= 0) return rowSlides.length - 1 - i;
+    return Math.max(0, rowSlides.length - 1 - (activeIndexRef.current - headCount));
+  }, [rowSlides, activeKey, headCount]);
 
   const tail: PseudoKind | null = useMemo(() => {
     if (!active || staticMode) return null;
@@ -117,7 +123,6 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
 
   // If the active key vanished (a pseudo tail replaced by real cards) keep the last index: never jump.
   const foundIndex = activeKey ? slides.findIndex((s) => s.key === activeKey) : -1;
-  const activeIndexRef = useRef(0);
   const activeIndex = foundIndex >= 0 ? foundIndex : Math.min(activeIndexRef.current, Math.max(0, slides.length - 1));
   activeIndexRef.current = activeIndex;
   const activeSlide = slides[activeIndex];
@@ -155,11 +160,10 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
       { root, threshold: [0.6] },
     );
     observerRef.current = io;
-    for (const [el, key] of pendingObserve.current) {
-      elKeys.current.set(el, key);
-      io.observe(el);
-    }
+    for (const [el, key] of pendingObserve.current) elKeys.current.set(el, key);
     pendingObserve.current = [];
+    // (re)observe everything registered so far — slides may have mounted before the observer existed
+    for (const el of elKeys.current.keys()) io.observe(el);
     return () => {
       io.disconnect();
       observerRef.current = null;
@@ -212,16 +216,28 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
     }
   }, [staticMode, active, initialSession.position, scrollToIndex]);
 
-  // keep the active slide under the thumb if slides get spliced above it
+  // Keep the active slide under the thumb if slides get spliced above it (the container has
+  // overflow-anchor: none, so the browser never does this for us). A pseudo tail is the exception:
+  // when real cards land they push the tail down and the first new card is now under the thumb —
+  // hand the active key over to it so runway/dwell continue without waiting on the observer.
   const lastActiveIndex = useRef(activeIndex);
   useLayoutEffect(() => {
     const root = containerRef.current;
     if (root && foundIndex >= 0 && lastActiveIndex.current !== foundIndex && !scrollingRef.current) {
+      if (activeKey?.startsWith("pseudo:") && foundIndex > lastActiveIndex.current) {
+        const landed = slides[lastActiveIndex.current];
+        if (landed && isRowSlide(landed)) {
+          setActiveKey(landed.key);
+          setEntered((p) => (p.has(landed.key) ? p : new Set(p).add(landed.key)));
+          root.scrollTo({ top: lastActiveIndex.current * root.clientHeight });
+          return;
+        }
+      }
       const expected = foundIndex * root.clientHeight;
       if (Math.abs(root.scrollTop - expected) > root.clientHeight * 0.5) root.scrollTo({ top: expected });
     }
     lastActiveIndex.current = activeIndex;
-  }, [activeIndex, foundIndex, slides.length]);
+  }, [activeIndex, foundIndex, activeKey, slides]);
 
   // ── chrome fade on scroll ───────────────────────────────────────────────
   const onScroll = useCallback(() => {
@@ -261,6 +277,34 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
     [staticMode],
   );
 
+  // Interacts that fail (offline, blip) wait in an outbox and drain on `online` / before the next
+  // generate: the server's runway math counts unviewed rows, so `viewed` must eventually land.
+  const outbox = useRef<Array<{ rowId: string; body: InteractBody }>>([]);
+  const draining = useRef(false);
+  const sendInteract = useCallback(
+    async (rowId: string, body: InteractBody) => {
+      const res = await api.post<InteractData>(`/api/cards/${rowId}/interact`, body);
+      if (res?.inserted?.length) mergeIn(res.inserted);
+    },
+    [mergeIn],
+  );
+  const drainOutbox = useCallback(async () => {
+    if (draining.current || staticMode) return;
+    draining.current = true;
+    try {
+      while (outbox.current.length) {
+        const next = outbox.current[0];
+        try {
+          await sendInteract(next.rowId, next.body);
+          outbox.current.shift();
+        } catch {
+          break; // still down; try again later
+        }
+      }
+    } finally {
+      draining.current = false;
+    }
+  }, [sendInteract, staticMode]);
   const interact = useCallback(
     (rowId: string, body: InteractBody, keepalive = false) => {
       if (staticMode) return;
@@ -270,41 +314,77 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
         } catch { /* best effort */ }
         return;
       }
-      api
-        .post<InteractData>(`/api/cards/${rowId}/interact`, body)
-        .then((res) => {
-          if (res?.inserted?.length) mergeIn(res.inserted);
-        })
-        .catch(() => { /* fire and forget; the server clamps + tolerates gaps */ });
+      if (outbox.current.length) {
+        outbox.current.push({ rowId, body }); // keep order while something older is stuck
+        void drainOutbox();
+        return;
+      }
+      sendInteract(rowId, body).catch(() => {
+        outbox.current.push({ rowId, body });
+      });
     },
-    [staticMode, mergeIn],
+    [staticMode, sendInteract, drainOutbox],
   );
 
   // ── position (throttled ~1/s, keepalive on hide) ────────────────────────
   const positionPending = useRef<number | null>(null);
   const positionTimer = useRef<number | null>(null);
   const positionSent = useRef<number>(initialSession.position);
-  const flushPosition = useCallback((keepalive = false) => {
+  const flushPosition = useCallback(async (keepalive = false) => {
     const p = positionPending.current;
-    positionPending.current = null;
     if (positionTimer.current) { window.clearTimeout(positionTimer.current); positionTimer.current = null; }
-    if (p === null || p === positionSent.current || staticMode) return;
-    positionSent.current = p;
-    const body = JSON.stringify({ position: p });
+    if (p === null || staticMode) return;
+    if (p === positionSent.current) { positionPending.current = null; return; }
     if (keepalive) {
-      try { void fetch(`/api/sessions/${sessionId}`, { method: "PATCH", keepalive: true, headers: { "content-type": "application/json" }, body }); } catch { /* best effort */ }
-    } else {
-      api.patch(`/api/sessions/${sessionId}`, { position: p }).catch(() => {});
+      positionSent.current = p;
+      positionPending.current = null;
+      try { void fetch(`/api/sessions/${sessionId}`, { method: "PATCH", keepalive: true, headers: { "content-type": "application/json" }, body: JSON.stringify({ position: p }) }); } catch { /* best effort */ }
+      return;
     }
+    try {
+      await api.patch(`/api/sessions/${sessionId}`, { position: p });
+      positionSent.current = p;
+      if (positionPending.current === p) positionPending.current = null;
+    } catch { /* stays pending; re-sent on the next report / before generate */ }
   }, [sessionId, staticMode]);
   const reportPosition = useCallback((ordinal: number) => {
     positionPending.current = ordinal;
     if (positionTimer.current !== null) return;
     positionTimer.current = window.setTimeout(() => {
       positionTimer.current = null;
-      flushPosition(false);
+      void flushPosition(false);
     }, POSITION_THROTTLE_MS);
   }, [flushPosition]);
+
+  // Resume catch-up: rows before the saved position that the server still thinks are unviewed
+  // (a lost `viewed` call, a hard close) get marked, oldest first, through the outbox.
+  const caughtUp = useRef(false);
+  useEffect(() => {
+    if (caughtUp.current || staticMode || !active) return;
+    caughtUp.current = true;
+    const pos = initialSession.position;
+    const stale = cardsRef.current.slice(0, pos).filter((c) => !c.viewedAt);
+    if (!stale.length) return;
+    for (const c of stale) {
+      viewedSent.current.add(c.id);
+      outbox.current.push({ rowId: c.id, body: { viewed: true } });
+    }
+    void drainOutbox();
+  }, [staticMode, active, initialSession.position, drainOutbox]);
+
+  // before every generate: land what the server needs for its runway math
+  syncBeforeGenerate.current = async () => {
+    await Promise.all([drainOutbox(), flushPosition(false)]);
+  };
+  useEffect(() => {
+    if (staticMode) return;
+    const onOnline = () => {
+      void drainOutbox();
+      void flushPosition(false);
+    };
+    window.addEventListener("online", onOnline);
+    return () => window.removeEventListener("online", onOnline);
+  }, [staticMode, drainOutbox, flushPosition]);
 
   // ── dwell + viewed + scroll-back (spec §8) ──────────────────────────────
   const clock = useRef<DwellClock | null>(null);
@@ -374,7 +454,7 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
         flushDwell(rowId, ms, true);
         c.start(rowId);
       }
-      flushPosition(true);
+      void flushPosition(true);
     };
     const onVis = () => { if (document.visibilityState === "hidden") onHide(); };
     window.addEventListener("pagehide", onHide);
@@ -508,7 +588,7 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
   return (
     <ThemeRoot theme={session.theme ?? SHELL_THEME} className="feed-root app-shell" data-status={status}>
       <ProgressHairline fraction={progress} onRefresh={() => void onRefresh()} refreshing={refreshing} />
-      <div ref={containerRef} className="feed relative z-[1]" onScroll={onScroll} data-testid="feed">
+      <div ref={containerRef} className="feed relative z-[1]" style={{ overflowAnchor: "none" }} onScroll={onScroll} data-testid="feed">
         {slides.map((slide, i) => {
           const near = Math.abs(i - activeIndex) <= WINDOW;
           const row = isRowSlide(slide) ? rowsById.get(slide.rowId) : undefined;

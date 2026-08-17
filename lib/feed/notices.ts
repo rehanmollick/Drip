@@ -17,7 +17,7 @@ const IDS: Record<PseudoKind, string> = {
 const COPY: Record<PseudoKind, { headline: string; body: string; eyebrow: string }> = {
   planning: { eyebrow: "one sec", headline: "reading your stuff…", body: "first cards drop in a moment. no second wait after this one." },
   catching_up: { eyebrow: "hold on", headline: "catching up…", body: "the next bit is on its way. keep your thumb warm." },
-  offline: { eyebrow: "offline", headline: "back online soon.", body: "everything you've already seen still works. the rest lands when you're back." },
+  offline: { eyebrow: "offline", headline: "back online soon.", body: "the rest lands the moment you’re back." },
   error: { eyebrow: "hm", headline: "that one didn't stick.", body: "tap to try again." },
 };
 

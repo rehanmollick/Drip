@@ -27,6 +27,7 @@ export function useFeedCards({
   initialHasMore,
   enabled,
   staticMode,
+  beforeGenerate,
 }: {
   sessionId: string;
   initialCards: CardRow[];
@@ -35,6 +36,8 @@ export function useFeedCards({
   /** Session is active → generation allowed. */
   enabled: boolean;
   staticMode: boolean;
+  /** Awaited right before POST /generate — the feed flushes viewed/position so the server's runway math is current. */
+  beforeGenerate?: () => Promise<void>;
 }) {
   const [cards, setCards] = useState<CardRow[]>(() => sortCards(initialCards));
   const [fill, setFill] = useState<FillState>("idle");
@@ -49,6 +52,8 @@ export function useFeedCards({
   const serverHasMore = useRef(initialHasMore);
   const enabledRef = useRef(enabled);
   enabledRef.current = enabled && !staticMode;
+  const beforeGenerateRef = useRef(beforeGenerate);
+  beforeGenerateRef.current = beforeGenerate;
 
   const mergeIn = useCallback((incoming: CardRow[]): number => {
     if (incoming.length === 0) return 0;
@@ -99,6 +104,7 @@ export function useFeedCards({
         got = res.cards;
       }
       if (got.length === 0) {
+        await beforeGenerateRef.current?.().catch(() => {});
         const res = await api.post<GenerateData>(`/api/sessions/${sessionId}/generate`, { after: lastIdx() });
         got = res.cards;
       }
@@ -135,7 +141,14 @@ export function useFeedCards({
     if (staticMode) return;
     const res = await api.get<ListCardsData>(`/api/sessions/${sessionId}/cards?limit=100`);
     serverHasMore.current = res.hasMore;
-    setCards((prev) => mergeCards(prev, res.cards));
+    // the server is the truth for the window it returned (a re-plan may have dropped unviewed
+    // runway); local rows beyond that window survive only if the server says there is more
+    const serverIds = new Set(res.cards.map((c) => c.id));
+    const lastServerIdx = res.cards.length ? res.cards[res.cards.length - 1].idx : null;
+    setCards((prev) => {
+      const beyond = prev.filter((c) => !serverIds.has(c.id) && res.hasMore && lastServerIdx !== null && c.idx > lastServerIdx);
+      return mergeCards(beyond, res.cards);
+    });
     failures.current = 0;
   }, [sessionId, staticMode]);
 
