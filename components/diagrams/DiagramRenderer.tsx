@@ -134,7 +134,16 @@ export function DiagramRenderer({ card, entered, className, style, onNodeTap }: 
       className={className}
       data-diagram={card.variant}
       data-played={play ? "true" : "false"}
-      style={{ position: "relative", width: "100%", height: "100%", minHeight: 0, overflow: "hidden", ...style }}
+      style={{
+        position: "relative",
+        width: "100%",
+        height: "100%",
+        minHeight: 0,
+        overflow: "hidden",
+        // nothing is tappable while the diagram is still hidden (pre-entry)
+        pointerEvents: play ? undefined : "none",
+        ...style,
+      }}
     >
       {measured && (
         <>
