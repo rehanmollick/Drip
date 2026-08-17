@@ -1,0 +1,144 @@
+"use client";
+import { AnimatePresence, motion } from "framer-motion";
+import { Fragment, useMemo, useState } from "react";
+import type { CodeCard as CodeCardT } from "@/lib/schemas/cards";
+import type { CardViewProps } from "./types";
+import { CardFrame, Rise, headlineStyle } from "./CardFrame";
+import { Eyebrow } from "@/components/ui/Eyebrow";
+import { Chip } from "@/components/ui/Chip";
+import { useTheme } from "@/components/theme/ThemeRoot";
+import { codeFontSize } from "./helpers";
+import { pressable } from "@/lib/motion";
+
+/**
+ * code — monospaced block (server-side shiki tokens when present, plain lines
+ * otherwise). Lines with annotations get an accent dot; tapping one toggles a
+ * note chip under it. Long lines wrap; never horizontal scroll.
+ */
+export function CodeView({ card, entered, onAskAbout }: CardViewProps<CodeCardT>) {
+  const { spring, reduced } = useTheme();
+  const lines = useMemo(() => card.code.replace(/\n$/, "").split("\n"), [card.code]);
+  const notes = useMemo(() => {
+    const m = new Map<number, string>();
+    for (const a of card.annotations) if (a.line >= 1 && a.line <= lines.length && !m.has(a.line)) m.set(a.line, a.note);
+    return m;
+  }, [card.annotations, lines.length]);
+  const highlighted = card.highlighted && card.highlighted.length === lines.length ? card.highlighted : null;
+  const fs = codeFontSize(card.code);
+  const [open, setOpen] = useState<number | null>(null);
+  const [touched, setTouched] = useState(false);
+  const gutter = `${String(lines.length).length}ch`;
+
+  return (
+    <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} align="center" gap={14}>
+      <Rise>
+        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
+            {card.eyebrow && <Eyebrow>{card.eyebrow}</Eyebrow>}
+            {card.title && <h2 style={{ ...headlineStyle(22, 1.1), fontWeight: 600 }}>{card.title}</h2>}
+          </div>
+          <span className="font-mono" style={{ fontSize: 11, color: "var(--ink-2)", letterSpacing: "0.08em", flexShrink: 0 }}>
+            {card.lang}
+          </span>
+        </div>
+      </Rise>
+      <Rise>
+        <div
+          className="font-mono"
+          data-code-block
+          style={{
+            fontSize: fs,
+            lineHeight: 1.5,
+            background: "var(--surface)",
+            border: "1px solid var(--line)",
+            borderRadius: 14,
+            padding: "10px 12px 10px 8px",
+            color: "var(--ink)",
+            overflow: "hidden",
+            maxWidth: "100%",
+          }}
+        >
+          {lines.map((line, i) => {
+            const n = i + 1;
+            const note = notes.get(n);
+            const isOpen = open === n;
+            const toks = highlighted?.[i];
+            return (
+              <Fragment key={n}>
+                <motion.div
+                  role={note ? "button" : undefined}
+                  tabIndex={note ? 0 : undefined}
+                  aria-expanded={note ? isOpen : undefined}
+                  onClick={note ? () => { setOpen(isOpen ? null : n); setTouched(true); } : undefined}
+                  onKeyDown={note ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpen(isOpen ? null : n); setTouched(true); } } : undefined}
+                  whileTap={note ? pressable.whileTap : undefined}
+                  transition={pressable.transition}
+                  data-annotated={note ? "true" : undefined}
+                  style={{
+                    display: "flex",
+                    gap: 8,
+                    alignItems: "flex-start",
+                    borderRadius: 6,
+                    padding: "0 4px",
+                    cursor: note ? "pointer" : "default",
+                    background: isOpen ? "var(--accent-soft)" : "transparent",
+                    transition: "background-color 160ms ease",
+                    transformOrigin: "left center",
+                  }}
+                >
+                  <span aria-hidden style={{ width: gutter, textAlign: "right", color: "var(--ink-2)", opacity: 0.6, flexShrink: 0, userSelect: "none" }}>
+                    {n}
+                  </span>
+                  <span aria-hidden style={{ width: 6, flexShrink: 0, display: "flex", alignItems: "center", height: `${fs * 1.5}px` }}>
+                    {note && (
+                      <span
+                        style={{
+                          width: 6,
+                          height: 6,
+                          borderRadius: 999,
+                          background: "var(--accent)",
+                          boxShadow: isOpen ? "0 0 0 3px var(--accent-soft)" : "none",
+                          transition: "box-shadow 160ms ease",
+                        }}
+                      />
+                    )}
+                  </span>
+                  <span style={{ flex: 1, minWidth: 0, whiteSpace: "pre-wrap", overflowWrap: "anywhere", wordBreak: "break-word", tabSize: 2 }}>
+                    {toks
+                      ? toks.map((t, k) => (
+                          <span key={k} style={t.c ? { color: t.c } : undefined}>
+                            {t.t}
+                          </span>
+                        ))
+                      : line || " "}
+                  </span>
+                </motion.div>
+                <AnimatePresence initial={false}>
+                  {isOpen && note && (
+                    <div style={{ padding: "4px 4px 6px", paddingLeft: `calc(${gutter} + 12px)` }}>
+                      <Chip spring={spring} reduced={reduced} style={{ fontSize: Math.max(12.5, fs + 0.5) }}>
+                        {note}
+                      </Chip>
+                    </div>
+                  )}
+                </AnimatePresence>
+              </Fragment>
+            );
+          })}
+        </div>
+      </Rise>
+      {notes.size > 0 && (
+        <Rise>
+          <motion.span
+            className="font-mono"
+            animate={{ opacity: touched ? 0 : 1 }}
+            style={{ fontSize: 11, letterSpacing: "0.1em", color: "var(--ink-2)", display: "inline-flex", alignItems: "center", gap: 8 }}
+          >
+            <span aria-hidden style={{ width: 6, height: 6, borderRadius: 999, background: "var(--accent)" }} />
+            tap a marked line
+          </motion.span>
+        </Rise>
+      )}
+    </CardFrame>
+  );
+}
