@@ -11,6 +11,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { randomUUID } from "crypto";
 import { z } from "zod";
 import { findBannedInValue, scrubBannedValue } from "@/lib/copy/banned";
+import { stripMarkupValue } from "@/lib/copy/sanitize";
 import { getStore } from "@/lib/db";
 import type { Store } from "@/lib/db/store";
 import type {
@@ -381,9 +382,9 @@ async function generate<T>(o: GenerateOpts<T>): Promise<LlmResult<T>> {
             if (banned) {
               // never on screen: scrub with feed-native synonyms rather than throwing the batch away
               console.warn(`[llm] ${o.purpose}: banned word "${banned.word}" survived the retry at ${banned.path}; scrubbing.`);
-              value = scrubBannedValue(v.value);
+              value = stripMarkupValue(scrubBannedValue(v.value));
             } else {
-              value = v.value;
+              value = stripMarkupValue(v.value);
             }
           }
         } else {
@@ -410,6 +411,8 @@ async function generate<T>(o: GenerateOpts<T>): Promise<LlmResult<T>> {
     }
   }
 
+  // spec §12.2: log raw output on double failure so bad generations are traceable
+  console.warn(`[llm] ${o.purpose} (${o.promptVersion}) failed twice: ${lastError}\nraw: ${(lastRaw ?? "").slice(0, 1500)}`);
   return { ok: false, code: lastCode, error: lastError, raw: lastRaw, meta: { ...baseMeta, inTokens: totalIn, outTokens: totalOut, latencyMs: totalLatency, attempts: 2 } };
 }
 
@@ -471,6 +474,16 @@ async function triage(input: TriageInput): Promise<LlmResult<TriageOutput>> {
     schema: TriageOutputSchema,
     maxTokens: MAX_TOKENS.triage,
     checkBanned: true,
+    // "focus" is a brief for the writer (never on screen) and cardCount is a small int — clamp both instead of retrying.
+    normalize: (parsed) => {
+      if (!parsed || typeof parsed !== "object") return parsed;
+      const o = { ...(parsed as Record<string, unknown>) };
+      if (o.kind === "detour") {
+        o.focus = softClamp(o.focus, 120);
+        if (typeof o.cardCount === "number") o.cardCount = Math.min(6, Math.max(2, Math.round(o.cardCount)));
+      }
+      return o;
+    },
     mock: () => mock.mockTriage(input),
   });
 }
