@@ -69,7 +69,7 @@ export function OptionButton({
         transition: "border-color 200ms ease, background-color 200ms ease",
         color: "var(--ink)",
         fontSize: size === "lg" ? 18 : 16,
-        fontWeight: 500,
+        fontWeight: 600,
         lineHeight: 1.25,
         textAlign: "left",
         display: "flex",

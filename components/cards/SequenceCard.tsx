@@ -28,7 +28,8 @@ export function SequenceView({ card, entered, interaction, onInteract, onAskAbou
     return null;
   }, [interaction, correctIds.length, byId]);
 
-  const [order, setOrder] = useState<string[]>(() => priorOrder ?? shuffleDeterministic(correctIds, card.id));
+  // replaying an answered card: show the settled (correct) order with the user's misplaced chips marked
+  const [order, setOrder] = useState<string[]>(() => (priorOrder ? correctIds : shuffleDeterministic(correctIds, card.id)));
   const [locked, setLocked] = useState<{ order: string[]; correct: boolean } | null>(
     priorOrder ? { order: priorOrder, correct: sameOrder(priorOrder, correctIds) } : null,
   );

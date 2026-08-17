@@ -34,13 +34,18 @@ export function SliderView({ card, entered, interaction, onInteract, onAskAbout 
   const commitTimer = useRef<number | null>(null);
   const latest = useRef(value);
   latest.current = value;
+  const lastSent = useRef<number | null>(null);
   const [touched, setTouched] = useState(false);
 
   useEffect(() => () => { if (commitTimer.current) window.clearTimeout(commitTimer.current); }, []);
 
   const commit = useCallback(() => {
     if (commitTimer.current) window.clearTimeout(commitTimer.current);
-    commitTimer.current = window.setTimeout(() => onInteract?.({ value: latest.current }), 300);
+    commitTimer.current = window.setTimeout(() => {
+      if (lastSent.current === latest.current) return; // blur after pointerup: nothing new to say
+      lastSent.current = latest.current;
+      onInteract?.({ value: latest.current });
+    }, 300);
   }, [onInteract]);
 
   const fill = `${(fraction(value, card.min, card.max) * 100).toFixed(2)}%`;

@@ -116,7 +116,8 @@ export function SignatureHeadline({
   const constellation = useMemo(() => {
     if (kind !== "constellation") return null;
     const rnd = seededRandom(hashString(seed));
-    const pts = Array.from({ length: 7 }, () => ({ x: 4 + rnd() * 92, y: 6 + rnd() * 88 }));
+    // stratified in x so the constellation spans the whole headline, jittered in y
+    const pts = Array.from({ length: 7 }, (_, i) => ({ x: 3 + ((i + rnd() * 0.9) / 7) * 94, y: 6 + rnd() * 88 }));
     const lines: [number, number][] = [];
     for (let i = 0; i < pts.length - 1; i++) lines.push([i, i + 1]);
     lines.push([0, 3], [2, 5]);
@@ -165,16 +166,14 @@ export function SignatureHeadline({
       {kind === "constellation" && constellation && (
         <motion.svg
           aria-hidden
-          viewBox="0 0 100 100"
-          preserveAspectRatio="none"
           variants={{ hidden: { opacity: 0 }, show: { opacity: 1, transition: { duration: reduced ? 0.15 : 0.9, delay: reduced ? 0 : 0.2 } } }}
-          style={{ position: "absolute", inset: "-8% -4%", width: "108%", height: "116%", pointerEvents: "none", overflow: "visible", zIndex: 0 }}
+          style={{ position: "absolute", inset: "-10% -4%", width: "108%", height: "120%", pointerEvents: "none", overflow: "visible", zIndex: 0 }}
         >
           {constellation.lines.map(([a, b], i) => (
-            <line key={i} x1={constellation.pts[a].x} y1={constellation.pts[a].y} x2={constellation.pts[b].x} y2={constellation.pts[b].y} stroke="var(--accent)" strokeWidth={0.35} opacity={0.45} vectorEffect="non-scaling-stroke" />
+            <line key={i} x1={`${constellation.pts[a].x}%`} y1={`${constellation.pts[a].y}%`} x2={`${constellation.pts[b].x}%`} y2={`${constellation.pts[b].y}%`} stroke="var(--accent)" strokeWidth={0.75} opacity={0.4} />
           ))}
           {constellation.pts.map((p, i) => (
-            <circle key={i} cx={p.x} cy={p.y} r={i % 3 === 0 ? 1.4 : 0.9} fill="var(--accent)" opacity={0.7} vectorEffect="non-scaling-stroke" />
+            <circle key={i} cx={`${p.x}%`} cy={`${p.y}%`} r={i % 3 === 0 ? 2.6 : 1.7} fill="var(--accent)" opacity={0.75} />
           ))}
         </motion.svg>
       )}

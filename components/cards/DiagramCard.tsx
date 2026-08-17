@@ -19,7 +19,7 @@ export function DiagramView({ card, entered, onAskAbout, onDial }: CardViewProps
       </Rise>
       <Rise style={{ flex: "1 1 auto", minHeight: 0, display: "flex", flexDirection: "column" }}>
         <div style={{ flex: "1 1 auto", minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
-          <DiagramRenderer card={card} entered={shown} className="w-full h-full" />
+          <DiagramRenderer card={card} entered={shown} style={{ width: "100%", height: "100%" }} />
         </div>
       </Rise>
     </CardFrame>
