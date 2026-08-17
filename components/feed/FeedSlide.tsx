@@ -71,7 +71,7 @@ export const FeedSlide = memo(function FeedSlide({
         <div className="relative z-[1] flex h-full w-full flex-col">
           <SafeCard resetKey={slide.key} fallbackView={<CardView card={FALLBACK} entered active={active} />}>
             {slide.kind === "predict_reveal" ? (
-              <PredictRevealView card={slide.card} interaction={interaction ?? null} entered={entered} />
+              <PredictRevealView card={slide.card} interaction={interaction ?? null} entered={entered} onAskAbout={handlers?.onAskAbout} />
             ) : (
               <CardView
                 card={slide.card}

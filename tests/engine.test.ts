@@ -328,11 +328,11 @@ describe("generateNext", () => {
       learnerState: { ...s.learnerState, directives: { ...s.learnerState.directives, recapDue: "ttl", scaffoldNext: ["ttl"] } },
     });
     const g = await generateNext(s.id);
-    expect(g.cards.map((c) => c.type)).toEqual(["recap", "concept", "concept", "binary", "code", "concept"]);
+    // the recap belongs to interact() — one trigger, one recap, whoever else is generating (spec §8)
+    expect(g.cards.map((c) => c.type)).toEqual(["concept", "concept", "binary", "code", "concept"]);
     const modes = llm.calls.filter((c) => c.fn === "writeBatch").map((c) => (c.ctx as WriteContext).mode);
-    expect(modes).toEqual(["recap", "scaffold", "normal"]);
+    expect(modes).toEqual(["scaffold", "normal"]);
     const cur = (await store.getSession(s.id))!;
-    expect(cur.learnerState.directives.recapDue).toBeNull();
     expect(cur.learnerState.directives.scaffoldNext).toEqual([]);
     expect(cur.progress.cardsInNode).toBe(0); // 3 + 4 main cards ≥ 4 → advanced (recap/scaffold don't count)
     expect(cur.progress.nodeIdx).toBe(1);
@@ -475,9 +475,11 @@ describe("interact", () => {
     expect(r.learnerState.rolling.dwellMs).toEqual([59_000]);
     expect(r.learnerState).not.toBe(s.learnerState);
     // engine clamps even if a caller bypasses the route schema
+    // a revisit of the same card accumulates onto the row (hard-capped at 60s) without adding a second
+    // pacing sample — locking the phone twice on one card must not read as two slow cards (spec §8)
     const r2 = await interact(c.id, { dwellMs: 90_000 });
-    expect(r2.learnerState.rolling.dwellMs).toEqual([59_000, 60_000]);
-    expect(r2.learnerState.directives.recapDue).toBeNull(); // 60s dwell triggers a recap → attempted → cleared
+    expect(r2.card.interaction?.dwellMs).toBe(60_000);
+    expect(r2.learnerState.rolling.dwellMs).toEqual([59_000]);
   });
 
   it("two misses on one concept → one recap card inserted right after the current card", async () => {

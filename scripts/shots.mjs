@@ -13,7 +13,7 @@ await page.goto(base + path, { waitUntil: "networkidle" });
 await page.waitForSelector("section.card", { timeout: 20000 });
 const n = await page.locator("section.card").count();
 console.log("slides:", n);
-const feed = page.locator(".feed").first();
+
 for (let i = 0; i < n; i++) {
   await page.evaluate((i) => { const f = document.querySelector(".feed"); const s = document.querySelectorAll("section.card")[i]; f.scrollTo({ top: s.offsetTop, behavior: "instant" }); }, i);
   await page.waitForTimeout(900);

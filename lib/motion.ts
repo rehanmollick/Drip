@@ -1,6 +1,6 @@
 "use client";
-import { useEffect, useState } from "react";
-import type { Transition, Variants } from "framer-motion";
+import { useEffect, useMemo, useState } from "react";
+import { useReducedMotion, type Transition, type Variants } from "framer-motion";
 
 /**
  * Shared motion helpers (spec §5). Card content staggers in ONCE when the card
@@ -49,6 +49,20 @@ export const pressable = {
   whileTap: { scale: 0.97 },
   transition: { type: "spring", stiffness: 500, damping: 30 } as Transition,
 } as const;
+
+/** Reduced motion: no press scale at all — the state change (border/tint) is the feedback. */
+export const pressableReduced = {
+  whileTap: undefined,
+  transition: REDUCED_FADE,
+} as const;
+
+export type Pressable = { whileTap: { scale: number } | undefined; transition: Transition };
+
+/** `pressable` that respects prefers-reduced-motion (spec §5: every spring becomes a 150ms fade). */
+export function usePressable(): Pressable {
+  const reduced = !!useReducedMotion();
+  return useMemo(() => (reduced ? pressableReduced : pressable), [reduced]);
+}
 
 /** Wrong-answer shake: x ±6px, 3 cycles (spec §5). */
 export const shakeKeyframes = { x: [0, -6, 6, -6, 6, -6, 6, 0] };

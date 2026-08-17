@@ -15,7 +15,7 @@ const DEPTHS: { value: DepthPreset; label: string }[] = [
 ];
 
 /**
- * Long-press menu for a session tile: chill mode / depth / remix / delete.
+ * Long-press menu for a session tile: chill mode / sound / depth / remix / delete.
  * Settings PATCH immediately; delete asks for a second tap.
  */
 export function SessionMenuSheet({
@@ -30,6 +30,7 @@ export function SessionMenuSheet({
   const router = useRouter();
   const { spring, reduced } = useTheme();
   const [chill, setChill] = useState(false);
+  const [sound, setSound] = useState(false);
   const [depth, setDepth] = useState<DepthPreset>("standard");
   const [armed, setArmed] = useState(false);
   const [busy, setBusy] = useState<null | "remix" | "delete">(null);
@@ -38,6 +39,7 @@ export function SessionMenuSheet({
   useEffect(() => {
     if (session) {
       setChill(!!session.settings.chillMode);
+      setSound(!!session.settings.soundOn);
       setDepth(session.settings.depthPreset ?? "standard");
       setArmed(false);
       setBusy(null);
@@ -97,6 +99,14 @@ export function SessionMenuSheet({
               <p className="font-body text-xs text-ink-2">just read. no bets, no drags.</p>
             </div>
             <Toggle on={chill} label="chill mode" onChange={(v) => { setChill(v); void patch({ chillMode: v }); }} />
+          </div>
+
+          <div className="flex items-center justify-between gap-4 rounded-2xl px-4 py-3" style={{ background: "var(--surface)" }}>
+            <div>
+              <p className="font-body text-[15px] text-ink">sound</p>
+              <p className="font-body text-xs text-ink-2">tiny ticks on taps. off by default.</p>
+            </div>
+            <Toggle on={sound} label="sound" onChange={(v) => { setSound(v); void patch({ soundOn: v }); }} />
           </div>
 
           <div className="flex flex-col gap-2">

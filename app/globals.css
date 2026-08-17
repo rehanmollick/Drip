@@ -124,6 +124,11 @@ html, body {
     transition-duration: 150ms !important;
     scroll-behavior: auto !important;
   }
+  /* looping keyframes (skeleton shimmer, cursor-blink signature) must not become 150ms strobes:
+     under reduced motion they simply hold still */
+  .shimmer, .cursor-blink::after {
+    animation: none !important;
+  }
 }
 
 /* ── Utilities ── */

@@ -18,14 +18,40 @@ export function ingestPath(kind: "youtube" | "repo" | "url"): string {
   return `/api/ingest/${kind}`;
 }
 
-const URL_RE = /^(https?:\/\/)?([a-z0-9-]+\.)+[a-z]{2,}(:\d+)?(\/[^\s]*)?$/i;
+const HOSTNAME_RE = /^([a-z0-9-]+\.)+[a-z]{2,}$/i;
+/** Scheme-less `host/path` inputs count as URLs only for these hosts (and their subdomains). */
+export const KNOWN_URL_HOSTS = ["youtube.com", "youtu.be", "github.com"] as const;
 
-/** The whole input is one URL (optionally without scheme). Returns a normalized https URL or null. */
+function hostMatchesKnown(host: string): boolean {
+  const h = host.toLowerCase();
+  return KNOWN_URL_HOSTS.some((k) => h === k || h.endsWith(`.${k}`));
+}
+
+/**
+ * The whole input is one URL. Counts as a URL when it (a) has an http(s) scheme, (b) starts with
+ * `www.`, or (c) is a bare `host/path` whose host is a known domain (youtube / github). Anything
+ * else with a dot — `next.js`, `torch.nn`, `os.path` — is a sentence, not a link.
+ * Returns a normalized https URL or null.
+ */
 export function loneUrl(raw: string): string | null {
   const t = raw.trim();
   if (!t || /\s/.test(t)) return null;
-  if (!URL_RE.test(t)) return null;
-  return /^https?:\/\//i.test(t) ? t : `https://${t}`;
+  if (/^https?:\/\//i.test(t)) {
+    try {
+      const u = new URL(t);
+      return HOSTNAME_RE.test(u.hostname) || u.hostname === "localhost" ? t : null;
+    } catch {
+      return null;
+    }
+  }
+  const m = /^([a-z0-9.-]+)(:\d+)?(\/[^\s]*)?$/i.exec(t);
+  if (!m) return null;
+  const host = m[1];
+  if (!HOSTNAME_RE.test(host)) return null;
+  const startsWww = /^www\./i.test(host);
+  const knownWithPath = hostMatchesKnown(host) && !!m[3];
+  if (!startsWww && !knownWithPath) return null;
+  return `https://${t}`;
 }
 
 export function isYoutubeUrl(url: string): boolean {
@@ -78,3 +104,19 @@ export function routeInput(raw: string, opts: { attachedFile?: boolean } = {}): 
   if (opts.attachedFile || looksLikeTranscript(text)) return { kind: "text", sourceKind: "transcript" };
   return { kind: "text", sourceKind: "paste" };
 }
+
+/** Session titles are capped at 60 chars (contract); trim at a word boundary, never mid-word, never a 400. */
+export const TITLE_MAX = 60;
+export function clampTitle(title: string | undefined | null, max = TITLE_MAX): string | undefined {
+  if (!title) return undefined;
+  const t = title.replace(/\s+/g, " ").trim();
+  if (!t) return undefined;
+  if (t.length <= max) return t;
+  const cut = t.slice(0, max);
+  const at = cut.lastIndexOf(" ");
+  const head = (at >= Math.floor(max / 2) ? cut.slice(0, at) : cut).replace(/[\s\-–—:;,.·|]+$/g, "");
+  return head || cut;
+}
+
+/** Text inputs are capped at 400k chars (contract). */
+export const INPUT_MAX = 400_000;

@@ -1,7 +1,7 @@
 "use client";
 import { motion, useReducedMotion } from "framer-motion";
 import type { CSSProperties, ReactNode } from "react";
-import { pressable } from "@/lib/motion";
+import { usePressable } from "@/lib/motion";
 import { Confetti } from "./Confetti";
 
 export type OptionState = "idle" | "picked" | "correct" | "wrong" | "dim";
@@ -37,6 +37,7 @@ export function OptionButton({
   style?: CSSProperties;
 }) {
   const reduced = useReducedMotion();
+  const pressable = usePressable();
   const border =
     state === "correct" ? "var(--state-correct)"
     : state === "wrong" ? "var(--state-wrong)"

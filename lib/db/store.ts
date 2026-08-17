@@ -42,6 +42,10 @@ export interface Store {
   claimBatch(b: Batch): Promise<{ batch: Batch; created: boolean }>;
   getBatch(sessionId: string, frontierKey: string): Promise<Batch | null>;
   updateBatch(id: string, patch: Partial<Batch>): Promise<Batch>;
+  /** Atomic conditional claim of an existing batch (failed, or pending but not touched since `ifUpdatedBefore`):
+   *  sets status 'pending', clears error/cardIds, bumps updatedAt. Returns null when the condition no longer holds —
+   *  someone else already took it over (or finished it) — so two concurrent retries can never both generate. */
+  takeoverBatch(id: string, opts: { ifUpdatedBefore: string }): Promise<Batch | null>;
 
   // llm observability + spend cap
   logLlmCall(c: LlmCall): Promise<void>;

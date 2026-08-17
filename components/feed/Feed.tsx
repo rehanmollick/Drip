@@ -5,15 +5,16 @@ import { AskSheet } from "@/components/ask/AskBar";
 import { InlineBubble } from "@/components/ask/InlineBubble";
 import type { InteractResult, Slide } from "@/components/cards/types";
 import { ThemeRoot } from "@/components/theme/ThemeRoot";
-import { api } from "@/lib/api/client";
+import { api, ApiClientError } from "@/lib/api/client";
 import type { z } from "zod";
 import type { AskData, InteractBody, InteractData, SessionPublic } from "@/lib/api/contract";
 import type { DialData as DialDataSchema, GetSessionData as GetSessionDataSchema, RetrySessionData as RetrySessionDataSchema } from "@/lib/api/contract";
 import { ticks } from "@/lib/audio/ticks";
 import { DwellClock } from "@/lib/dwell";
 import { pseudoSlide, type PseudoKind } from "@/lib/feed/notices";
+import { Outbox } from "@/lib/feed/outbox";
 import { streakBefore, topicProgress } from "@/lib/feed/progress";
-import { dropUnviewedAfter, isRowSlide, ordinalOf, toSlides } from "@/lib/feed/slides";
+import { dropUnviewedAfter, isRowSlide, isTodayUtc, ordinalOf, toSlides } from "@/lib/feed/slides";
 import type { Card } from "@/lib/schemas/cards";
 import type { CardRow } from "@/lib/schemas/session";
 import { SHELL_THEME } from "@/lib/theme/defaults";
@@ -32,6 +33,9 @@ const WINDOW = 3;              // slides rendered on either side of the active o
 const CHROME_REST_MS = 400;
 const TOAST_MS = 2_200;
 const POSITION_THROTTLE_MS = 1_000;
+const PLANNING_POLL_MS = 1_500;
+const REPLAN_POLL_MS = 1_000;  // D3: after the last clarifier answer, watch the session at 1s
+const REPLAN_MAX_WAIT_MS = 8_000;
 
 export type FeedProps = {
   session: SessionPublic;
@@ -50,15 +54,24 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
   const qc = useQueryClient();
   const sessionId = initialSession.id;
 
-  // ── session (polls while planning) ──────────────────────────────────────
+  // ── replan watch (D3): set when the last clarifier is answered; cleared once the server's re-plan
+  //    landed (pendingReplan false + epoch moved) or REPLAN_MAX_WAIT_MS passed, and we re-synced.
+  const [replanning, setReplanning] = useState<{ epochBefore: number; startedAt: number } | null>(null);
+  const replanningRef = useRef(replanning);
+  replanningRef.current = replanning;
+
+  // ── session (polls while planning / re-planning) ────────────────────────
   const sessionQuery = useQuery({
     queryKey: ["session", sessionId],
     queryFn: async () => (await api.get<GetSessionData>(`/api/sessions/${sessionId}`)).session,
     initialData: initialSession,
     enabled: !staticMode,
     refetchInterval: (q) => {
-      const s = q.state.data?.status;
-      return !staticMode && s === "planning" ? 1_500 : false;
+      if (staticMode) return false;
+      const d = q.state.data;
+      if (d?.status === "planning") return PLANNING_POLL_MS;
+      if (replanningRef.current || d?.progress?.pendingReplan) return REPLAN_POLL_MS;
+      return false;
     },
     staleTime: 10_000,
   });
@@ -68,6 +81,7 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
 
   // ── cards + generation loop ─────────────────────────────────────────────
   const syncBeforeGenerate = useRef<() => Promise<void>>(async () => {});
+  const landViewedUpToHere = useRef<() => Promise<void>>(async () => {});
   const feed = useFeedCards({
     sessionId,
     initialCards,
@@ -75,6 +89,7 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
     enabled: active,
     staticMode,
     beforeGenerate: () => syncBeforeGenerate.current(),
+    onRunwayFull: () => landViewedUpToHere.current(),
   });
   const { cards, mergeIn, patchCard, setCards, online, setWantMore, pump, refetchAll } = feed;
   const cardsRef = useRef(cards);
@@ -87,8 +102,62 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
     prevStatus.current = status;
   }, [status, staticMode, refetchAll]);
 
+  // epoch (D1/D2): the server bumps progress.epoch whenever it drops the unviewed runway (dial,
+  // re-plan, chill toggle). Whenever we learn of a newer epoch than the one we last synced to,
+  // re-pull the cards so ghost rows the server no longer has get pruned. Our own dial pre-marks
+  // the epoch it returned (we already mirrored the drop); the replan watch below does its own sync.
+  const seenEpoch = useRef(initialSession.progress?.epoch ?? 0);
+  const epoch = session.progress?.epoch ?? 0;
+  useEffect(() => {
+    if (staticMode || epoch <= seenEpoch.current) return;
+    seenEpoch.current = epoch;
+    if (replanningRef.current) return;
+    void refetchAll().catch(() => {});
+  }, [epoch, staticMode, refetchAll]);
+
+  // replan watch (D3): once the last clarifier is answered the server re-plans; poll the session
+  // until pendingReplan clears AND the epoch moved (or REPLAN_MAX_WAIT_MS pass), then re-sync and
+  // prune whatever the server dropped. Meanwhile the unviewed runway is hidden (rowSlides) and a
+  // themed "shaping your feed…" tail sits after the last viewed card.
+  const pendingReplan = !!session.progress?.pendingReplan;
+  useEffect(() => {
+    if (!replanning || staticMode) return;
+    let cancelled = false;
+    const finish = () => {
+      seenEpoch.current = Math.max(seenEpoch.current, epoch);
+      void refetchAll()
+        .catch(() => {})
+        .finally(() => { if (!cancelled) setReplanning(null); });
+    };
+    if (!pendingReplan && epoch > replanning.epochBefore) {
+      finish();
+      return () => { cancelled = true; };
+    }
+    const left = REPLAN_MAX_WAIT_MS - (Date.now() - replanning.startedAt);
+    const t = window.setTimeout(finish, Math.max(0, left));
+    return () => {
+      cancelled = true;
+      window.clearTimeout(t);
+    };
+  }, [replanning, staticMode, epoch, pendingReplan, refetchAll]);
+
+  // teasers (D5): while planning the engine may already have written a couple of cards — show them
+  // behind the planning notice instead of one static screen for the whole plan.
+  const teaserFetch = useRef(false);
+  const cardCount = session.cardCount ?? 0;
+  useEffect(() => {
+    if (staticMode || status !== "planning" || teaserFetch.current) return;
+    if (cardCount <= cardsRef.current.length) return;
+    teaserFetch.current = true;
+    refetchAll()
+      .catch(() => {})
+      .finally(() => { teaserFetch.current = false; });
+  }, [staticMode, status, cardCount, refetchAll]);
+
   // ── slides ──────────────────────────────────────────────────────────────
-  const rowSlides = useMemo(() => toSlides(cards), [cards]);
+  // While a re-plan is pending the server drops every unviewed row; hide ours right away so the
+  // user can't scroll into cards that are about to vanish (viewed history stays — it's history).
+  const rowSlides = useMemo(() => toSlides(replanning ? cards.filter((c) => c.viewedAt !== null) : cards), [cards, replanning]);
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const [entered, setEntered] = useState<Set<string>>(() => new Set());
 
@@ -103,12 +172,23 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
     return Math.max(0, rowSlides.length - 1 - (activeIndexRef.current - headCount));
   }, [rowSlides, activeKey, headCount]);
 
+  // today's budget notice at the end of the deck means nothing more is coming until midnight —
+  // no "on its way" tail behind it (the notice itself says when it resets)
+  const budgetCapped = useMemo(() => {
+    const last = cards[cards.length - 1];
+    if (!last) return false;
+    const p = last.payload as Card;
+    return p.type === "notice" && p.kind === "budget" && isTodayUtc(last.createdAt);
+  }, [cards]);
+
   const tail: PseudoKind | null = useMemo(() => {
     if (!active || staticMode) return null;
+    if (replanning) return "replanning";
     if (runway > 0) return null;
     if (!online) return "offline";
+    if (budgetCapped) return null;
     return "catching_up"; // a generate is pending / scheduled — never an error string
-  }, [active, staticMode, runway, online]);
+  }, [active, staticMode, replanning, runway, online, budgetCapped]);
 
   const slides: Slide[] = useMemo(() => {
     const out: Slide[] = [];
@@ -127,12 +207,17 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
   activeIndexRef.current = activeIndex;
   const activeSlide = slides[activeIndex];
   const activeRowId = activeSlide && isRowSlide(activeSlide) ? activeSlide.rowId : null;
+  const activeRowIdRef = useRef<string | null>(null);
+  activeRowIdRef.current = activeRowId;
 
-  // ask for more whenever runway is short (pump is idempotent + backoff-aware)
+  // ask for more whenever runway is short (pump is idempotent + backoff-aware). Keyed on the slide
+  // count too: a one-card batch landing on the tail hands the active key over and leaves `runway`
+  // numerically unchanged (0 → 0) — the deck still grew, so ask again. Never during a re-plan.
+  const rowCount = rowSlides.length;
   useEffect(() => {
     if (!active || staticMode) return;
-    setWantMore(runway <= RUNWAY_TARGET_LOW);
-  }, [runway, active, staticMode, setWantMore]);
+    setWantMore(!replanning && runway <= RUNWAY_TARGET_LOW);
+  }, [runway, rowCount, replanning, active, staticMode, setWantMore]);
 
   // ── visibility: IntersectionObserver @ 0.6 ──────────────────────────────
   const containerRef = useRef<HTMLDivElement>(null);
@@ -223,6 +308,18 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
   const lastActiveIndex = useRef(activeIndex);
   useLayoutEffect(() => {
     const root = containerRef.current;
+    if (root && foundIndex < 0 && activeKey?.startsWith("pseudo:") && !scrollingRef.current) {
+      // the pseudo slide we were on vanished (re-plan landed, tail replaced): the slide now at our
+      // index is under the thumb — hand the active key over so dwell/runway continue
+      const landed = slides[activeIndex];
+      if (landed && isRowSlide(landed)) {
+        setActiveKey(landed.key);
+        setEntered((p) => (p.has(landed.key) ? p : new Set(p).add(landed.key)));
+        root.scrollTo({ top: activeIndex * root.clientHeight });
+      }
+      lastActiveIndex.current = activeIndex;
+      return;
+    }
     if (root && foundIndex >= 0 && lastActiveIndex.current !== foundIndex && !scrollingRef.current) {
       if (activeKey?.startsWith("pseudo:") && foundIndex > lastActiveIndex.current) {
         const landed = slides[lastActiveIndex.current];
@@ -279,36 +376,42 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
 
   // Interacts that fail (offline, blip) wait in an outbox and drain on `online` / before the next
   // generate: the server's runway math counts unviewed rows, so `viewed` must eventually land.
-  const outbox = useRef<Array<{ rowId: string; body: InteractBody }>>([]);
-  const draining = useRef<Promise<void> | null>(null);
+  // A report that can never land (404: the server dropped that card under a dial / re-plan) is
+  // discarded and the ghost row pruned — it must never block the reports queued behind it.
+  // rows the SERVER has confirmed viewed (initial rows + successful interacts). `viewedSent` below is
+  // what we've reported/queued; the gap between the two is what runway_full re-sends (D6).
+  const viewedConfirmed = useRef<Set<string>>(new Set(initialCards.filter((c) => c.viewedAt).map((c) => c.id)));
   const sendInteract = useCallback(
     async (rowId: string, body: InteractBody) => {
       const res = await api.post<InteractData>(`/api/cards/${rowId}/interact`, body);
+      if (res?.card?.viewedAt) viewedConfirmed.current.add(rowId);
       if (res?.inserted?.length) mergeIn(res.inserted);
     },
     [mergeIn],
   );
+  const sendInteractRef = useRef(sendInteract);
+  sendInteractRef.current = sendInteract;
+  const outbox = useRef<Outbox | null>(null);
+  if (!outbox.current) {
+    outbox.current = new Outbox((rowId, body) => sendInteractRef.current(rowId, body), {
+      onDrop: (item, err) => {
+        if (err instanceof ApiClientError && err.status === 404 && item.rowId !== activeRowIdRef.current) {
+          // the server no longer has this card — neither should we (unless the user is looking at it)
+          setCards((prev) => (prev.some((c) => c.id === item.rowId) ? prev.filter((c) => c.id !== item.rowId) : prev));
+        }
+      },
+    });
+  }
   const drainOutbox = useCallback((): Promise<void> => {
     if (staticMode) return Promise.resolve();
-    if (draining.current) return draining.current;
-    const run = (async () => {
-      try {
-        while (outbox.current.length) {
-          const next = outbox.current[0];
-          try {
-            await sendInteract(next.rowId, next.body);
-            outbox.current.shift();
-          } catch {
-            break; // still down; try again later
-          }
-        }
-      } finally {
-        draining.current = null;
-      }
-    })();
-    draining.current = run;
-    return run;
-  }, [sendInteract, staticMode]);
+    return outbox.current!.drain();
+  }, [staticMode]);
+  // reports queued for rows we no longer have (pruned after a re-sync / dial) can only 404 — drop them
+  useEffect(() => {
+    const ob = outbox.current;
+    if (!ob || !ob.size) return;
+    ob.retain(new Set(cards.map((c) => c.id)));
+  }, [cards]);
   const interact = useCallback(
     (rowId: string, body: InteractBody, keepalive = false) => {
       if (staticMode) return;
@@ -318,16 +421,11 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
         } catch { /* best effort */ }
         return;
       }
-      if (outbox.current.length) {
-        outbox.current.push({ rowId, body }); // keep order while something older is stuck
-        void drainOutbox();
-        return;
-      }
-      sendInteract(rowId, body).catch(() => {
-        outbox.current.push({ rowId, body });
-      });
+      // keep order: everything goes through the outbox; an empty queue sends immediately
+      outbox.current!.push(rowId, body);
+      void drainOutbox();
     },
-    [staticMode, sendInteract, drainOutbox],
+    [staticMode, drainOutbox],
   );
 
   // ── position (throttled ~1/s, keepalive on hide) ────────────────────────
@@ -371,13 +469,29 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
     if (!stale.length) return;
     for (const c of stale) {
       viewedSent.current.add(c.id);
-      outbox.current.push({ rowId: c.id, body: { viewed: true } });
+      outbox.current!.push(c.id, { viewed: true });
     }
     void drainOutbox();
   }, [staticMode, active, initialSession.position, drainOutbox]);
 
   // before every generate: land what the server needs for its runway math
   syncBeforeGenerate.current = async () => {
+    await Promise.all([drainOutbox(), flushPosition(false)]);
+  };
+  // runway_full (D6): the server counts ≥16 unviewed rows — everything at/before where the user is
+  // has been seen; (re)post `viewed` for every such row the server hasn't confirmed, flush, and the
+  // loop retries generate exactly once.
+  landViewedUpToHere.current = async () => {
+    if (staticMode) return;
+    const cs = cardsRef.current;
+    const ob = outbox.current!;
+    const here = activeRowIdRef.current ? ordinalOf(cs, activeRowIdRef.current) : cs.length - 1;
+    for (const c of cs.slice(0, here + 1)) {
+      if (viewedConfirmed.current.has(c.id) || ob.hasViewed(c.id)) continue;
+      viewedSent.current.add(c.id);
+      if (!c.viewedAt) patchCard(c.id, { viewedAt: new Date().toISOString() });
+      ob.push(c.id, { viewed: true });
+    }
     await Promise.all([drainOutbox(), flushPosition(false)]);
   };
   useEffect(() => {
@@ -479,32 +593,37 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
       const row = cardsRef.current.find((c) => c.id === rowId);
       if (!row) return;
       const now = new Date().toISOString();
-      patchCard(rowId, { interaction: { ...(row.interaction ?? {}), ...r, at: now } });
+      const interaction = { ...(row.interaction ?? {}), ...r, at: now };
+      // the server marks any interacted card viewed — mirror it so a re-plan's "unviewed goes" never hides this one
+      patchCard(rowId, { interaction, viewedAt: row.viewedAt ?? now });
       if (staticMode) return;
       const body: InteractBody = { choice: r.choice, correct: r.correct, value: r.value };
-      const card = row.payload as Card;
-      if (card.type === "clarify" && typeof r.choice === "number") {
-        const answer = card.options[r.choice];
-        api
-          .patch(`/api/sessions/${sessionId}`, { clarifierAnswers: { [card.key]: answer } })
-          .then(async () => {
-            await qc.invalidateQueries({ queryKey: ["session", sessionId] });
-            await refetchAll();
-          })
-          .catch(() => {});
-      }
       interact(rowId, body);
+      const card = row.payload as Card;
+      if (card.type === "clarify" && r.choice !== undefined && !replanningRef.current && session.sourceMeta?.replannedAt === undefined) {
+        // D3: the tap IS the answer (one path: interact). Once every clarify card has one, the
+        // server re-plans; watch the session until the new runway landed, then re-sync.
+        const allAnswered = cardsRef.current
+          .filter((c) => (c.payload as Card).type === "clarify")
+          .every((c) => c.id === rowId || c.interaction?.choice !== undefined);
+        if (allAnswered) setReplanning({ epochBefore: session.progress?.epoch ?? 0, startedAt: Date.now() });
+      }
     },
-    [patchCard, staticMode, sessionId, interact, qc, refetchAll],
+    [patchCard, staticMode, interact, session.progress?.epoch, session.sourceMeta?.replannedAt],
   );
 
   const onDial = useCallback(
     async (rowId: string, direction: "simpler" | "deeper") => {
-      showToast(direction === "simpler" ? "say less. rewinding the jargon." : "bet. going a layer deeper.");
       const res = await post<DialData>(`/api/sessions/${sessionId}/dial`, { direction, currentCardId: rowId }).catch(() => null);
-      if (!res) return;
-      if (res.toast) showToast(res.toast);
+      if (!res) {
+        showToast(direction === "simpler" ? "couldn't rewind that. one more tap?" : "couldn't go deeper just now. one more tap?");
+        return;
+      }
+      // one toast, in the persona's voice (the server always sends one)
+      showToast(res.toast || (direction === "simpler" ? "say less. rewinding the jargon." : "bet. going a layer deeper."));
+      // mirror the server exactly: every unviewed row after this card is gone, on every thread (D1)
       setCards((prev) => dropUnviewedAfter(prev, res.removedAfter));
+      seenEpoch.current = Math.max(seenEpoch.current, res.session.progress?.epoch ?? 0);
       qc.setQueryData(["session", sessionId], res.session);
       pump();
     },
@@ -517,11 +636,14 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
       if (!viewedSent.current.has(rowId)) {
         viewedSent.current.add(rowId);
         patchCard(rowId, { viewedAt: new Date().toISOString() });
-        if (!staticMode) outbox.current.push({ rowId, body: { viewed: true } });
+        if (!staticMode) {
+          outbox.current!.push(rowId, { viewed: true });
+          void drainOutbox();
+        }
       }
       pump();
     },
-    [patchCard, staticMode, pump],
+    [patchCard, staticMode, pump, drainOutbox],
   );
 
   const onAskAbout = useCallback(() => {
@@ -548,8 +670,14 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
         return;
       }
       mergeIn(res.cards);
-      const idx = slidesRef.current.findIndex((s) => s.key === activeKey);
-      window.setTimeout(() => scrollToIndex(idx + 1, true), 120);
+      const ids = new Set(res.cards.map((c) => c.id));
+      const from = slidesRef.current.findIndex((s) => s.key === activeKey);
+      window.setTimeout(() => {
+        // land on the detour's opener (first spliced slide), not blindly on idx+1 — a predict's
+        // reveal slide sits between the question and the detour marker
+        const target = slidesRef.current.findIndex((s) => isRowSlide(s) && ids.has(s.rowId));
+        scrollToIndex(target >= 0 ? target : from + 1, true);
+      }, 120);
     },
     [activeRowId, staticMode, sessionId, mergeIn, activeKey, scrollToIndex],
   );
@@ -573,9 +701,12 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
 
   // ── derived UI bits ─────────────────────────────────────────────────────
   const rowsById = useMemo(() => new Map(cards.map((c) => [c.id, c])), [cards]);
-  const lastProgress = useRef(0);
-  const progress = activeRowId ? topicProgress(cards, activeRowId) : lastProgress.current;
-  lastProgress.current = progress;
+  // hairline: position within the topic node (outline estimate as the floor of the denominator);
+  // never retracts while the user stands still on a card because a batch landed behind them
+  const lastProgress = useRef<{ rowId: string | null; frac: number }>({ rowId: null, frac: 0 });
+  let progress = activeRowId ? topicProgress(cards, activeRowId, session.outline) : lastProgress.current.frac;
+  if (activeRowId && activeRowId === lastProgress.current.rowId) progress = Math.max(progress, lastProgress.current.frac);
+  lastProgress.current = { rowId: activeRowId ?? lastProgress.current.rowId, frac: progress };
 
   const chromeHidden = scrolling || askOpen;
   const showAsk = !!activeRowId && status !== "planning";
@@ -588,7 +719,7 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
         if (kind === "catching_up" || kind === "offline") return { onAction: pump };
         return undefined;
       }
-      if (slide.kind === "predict_reveal") return undefined;
+      if (slide.kind === "predict_reveal") return { onAskAbout };
       const rowId = slide.rowId;
       return {
         onInteract: (r) => onInteract(rowId, r),

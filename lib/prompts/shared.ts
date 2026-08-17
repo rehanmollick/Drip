@@ -19,6 +19,24 @@ import { VisualSpec } from "@/lib/schemas/visual";
 
 export type Prompt = { system: string; user: string };
 
+/**
+ * Bump when PRIME_DIRECTIVE / WRITER_RULES / CARD_NOTES / JSON_ONLY change in a
+ * way worth tracing. SHARED_FINGERPRINT below catches every edit automatically
+ * (it hashes the assembled shared blocks + generated card schemas), so a logged
+ * prompt version like "write.v2+shared.v1.9f3a1c2b" pins the exact prompt bytes.
+ */
+export const SHARED_VERSION = 1;
+
+/** FNV-1a 32-bit — stable, dependency-free string hash. */
+export function hashStr(s: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h >>> 0;
+}
+
 // ── output contract ────────────────────────────────────────────────────────────
 
 export const JSON_ONLY =
@@ -248,6 +266,40 @@ export function jsonForPrompt(value: unknown, maxChars = 4_000): string {
   return s.length > maxChars ? s.slice(0, maxChars) + "…" : s;
 }
 
+/** Render-only fields (server-side highlighter output, ordering keys) the model must never see or echo. */
+const RENDER_ONLY_KEYS = new Set(["highlighted", "idx", "interaction", "viewedAt", "createdAt"]);
+
+/**
+ * A card as prompt context: the copy the person is looking at, minus render-only
+ * payload (a code card's shiki `highlighted` tokens dwarf its copy and would eat
+ * the char budget mid-token-array).
+ */
+export function cardForPrompt(card: unknown, maxChars = 2_000): string {
+  if (!card || typeof card !== "object" || Array.isArray(card)) return jsonForPrompt(card, maxChars);
+  const slim: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(card as Record<string, unknown>)) if (!RENDER_ONLY_KEYS.has(k)) slim[k] = v;
+  return jsonForPrompt(slim, maxChars);
+}
+
 export function bullets(items: readonly string[]): string {
   return items.length ? items.map((s) => `- ${s}`).join("\n") : "- (none)";
+}
+
+// ── versioning ────────────────────────────────────────────────────────────────
+
+const ALL_CARD_TYPES = Object.keys(CARD_ZOD) as CardType[];
+
+/** 8-hex fingerprint of every shared prompt block + generated card schema (see SHARED_VERSION). */
+export const SHARED_FINGERPRINT = hashStr(
+  [JSON_ONLY, PRIME_DIRECTIVE, WRITER_RULES, BASE_CARD_FIELDS, cardSchemaBlock(ALL_CARD_TYPES)].join("\n"),
+).toString(16).padStart(8, "0");
+
+/**
+ * The prompt version logged with every call: the file's PROMPT_VERSION, any
+ * borrowed system prompt's version (detour borrows write's), then the shared
+ * blocks' version + fingerprint — so a regression is traceable to the exact
+ * prompt bytes even when only shared.ts or a card schema changed.
+ */
+export function loggedPromptVersion(fileVersion: string, ...borrowed: string[]): string {
+  return [fileVersion, ...borrowed, `shared.v${SHARED_VERSION}.${SHARED_FINGERPRINT}`].join("+");
 }

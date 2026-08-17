@@ -1,6 +1,6 @@
 import type { TriageInput } from "@/lib/llm-types";
 import { TriageOutputSchema } from "@/lib/schemas/plan";
-import { JSON_ONLY, PRIME_DIRECTIVE, jsonForPrompt, personaBlock, schemaText, sliceCorpus, type Prompt } from "./shared";
+import { JSON_ONLY, PRIME_DIRECTIVE, cardForPrompt, personaBlock, schemaText, sliceCorpus, type Prompt } from "./shared";
 
 export const PROMPT_VERSION = "triage.v1";
 
@@ -25,7 +25,7 @@ export function buildTriagePrompt(input: TriageInput): Prompt {
   const system = `${TRIAGE_SYSTEM_PREFIX}\n\n${personaBlock(input.persona)}`;
   const user = [
     `session: ${input.sessionSummary}`,
-    `the card they're on: ${jsonForPrompt(input.currentCard, 2_000)}`,
+    `the card they're on: ${cardForPrompt(input.currentCard, 2_000)}`,
     `relevant source slice:\n<<<SOURCE\n${sliceCorpus(input.corpusSlice, TRIAGE_CORPUS_CHARS) || "(none)"}\nSOURCE>>>`,
     `their question: ${input.question}`,
     `emit the triage JSON.`,

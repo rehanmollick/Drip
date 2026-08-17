@@ -1,6 +1,6 @@
 "use client";
 import { motion, type Variants } from "framer-motion";
-import { useCallback, useMemo, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useMemo, useRef, type CSSProperties, type ReactNode } from "react";
 import type { Card } from "@/lib/schemas/cards";
 import { useTheme } from "@/components/theme/ThemeRoot";
 import { useLongPress } from "@/lib/hooks/useLongPress";
@@ -23,9 +23,13 @@ export const FRAME_PAD_X = 24;
 export function useEntry(entered: boolean) {
   const { spring, reduced, staggerMs } = useTheme();
   const shown = useEnterOnce(entered);
+  // A card that had already entered when this view mounted (the feed windows views in and out
+  // around the active slide) renders straight in its final state: elements animate ONCE per card,
+  // never again on a remount / scroll-back (spec §5).
+  const initial = useRef<"hidden" | false>(entered ? false : "hidden").current;
   const container = useMemo(() => staggerContainer(reduced ? 40 : staggerMs || 60), [reduced, staggerMs]);
   const item = useMemo(() => riseIn(spring, reduced), [spring, reduced]);
-  return { shown, container, item, animate: shown ? "show" : "hidden", spring, reduced } as const;
+  return { shown, container, item, initial, animate: shown ? "show" : "hidden", spring, reduced } as const;
 }
 
 export function CardFrame({
@@ -53,7 +57,7 @@ export function CardFrame({
   /** pinned to the bottom of the content area (dials, hints) — outside the stagger */
   footer?: ReactNode;
 }) {
-  const { shown, container, animate } = useEntry(entered);
+  const { shown, container, animate, initial } = useEntry(entered);
   const ask = useCallback(() => onAskAbout?.(), [onAskAbout]);
   const press = useLongPress(ask, { ms: 480 });
   const inDetour = card.detourId != null;
@@ -101,7 +105,7 @@ export function CardFrame({
       )}
       <motion.div
         variants={container}
-        initial="hidden"
+        initial={initial}
         animate={animate}
         style={{
           flex: "1 1 auto",

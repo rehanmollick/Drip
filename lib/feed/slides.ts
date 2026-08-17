@@ -26,10 +26,13 @@ export function mergeCards(existing: readonly CardRow[], incoming: readonly Card
   return sortCards([...byId.values()]);
 }
 
-/** Drop UNVIEWED main-thread cards with idx > after (mirrors the server after a dial). */
+/**
+ * Drop every UNVIEWED card with idx > after, on every thread (main + detours) — exactly what the
+ * server's Store.deleteUnviewedAfter does after a dial / chill toggle. `after === null` means
+ * "the whole unviewed runway" (a re-plan). Viewed rows are history and always stay.
+ */
 export function dropUnviewedAfter(cards: readonly CardRow[], after: string | null): CardRow[] {
-  if (after === null) return [...cards];
-  return cards.filter((c) => !(c.detourId === null && c.viewedAt === null && compareIdx(c.idx, after) > 0));
+  return cards.filter((c) => !(c.viewedAt === null && (after === null || compareIdx(c.idx, after) > 0)));
 }
 
 /** One card → one slide, except `predict` which expands into [question, reveal]. */
@@ -48,6 +51,13 @@ export function toSlides(cards: readonly CardRow[]): Slide[] {
 /** Slides that belong to a real card row (not client-side pseudo notices). */
 export function isRowSlide(s: Slide): s is Extract<Slide, { kind: "card" | "predict_reveal" }> {
   return s.kind === "card" || s.kind === "predict_reveal";
+}
+
+/** True when the ISO timestamp falls on today's UTC date (the daily budget resets at UTC midnight). */
+export function isTodayUtc(iso: string, now = Date.now()): boolean {
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return false;
+  return new Date(t).toISOString().slice(0, 10) === new Date(now).toISOString().slice(0, 10);
 }
 
 /** Ordinal of a row among the session's cards (position semantics for PATCH position). */

@@ -17,14 +17,14 @@ import type { Store } from "@/lib/db/store";
 import type {
   DetourContext, LlmApi, LlmFailureCode, LlmMeta, LlmResult, PlanInput, TriageInput, WriteContext,
 } from "@/lib/llm-types";
-import { CardBatchSchema, type Card } from "@/lib/schemas/cards";
+import { CardSchema, WRITER_CARD_TYPES, type Card, type CardType } from "@/lib/schemas/cards";
 import { PlanOutputSchema, TriageOutputSchema, type Persona, type PlanOutput, type TriageOutput } from "@/lib/schemas/plan";
 import { LLM_PURPOSES } from "@/lib/schemas/session";
 import * as mock from "./llm-mock";
 import { PROMPT_VERSION as DETOUR_PROMPT_VERSION, buildDetourPrompt } from "./prompts/detour";
 import { CANNED_TOASTS, DialToastSchema, PROMPT_VERSION as DIAL_PROMPT_VERSION, buildDialPrompt } from "./prompts/dial";
 import { PROMPT_VERSION as PLAN_PROMPT_VERSION, buildPlanPrompt } from "./prompts/plan";
-import type { Prompt } from "./prompts/shared";
+import { loggedPromptVersion, type Prompt } from "./prompts/shared";
 import { PROMPT_VERSION as TRIAGE_PROMPT_VERSION, buildTriagePrompt } from "./prompts/triage";
 import { PROMPT_VERSION as WRITE_PROMPT_VERSION, buildWritePrompt } from "./prompts/write";
 
@@ -32,23 +32,60 @@ type LlmPurpose = (typeof LLM_PURPOSES)[number];
 
 // ── config ────────────────────────────────────────────────────────────────────
 
-export const PLAN_MODEL = () => process.env.LLM_PLAN_MODEL ?? "claude-sonnet-4-6";
-export const WRITE_MODEL = () => process.env.LLM_WRITE_MODEL ?? "claude-haiku-4-5";
-export const isMockMode = () => process.env.LLM_MODE === "mock";
-export const dailyCallCap = () => Number(process.env.LLM_DAILY_CALL_CAP ?? 500);
+/** Env value or default; a blank/whitespace value (".env.example" style) means "unset". */
+const env = (name: string): string | undefined => {
+  const v = process.env[name];
+  return v === undefined ? undefined : v.trim() || undefined;
+};
 
-// The plan is a single JSON object (~2–3k tokens); no extended thinking — the spec budgets 10–20s for
-// planning and a thinking-heavy Sonnet call blew past the watchdog. Streaming keeps long outputs off the
-// idle-timeout path.
-const MAX_TOKENS = { plan: 8_000, batch: 4_000, triage: 600, toast: 200 } as const;
-const REQUEST_TIMEOUT_MS = 120_000;
+export const PLAN_MODEL = () => env("LLM_PLAN_MODEL") ?? "claude-sonnet-4-6";
+export const WRITE_MODEL = () => env("LLM_WRITE_MODEL") ?? "claude-haiku-4-5";
+export const isMockMode = () => env("LLM_MODE") === "mock";
+
+/** Mock mode spends nothing; its cap is only there so the pipeline stays identical (LLM_MOCK_DAILY_CALL_CAP to override). */
+export const MOCK_DAILY_CALL_CAP = 100_000;
+let warnedCap: string | null = null;
+export const dailyCallCap = (): number => {
+  const raw = isMockMode() ? env("LLM_MOCK_DAILY_CALL_CAP") ?? String(MOCK_DAILY_CALL_CAP) : env("LLM_DAILY_CALL_CAP") ?? "500";
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    if (warnedCap !== raw) {
+      warnedCap = raw;
+      console.error(`[llm] LLM_DAILY_CALL_CAP=${JSON.stringify(raw)} is not a positive number — every call fails closed until it is fixed.`);
+    }
+    return Number.NaN;
+  }
+  return n;
+};
+
+/**
+ * Output caps. Batches scale with the card count (a 6-card detour with two code
+ * + two diagram cards pretty-printed by Haiku can pass 4k tokens; a truncated
+ * body wastes the call). Plans: one JSON object, ~2–3k tokens, no extended
+ * thinking — the spec budgets 10–20s for planning.
+ */
+const MAX_TOKENS = { plan: 8_000, triage: 600, toast: 200 } as const;
+export function batchMaxTokens(cardCount: number): number {
+  const n = Number.isFinite(cardCount) ? Math.max(1, Math.round(cardCount)) : 4;
+  return Math.min(8_000, Math.max(3_000, 1_000 * n + 1_000));
+}
+
+/**
+ * Overall deadline per pipeline call (both attempts + SDK retries + stream). Every one sits under the
+ * engine's takeover windows (planning watchdog / stale-batch takeover = 90s) so a stalled stream can
+ * never let two owners generate the same frontier or a plan land after the session was declared dead.
+ */
+export const DEADLINE_MS = { plan: 75_000, batch: 60_000, triage: 20_000, toast: 8_000 } as const;
+/** Don't start a paid retry with less than this left — a truncated retry is a wasted call. */
+export const MIN_RETRY_MS = 8_000;
+const REQUEST_TIMEOUT_MS = 120_000; // SDK per-request TTFB guard; the deadline signal above is the real bound
 
 // ── dependency injection (tests) ──────────────────────────────────────────────
 
-type Deps = { store?: Store; now?: () => Date };
+type Deps = { store?: Store; now?: () => Date; call?: CallFn };
 let deps: Deps = {};
 
-/** Tests inject a fake store / clock. Production resolves the store lazily via lib/db. */
+/** Tests inject a fake store / clock / model call. Production resolves the store lazily via lib/db and calls Anthropic. */
 export function __setDeps(next: Deps): void {
   deps = { ...deps, ...next };
 }
@@ -65,17 +102,24 @@ export function startOfTodayUtc(d: Date = now()): string {
 
 // ── spend cap + logging ───────────────────────────────────────────────────────
 
-async function checkCap(): Promise<{ ok: true; count: number } | { ok: false; error: string }> {
+/**
+ * Fails closed either way, but the two causes are different failures downstream:
+ * - `budget`: the cap is genuinely reached → the engine shows the day-long budget notice.
+ * - `api`: the spend counter can't be read (store blip, misconfigured cap) → a retryable
+ *   fallback card, never a false "we hit today's budget" that dead-ends the feed till midnight.
+ */
+type CapCheck = { ok: true; count: number } | { ok: false; code: "budget" | "api"; error: string };
+async function checkCap(): Promise<CapCheck> {
   const cap = dailyCallCap();
-  if (!Number.isFinite(cap)) return { ok: false, error: "cap unreadable" };
+  if (!Number.isFinite(cap)) return { ok: false, code: "api", error: "spend counter unreadable: daily cap misconfigured" };
   let count: number;
   try {
     count = await (await resolveStore()).countLlmCallsSince(startOfTodayUtc());
   } catch {
-    return { ok: false, error: "cap unreadable" };
+    return { ok: false, code: "api", error: "spend counter unreadable" };
   }
-  if (!Number.isFinite(count)) return { ok: false, error: "cap unreadable" };
-  if (count >= cap) return { ok: false, error: `daily cap reached (${count}/${cap})` };
+  if (!Number.isFinite(count)) return { ok: false, code: "api", error: "spend counter unreadable" };
+  if (count >= cap) return { ok: false, code: "budget", error: `daily cap reached (${count}/${cap})` };
   return { ok: true, count };
 }
 
@@ -91,6 +135,10 @@ type LogInput = {
   error: string | null;
 };
 
+/** llm_calls.error is text; ordinary errors stay short, the double-failure entry carries the raw output. */
+const LOG_ERROR_CHARS = 500;
+export const LOG_RAW_CHARS = 8_000;
+
 async function log(entry: LogInput): Promise<void> {
   try {
     await (await resolveStore()).logLlmCall({
@@ -103,7 +151,7 @@ async function log(entry: LogInput): Promise<void> {
       outTokens: Math.max(0, Math.round(entry.outTokens)),
       latencyMs: Math.max(0, Math.round(entry.latencyMs)),
       ok: entry.ok,
-      error: entry.error ? entry.error.slice(0, 500) : null,
+      error: entry.error ? entry.error.slice(0, LOG_ERROR_CHARS + LOG_RAW_CHARS) : null,
       createdAt: now().toISOString(),
     });
   } catch (e) {
@@ -113,9 +161,13 @@ async function log(entry: LogInput): Promise<void> {
 
 // ── json extraction + validation ──────────────────────────────────────────────
 
-/** Strip code fences and return the first balanced {...} object in the text, or null. */
+/**
+ * Return the first balanced {...} object in the text, or null. Fences and prose around it are
+ * ignored by construction (scan starts at the first "{", stops at its match); nothing inside string
+ * values is ever rewritten — a code card may legitimately contain "```".
+ */
 export function extractJsonObject(text: string): string | null {
-  const t = text.replace(/```(?:json)?/gi, "").trim();
+  const t = text;
   const start = t.indexOf("{");
   if (start < 0) return null;
   let depth = 0;
@@ -177,6 +229,10 @@ const PLAN_CLAMPS: Array<[path: string[], max: number]> = [
   [["persona", "name"], 24], [["persona", "humor"], 60], [["persona", "neverDoes"], 80], [["persona", "voiceSample"], 160],
 ];
 
+/**
+ * Soft-clamp the plan's internal strings AND its trivially-normalizable bounds (estCards 3..8,
+ * ≤ 3 clarifiers, ≤ 24 outline nodes, ≤ 3 firstCards) — none of these is worth a second Sonnet call.
+ */
 export function clampPlanInternalFields(parsed: unknown): unknown {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return parsed;
   const o = JSON.parse(JSON.stringify(parsed)) as Record<string, unknown>;
@@ -190,19 +246,21 @@ export function clampPlanInternalFields(parsed: unknown): unknown {
   if (persona && Array.isArray(persona.traits)) persona.traits = persona.traits.map((t) => softClamp(t, 40));
   if (persona && Array.isArray(persona.tics)) persona.tics = persona.tics.map((t) => softClamp(t, 60));
   if (Array.isArray(o.outline)) {
-    o.outline = o.outline.map((n) => {
+    o.outline = o.outline.slice(0, 24).map((n) => {
       if (!n || typeof n !== "object") return n;
       const node = n as Record<string, unknown>;
-      return { ...node, title: softClamp(node.title, 60), brief: softClamp(node.brief, 240), corpusHint: softClamp(node.corpusHint, 200) };
+      const est = typeof node.estCards === "number" && Number.isFinite(node.estCards) ? Math.min(8, Math.max(3, Math.round(node.estCards))) : node.estCards;
+      return { ...node, estCards: est, title: softClamp(node.title, 60), brief: softClamp(node.brief, 240), corpusHint: softClamp(node.corpusHint, 200) };
     });
   }
   if (Array.isArray(o.clarifiers)) {
-    o.clarifiers = o.clarifiers.map((c) => {
+    o.clarifiers = o.clarifiers.slice(0, 3).map((c) => {
       if (!c || typeof c !== "object") return c;
       const cl = c as Record<string, unknown>;
-      return { ...cl, prompt: softClamp(cl.prompt, 140), options: Array.isArray(cl.options) ? cl.options.map((x) => softClamp(x, 40)) : cl.options };
+      return { ...cl, prompt: softClamp(cl.prompt, 140), options: Array.isArray(cl.options) ? cl.options.slice(0, 3).map((x) => softClamp(x, 40)) : cl.options };
     });
   }
+  if (Array.isArray(o.firstCards) && o.firstCards.length > 3) o.firstCards = o.firstCards.slice(0, 3);
   return o;
 }
 
@@ -214,14 +272,56 @@ export function clampEyebrows(cards: unknown): unknown {
 
 type Validation<T> = { ok: true; value: T } | { ok: false; error: string };
 
-function validate<T>(schema: z.ZodType<T>, parsed: unknown, checkBanned: boolean): Validation<T> {
+function validate<T>(schema: z.ZodType<T>, parsed: unknown): Validation<T> {
   const r = schema.safeParse(parsed);
   if (!r.success) return { ok: false, error: `schema validation failed:\n${formatIssues(r.error)}` };
-  if (checkBanned) {
-    const b = findBannedInValue(r.data);
-    if (b) return { ok: false, error: `banned school vocabulary on screen: "${b.word}" at ${b.path}. rewrite that string without it.` };
-  }
   return { ok: true, value: r.data };
+}
+
+/**
+ * On-screen projection for the banned-word scan/scrub. `keys` = top-level keys that reach the
+ * screen; undefined = the whole value (cards). Internal fields (outline briefs, persona notes,
+ * theme mood, triage focus) are writer briefs — a "chapter 3" there is not a Prime Directive
+ * violation and must never cost a second Sonnet call or get garbled by the scrubber.
+ */
+function onScreen<T>(value: T, keys?: readonly string[]): unknown {
+  if (!keys) return value;
+  if (!value || typeof value !== "object") return value;
+  const o = value as Record<string, unknown>;
+  const pick: Record<string, unknown> = {};
+  for (const k of keys) if (k in o) pick[k] = o[k];
+  return pick;
+}
+function scrubOnScreen<T>(value: T, keys?: readonly string[]): T {
+  if (!keys) return scrubBannedValue(value);
+  if (!value || typeof value !== "object") return value;
+  return { ...value, ...(scrubBannedValue(onScreen(value, keys)) as object) } as T;
+}
+const bannedProblem = (b: { word: string; path: string }) => `banned school vocabulary on screen: "${b.word}" at ${b.path}. rewrite that string without it.`;
+
+/**
+ * Per-call output schema for the writers: every card must be a type this call may emit
+ * (chill mode drops bets/sliders; internal types — notice, fallback, clarify, detour_marker —
+ * are never accepted from a model). Violations hit the retry-with-error path.
+ */
+export function cardsSchemaFor(allowed: readonly CardType[]) {
+  const set = new Set<CardType>(allowed.filter((t) => (WRITER_CARD_TYPES as readonly CardType[]).includes(t)));
+  const ok = set.size ? set : new Set<CardType>(WRITER_CARD_TYPES);
+  const list = [...ok].join(", ");
+  const item = CardSchema.refine((c) => ok.has(c.type), { message: `card type not allowed for this call (allowed: ${list})` });
+  return z.object({ cards: z.array(item).min(1).max(8) });
+}
+
+/** The fast-path cards: a hook first, then writer types only (chill mode → no bets/sliders). */
+export function planSchemaFor(allowed: readonly CardType[]) {
+  const set = new Set<CardType>(allowed.filter((t) => (WRITER_CARD_TYPES as readonly CardType[]).includes(t)));
+  const ok = set.size ? set : new Set<CardType>(WRITER_CARD_TYPES);
+  return PlanOutputSchema.superRefine((p, ctx) => {
+    p.firstCards.forEach((c, i) => {
+      if (i === 0 && c.type !== "hook") ctx.addIssue({ code: "custom", path: ["firstCards", 0, "type"], message: `firstCards[0] must be a "hook" (got "${c.type}")` });
+      else if (!ok.has(c.type)) ctx.addIssue({ code: "custom", path: ["firstCards", i, "type"], message: `card type "${c.type}" not allowed here (allowed: ${[...ok].join(", ")})` });
+    });
+  });
 }
 
 // ── anthropic client ──────────────────────────────────────────────────────────
@@ -237,24 +337,30 @@ function getClient(apiKey: string): Anthropic {
   return client;
 }
 
-type CallOutcome =
+export type CallOutcome =
   | { kind: "text"; text: string; inTokens: number; outTokens: number; latencyMs: number; truncated: boolean }
   | { kind: "refusal"; inTokens: number; outTokens: number; latencyMs: number }
   | { kind: "error"; error: string; latencyMs: number };
+export type CallOpts = { apiKey: string; model: string; system: string; user: string; maxTokens: number; deadlineMs: number };
+export type CallFn = (opts: CallOpts) => Promise<CallOutcome>;
 
-async function callAnthropic(opts: { apiKey: string; model: string; system: string; user: string; maxTokens: number; plan: boolean }): Promise<CallOutcome> {
+async function callAnthropic(opts: CallOpts): Promise<CallOutcome> {
   const started = Date.now();
+  const deadlineMs = Math.max(1, Math.round(opts.deadlineMs));
   try {
     // Streamed so a long JSON body never trips the non-streaming idle timeout; finalMessage() assembles it.
+    // The abort signal is the overall bound: TTFB, SDK retries AND a stalled stream all end at the deadline.
     const res = await getClient(opts.apiKey)
-      .messages.stream({
-        model: opts.model,
-        max_tokens: opts.maxTokens,
-        system: [{ type: "text", text: opts.system, cache_control: { type: "ephemeral" } }],
-        messages: [{ role: "user", content: opts.user }],
-      })
+      .messages.stream(
+        {
+          model: opts.model,
+          max_tokens: opts.maxTokens,
+          system: [{ type: "text", text: opts.system, cache_control: { type: "ephemeral" } }],
+          messages: [{ role: "user", content: opts.user }],
+        },
+        { signal: AbortSignal.timeout(deadlineMs) },
+      )
       .finalMessage();
-    void opts.plan;
     const latencyMs = Date.now() - started;
     const inTokens = res.usage.input_tokens + (res.usage.cache_read_input_tokens ?? 0) + (res.usage.cache_creation_input_tokens ?? 0);
     const outTokens = res.usage.output_tokens;
@@ -263,6 +369,9 @@ async function callAnthropic(opts: { apiKey: string; model: string; system: stri
     return { kind: "text", text, inTokens, outTokens, latencyMs, truncated: res.stop_reason === "max_tokens" };
   } catch (e) {
     const latencyMs = Date.now() - started;
+    if (e instanceof Anthropic.APIUserAbortError || (e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError"))) {
+      return { kind: "error", error: `deadline: no complete response within ${Math.round(deadlineMs / 1000)}s`, latencyMs };
+    }
     if (e instanceof Anthropic.APIConnectionError) return { kind: "error", error: `connection: ${e.message}`, latencyMs };
     if (e instanceof Anthropic.RateLimitError) return { kind: "error", error: `rate limited (429): ${e.message}`, latencyMs };
     if (e instanceof Anthropic.AuthenticationError) return { kind: "error", error: `auth (401): ${e.message}`, latencyMs };
@@ -277,26 +386,31 @@ type GenerateOpts<T> = {
   purpose: LlmPurpose;
   sessionId: string | null;
   model: string;
+  /** Logged with every call: file version + borrowed versions + shared fingerprint (see prompts/shared.ts). */
   promptVersion: string;
   prompt: Prompt;
   schema: z.ZodType<T>;
   maxTokens: number;
-  plan?: boolean;
-  /** Applied to the parsed JSON before validation (only id/detourId fix-ups). */
+  /** Overall bound for this call (both attempts). Always under the engine's takeover windows. */
+  deadlineMs: number;
+  /** Applied to the parsed JSON before validation (only id/detourId fix-ups + soft clamps). */
   normalize?: (parsed: unknown) => unknown;
-  /** Reject on-screen school vocabulary (retries once, then accepts — a slightly-off word beats a dead feed). */
+  /** Reject on-screen school vocabulary (retries once, then scrubs — a slightly-off word beats a dead feed). */
   checkBanned?: boolean;
+  /** Top-level keys of the value that reach the screen; undefined = everything (cards). */
+  onScreenKeys?: readonly string[];
   mock: () => Promise<LlmResult<T>>;
 };
 
 async function generate<T>(o: GenerateOpts<T>): Promise<LlmResult<T>> {
   const baseMeta = { model: o.model, promptVersion: o.promptVersion };
+  const deadlineAt = Date.now() + o.deadlineMs;
 
-  // 1. spend cap — fails closed.
+  // 1. spend cap — fails closed (budget when reached, api when the counter can't be read).
   const cap = await checkCap();
   if (!cap.ok) {
-    await log({ sessionId: o.sessionId, purpose: o.purpose, model: o.model, promptVersion: o.promptVersion, inTokens: 0, outTokens: 0, latencyMs: 0, ok: false, error: `budget: ${cap.error}` });
-    return { ok: false, code: "budget", error: cap.error, meta: baseMeta };
+    await log({ sessionId: o.sessionId, purpose: o.purpose, model: o.model, promptVersion: o.promptVersion, inTokens: 0, outTokens: 0, latencyMs: 0, ok: false, error: `${cap.code}: ${cap.error}` });
+    return { ok: false, code: cap.code, error: cap.error, meta: baseMeta };
   }
 
   // 2. mock mode — same pipeline, canned model.
@@ -306,7 +420,7 @@ async function generate<T>(o: GenerateOpts<T>): Promise<LlmResult<T>> {
     const latencyMs = Date.now() - started;
     if (r.ok) {
       const normalized = o.normalize ? o.normalize(r.value) : r.value;
-      const v = validate(o.schema, normalized, false);
+      const v = validate(o.schema, normalized);
       const finalOk = v.ok;
       await log({ sessionId: o.sessionId, purpose: o.purpose, model: mock.MOCK_MODEL, promptVersion: o.promptVersion, inTokens: r.meta.inTokens, outTokens: r.meta.outTokens, latencyMs, ok: finalOk, error: v.ok ? null : v.error });
       if (!v.ok) return { ok: false, code: "validation", error: v.error, raw: JSON.stringify(r.value), meta: { ...baseMeta, model: mock.MOCK_MODEL, latencyMs, attempts: 1 } };
@@ -331,17 +445,24 @@ async function generate<T>(o: GenerateOpts<T>): Promise<LlmResult<T>> {
   let lastRaw: string | undefined;
   let lastError = "unknown";
   let lastCode: LlmFailureCode = "validation";
+  let attemptsMade = 0;
 
   for (let attempt = 1; attempt <= 2; attempt++) {
     if (attempt === 2) {
+      // a retry that can't finish inside the deadline is a wasted paid call — bail as a validation failure.
+      if (deadlineAt - Date.now() < MIN_RETRY_MS) {
+        lastError = `${lastError} (no time left to retry within ${Math.round(o.deadlineMs / 1000)}s)`;
+        break;
+      }
       // re-check the cap for the paid retry (still fails closed).
       const again = await checkCap();
       if (!again.ok) {
-        await log({ sessionId: o.sessionId, purpose: o.purpose, model: o.model, promptVersion: o.promptVersion, inTokens: 0, outTokens: 0, latencyMs: 0, ok: false, error: `budget: ${again.error}` });
-        return { ok: false, code: "budget", error: again.error, raw: lastRaw, meta: { ...baseMeta, inTokens: totalIn, outTokens: totalOut, latencyMs: totalLatency, attempts: 1 } };
+        await log({ sessionId: o.sessionId, purpose: o.purpose, model: o.model, promptVersion: o.promptVersion, inTokens: 0, outTokens: 0, latencyMs: 0, ok: false, error: `${again.code}: ${again.error}` });
+        return { ok: false, code: again.code, error: again.error, raw: lastRaw, meta: { ...baseMeta, inTokens: totalIn, outTokens: totalOut, latencyMs: totalLatency, attempts: 1 } };
       }
     }
-    const out = await callAnthropic({ apiKey, model: o.model, system: o.prompt.system, user, maxTokens: o.maxTokens, plan: !!o.plan });
+    attemptsMade = attempt;
+    const out = await (deps.call ?? callAnthropic)({ apiKey, model: o.model, system: o.prompt.system, user, maxTokens: o.maxTokens, deadlineMs: deadlineAt - Date.now() });
     totalLatency += out.latencyMs;
 
     if (out.kind === "error") {
@@ -373,16 +494,16 @@ async function generate<T>(o: GenerateOpts<T>): Promise<LlmResult<T>> {
       }
       if (!problem) {
         const normalized = o.normalize ? o.normalize(parsed) : parsed;
-        const v = validate(o.schema, normalized, false);
+        const v = validate(o.schema, normalized);
         if (v.ok) {
-          const banned = o.checkBanned ? findBannedInValue(v.value) : null;
+          const banned = o.checkBanned ? findBannedInValue(onScreen(v.value, o.onScreenKeys)) : null;
           if (banned && attempt === 1) {
-            problem = `banned school vocabulary on screen: "${banned.word}" at ${banned.path}. rewrite that string without it.`;
+            problem = bannedProblem(banned);
           } else {
             if (banned) {
-              // never on screen: scrub with feed-native synonyms rather than throwing the batch away
+              // never on screen: scrub with feed-native synonyms (never longer than the word — stays inside the caps)
               console.warn(`[llm] ${o.purpose}: banned word "${banned.word}" survived the retry at ${banned.path}; scrubbing.`);
-              value = stripMarkupValue(scrubBannedValue(v.value));
+              value = stripMarkupValue(scrubOnScreen(v.value, o.onScreenKeys));
             } else {
               value = stripMarkupValue(v.value);
             }
@@ -393,7 +514,11 @@ async function generate<T>(o: GenerateOpts<T>): Promise<LlmResult<T>> {
       }
     }
 
-    await log({ sessionId: o.sessionId, purpose: o.purpose, model: o.model, promptVersion: o.promptVersion, inTokens: out.inTokens, outTokens: out.outTokens, latencyMs: out.latencyMs, ok: value !== undefined, error: value !== undefined ? null : `validation: ${problem}` });
+    // spec §12.2: the double failure persists the raw output with the call so a bad generation is reproducible.
+    const logError = value !== undefined ? null : attempt === 2
+      ? `validation: ${problem}\n--- raw output (first ${LOG_RAW_CHARS} chars) ---\n${out.text.slice(0, LOG_RAW_CHARS)}`
+      : `validation: ${problem}`;
+    await log({ sessionId: o.sessionId, purpose: o.purpose, model: o.model, promptVersion: o.promptVersion, inTokens: out.inTokens, outTokens: out.outTokens, latencyMs: out.latencyMs, ok: value !== undefined, error: logError });
 
     if (value !== undefined) {
       const metaOut: LlmMeta = { model: o.model, promptVersion: o.promptVersion, latencyMs: totalLatency, inTokens: totalIn, outTokens: totalOut, attempts: attempt };
@@ -411,26 +536,34 @@ async function generate<T>(o: GenerateOpts<T>): Promise<LlmResult<T>> {
     }
   }
 
-  // spec §12.2: log raw output on double failure so bad generations are traceable
   console.warn(`[llm] ${o.purpose} (${o.promptVersion}) failed twice: ${lastError}\nraw: ${(lastRaw ?? "").slice(0, 1500)}`);
-  return { ok: false, code: lastCode, error: lastError, raw: lastRaw, meta: { ...baseMeta, inTokens: totalIn, outTokens: totalOut, latencyMs: totalLatency, attempts: 2 } };
+  return { ok: false, code: lastCode, error: lastError, raw: lastRaw, meta: { ...baseMeta, inTokens: totalIn, outTokens: totalOut, latencyMs: totalLatency, attempts: attemptsMade } };
 }
 
 // ── public api ────────────────────────────────────────────────────────────────
 
-const CardsOut = z.object({ cards: CardBatchSchema.shape.cards });
+/** Types the planner's fast-path cards may use: writer types, minus bets/sliders in chill mode. */
+function planAllowedTypes(input: PlanInput): readonly CardType[] {
+  return input.settings.chillMode
+    ? WRITER_CARD_TYPES.filter((t) => t !== "binary" && t !== "predict" && t !== "sequence" && t !== "slider")
+    : WRITER_CARD_TYPES;
+}
+
+/** What the planner puts ON SCREEN: the title, clarifier cards, the first three cards. Everything else briefs the writer. */
+const PLAN_ON_SCREEN = ["title", "clarifiers", "firstCards"] as const;
 
 async function plan(input: PlanInput): Promise<LlmResult<PlanOutput>> {
   const r = await generate<PlanOutput>({
     purpose: input.previousPlan ? "replan" : "plan",
     sessionId: input.sessionId,
     model: PLAN_MODEL(),
-    promptVersion: PLAN_PROMPT_VERSION,
+    promptVersion: loggedPromptVersion(PLAN_PROMPT_VERSION),
     prompt: buildPlanPrompt(input),
-    schema: PlanOutputSchema,
+    schema: planSchemaFor(planAllowedTypes(input)),
     maxTokens: MAX_TOKENS.plan,
-    plan: true,
+    deadlineMs: DEADLINE_MS.plan,
     checkBanned: true,
+    onScreenKeys: PLAN_ON_SCREEN,
     normalize: (parsed) => {
       if (!parsed || typeof parsed !== "object") return parsed;
       const o = clampPlanInternalFields(parsed) as Record<string, unknown>;
@@ -446,10 +579,11 @@ async function writeBatch(ctx: WriteContext): Promise<LlmResult<Card[]>> {
     purpose: "write",
     sessionId: ctx.sessionId,
     model: WRITE_MODEL(),
-    promptVersion: WRITE_PROMPT_VERSION,
+    promptVersion: loggedPromptVersion(WRITE_PROMPT_VERSION),
     prompt: buildWritePrompt(ctx),
-    schema: CardsOut,
-    maxTokens: MAX_TOKENS.batch,
+    schema: cardsSchemaFor(ctx.allowedTypes),
+    maxTokens: batchMaxTokens(ctx.mode === "teaser" || ctx.mode === "adjacent" ? 2 : ctx.mode === "recap" || ctx.mode === "scaffold" ? 1 : ctx.batchSize),
+    deadlineMs: DEADLINE_MS.batch,
     checkBanned: true,
     normalize: (parsed) => {
       if (!parsed || typeof parsed !== "object") return parsed;
@@ -469,11 +603,13 @@ async function triage(input: TriageInput): Promise<LlmResult<TriageOutput>> {
     purpose: "triage",
     sessionId: input.sessionId,
     model: WRITE_MODEL(),
-    promptVersion: TRIAGE_PROMPT_VERSION,
+    promptVersion: loggedPromptVersion(TRIAGE_PROMPT_VERSION),
     prompt: buildTriagePrompt(input),
     schema: TriageOutputSchema,
     maxTokens: MAX_TOKENS.triage,
+    deadlineMs: DEADLINE_MS.triage,
     checkBanned: true,
+    onScreenKeys: ["answer"], // "focus" is a writer brief, never on screen
     // "focus" is a brief for the writer (never on screen) and cardCount is a small int — clamp both instead of retrying.
     normalize: (parsed) => {
       if (!parsed || typeof parsed !== "object") return parsed;
@@ -493,15 +629,17 @@ async function writeDetour(ctx: DetourContext): Promise<LlmResult<Card[]>> {
     purpose: "detour",
     sessionId: ctx.sessionId,
     model: WRITE_MODEL(),
-    promptVersion: DETOUR_PROMPT_VERSION,
+    // the detour borrows the writer's system prompt, so its logged version carries write's too
+    promptVersion: loggedPromptVersion(DETOUR_PROMPT_VERSION, WRITE_PROMPT_VERSION),
     prompt: buildDetourPrompt(ctx),
-    schema: CardsOut,
-    maxTokens: MAX_TOKENS.batch,
+    schema: cardsSchemaFor(ctx.allowedTypes),
+    maxTokens: batchMaxTokens(ctx.cardCount),
+    deadlineMs: DEADLINE_MS.batch,
     checkBanned: true,
     normalize: (parsed) => {
       if (!parsed || typeof parsed !== "object") return parsed;
       const o = parsed as Record<string, unknown>;
-      return { ...o, cards: normalizeCards(o.cards, ctx.detourId) };
+      return { ...o, cards: clampEyebrows(normalizeCards(o.cards, ctx.detourId)) };
     },
     mock: async () => {
       const m = await mock.mockWriteDetour(ctx);
@@ -519,10 +657,11 @@ async function dialToast(input: { sessionId: string; persona: Persona; direction
       purpose: "chat",
       sessionId: input.sessionId,
       model: WRITE_MODEL(),
-      promptVersion: DIAL_PROMPT_VERSION,
+      promptVersion: loggedPromptVersion(DIAL_PROMPT_VERSION),
       prompt: buildDialPrompt(input),
       schema: DialToastSchema,
       maxTokens: MAX_TOKENS.toast,
+      deadlineMs: DEADLINE_MS.toast,
       checkBanned: true,
       mock: async () => {
         const m = await mock.mockDialToast(input);

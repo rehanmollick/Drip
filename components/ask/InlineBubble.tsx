@@ -26,12 +26,12 @@ export function InlineBubble({ text, onDismiss }: { text: string | null; onDismi
               backdropFilter: "blur(16px)",
               WebkitBackdropFilter: "blur(16px)",
               border: "1px solid color-mix(in oklab, var(--accent) 35%, transparent)",
-              maxHeight: "40dvh",
               overflow: "hidden",
             }}
             aria-label="answer, tap to dismiss"
           >
-            <span className="block text-pretty" style={{ display: "-webkit-box", WebkitLineClamp: 9, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+            {/* 12 lines × 15px/1.375 ≈ 248px holds a schema-max (400-char) inline answer whole; the clamp is the only ceiling */}
+            <span className="block text-pretty" style={{ display: "-webkit-box", WebkitLineClamp: 12, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
               {text}
             </span>
           </motion.button>

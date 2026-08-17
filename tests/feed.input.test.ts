@@ -1,13 +1,25 @@
 import { describe, expect, it } from "vitest";
-import { ingestPath, isRepoUrl, isYoutubeUrl, loneUrl, looksLikeTranscript, routeInput } from "@/lib/feed/input";
+import { clampTitle, ingestPath, isRepoUrl, isYoutubeUrl, loneUrl, looksLikeTranscript, routeInput } from "@/lib/feed/input";
 
 describe("loneUrl", () => {
-  it("accepts a single URL with or without scheme, rejects prose", () => {
+  it("accepts a single URL with a scheme, rejects prose", () => {
     expect(loneUrl("https://example.com/a?b=1")).toBe("https://example.com/a?b=1");
-    expect(loneUrl("  example.com/path ")).toBe("https://example.com/path");
+    expect(loneUrl("http://localhost:3000/x")).toBe("http://localhost:3000/x");
     expect(loneUrl("check out https://example.com please")).toBeNull();
     expect(loneUrl("how does a cache work?")).toBeNull();
     expect(loneUrl("")).toBeNull();
+  });
+
+  it("scheme-less input is a URL only for www. or a known host with a path (D11)", () => {
+    expect(loneUrl("www.example.com/path")).toBe("https://www.example.com/path");
+    expect(loneUrl("www.example.com")).toBe("https://www.example.com");
+    expect(loneUrl("github.com/vercel/next.js")).toBe("https://github.com/vercel/next.js");
+    expect(loneUrl("youtu.be/dQw4w9WgXcQ")).toBe("https://youtu.be/dQw4w9WgXcQ");
+    expect(loneUrl("m.youtube.com/watch?v=abc")).toBe("https://m.youtube.com/watch?v=abc");
+    // dotted subjects are sentences, not links
+    for (const t of ["next.js", "node.js", "d3.js", "torch.nn", "os.path", "numpy.linalg", "asyncio.gather", "example.com/path", "en.wikipedia.org/wiki/Cache", "github.com"]) {
+      expect(loneUrl(t), t).toBeNull();
+    }
   });
 });
 
@@ -38,8 +50,10 @@ describe("routeInput", () => {
     expect(ingestPath("url")).toBe("/api/ingest/url");
   });
 
-  it("short single-line text is a sentence", () => {
+  it("short single-line text is a sentence — including dotted subjects like next.js", () => {
     expect(routeInput("how do caches keep a site alive?")).toEqual({ kind: "text", sourceKind: "sentence" });
+    expect(routeInput("next.js")).toEqual({ kind: "text", sourceKind: "sentence" });
+    expect(routeInput("torch.nn")).toEqual({ kind: "text", sourceKind: "sentence" });
   });
 
   it("long or multi-line text is a paste", () => {
@@ -53,5 +67,19 @@ describe("routeInput", () => {
     expect(routeInput(t)).toEqual({ kind: "text", sourceKind: "transcript" });
     expect(routeInput("plain notes\nmore notes\neven more", { attachedFile: true })).toEqual({ kind: "text", sourceKind: "transcript" });
     expect(looksLikeTranscript("no stamps here\njust prose\nthird line\nfourth")).toBe(false);
+  });
+});
+
+describe("clampTitle", () => {
+  it("keeps short titles, trims long ones at a word boundary under 60 chars", () => {
+    expect(clampTitle("how a cache keeps a site alive")).toBe("how a cache keeps a site alive");
+    const long = "How we built Pingora, the proxy that connects Cloudflare to the Internet";
+    const c = clampTitle(long)!;
+    expect(c.length).toBeLessThanOrEqual(60);
+    expect(c).toBe("How we built Pingora, the proxy that connects Cloudflare to");
+    expect(clampTitle("   ")).toBeUndefined();
+    expect(clampTitle(undefined)).toBeUndefined();
+    // no spaces at all → hard cut
+    expect(clampTitle("x".repeat(80))!.length).toBe(60);
   });
 });

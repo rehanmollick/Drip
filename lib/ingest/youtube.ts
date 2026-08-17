@@ -9,6 +9,7 @@ import {
 import { HttpError } from "@/lib/api/envelope";
 import type { IngestData } from "@/lib/api/contract";
 import { capText, normalizeText } from "./text";
+import { devDetails, isAbortError, remainingMs } from "./http";
 
 /**
  * YouTube ingestion (spec §6.1 path 5): caption pull only, no audio
@@ -20,6 +21,9 @@ export const YT_PARAGRAPH_SECONDS = 60;
 export const YT_PARAGRAPH_CHARS = 600;
 export const YT_MAX_TEXT_CHARS = 200_000;
 export const YT_MAX_META_SEGMENTS = 1_500;
+/** Per-request cap and whole-ingest budget: the library makes 2-3 calls with bare fetch and no signal of its own. */
+export const YT_FETCH_TIMEOUT_MS = 10_000;
+export const YT_TOTAL_BUDGET_MS = 25_000;
 
 export type TranscriptSegment = { text: string; offset: number; duration: number; lang?: string };
 /** Normalized: seconds, not ms. */
@@ -121,15 +125,49 @@ export function formatTranscript(
   return { text: normalizeText(blocks.join("\n\n")), durationSec, paragraphs: blocks.length };
 }
 
+/** What YouTube said about the video while we were looking for captions (filled by the fetch wrapper). */
+export type YoutubeProbe = { playability: string | null };
+
+/**
+ * A fetch the library uses instead of the bare global: every call gets a
+ * deadline-aware AbortSignal (no more hanging until the platform kills us),
+ * and we peek at the player response / watch page for `playabilityStatus`
+ * so a removed or private video isn't reported as "no captions".
+ */
+export function makeYoutubeFetch(probe: YoutubeProbe, opts: { deadline?: number; fetchImpl?: typeof fetch } = {}): typeof fetch {
+  const deadline = opts.deadline ?? Date.now() + YT_TOTAL_BUDGET_MS;
+  const impl = opts.fetchImpl ?? fetch;
+  return async (input, init) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const res = await impl(input, { ...init, signal: AbortSignal.timeout(remainingMs(deadline, YT_FETCH_TIMEOUT_MS)) });
+    try {
+      if (/youtubei\/v1\/player/.test(url) && res.ok) {
+        const data = (await res.clone().json()) as { playabilityStatus?: { status?: unknown } } | null;
+        const st = data?.playabilityStatus?.status;
+        if (typeof st === "string") probe.playability = st;
+      } else if (/youtube\.com\/watch/.test(url)) {
+        const html = await res.clone().text();
+        const m = /"playabilityStatus"\s*:\s*\{\s*"status"\s*:\s*"([A-Z_]+)"/.exec(html);
+        if (m) probe.playability = m[1];
+      }
+    } catch {
+      // observing only; never break the library's own read
+    }
+    return res;
+  };
+}
+
 /** POST /api/ingest/youtube — url → timestamped caption transcript. */
-export async function ingestYoutube(input: string): Promise<IngestData> {
+export async function ingestYoutube(input: string, opts: { fetchImpl?: typeof fetch } = {}): Promise<IngestData> {
   const videoId = extractVideoId(input);
   if (!videoId) throw new HttpError(400, "bad_youtube_url", "that doesn't look like a youtube link");
+  const probe: YoutubeProbe = { playability: null };
+  const fetchFn = makeYoutubeFetch(probe, { fetchImpl: opts.fetchImpl });
   let raw: TranscriptSegment[];
   try {
-    raw = await fetchPreferringEnglish(videoId);
+    raw = await fetchPreferringEnglish(videoId, fetchFn);
   } catch (e) {
-    throw mapYoutubeError(e, videoId);
+    throw mapYoutubeError(e, videoId, probe);
   }
   const segments = normalizeSegments(raw);
   if (segments.length === 0) throw new HttpError(422, "no_captions", "this video has no captions; paste a transcript instead.");
@@ -152,29 +190,34 @@ export async function ingestYoutube(input: string): Promise<IngestData> {
 }
 
 /** The library returns the first track it finds (often auto-translated); ask for english first, then take whatever exists. */
-async function fetchPreferringEnglish(videoId: string): Promise<TranscriptSegment[]> {
+async function fetchPreferringEnglish(videoId: string, fetchFn: typeof fetch): Promise<TranscriptSegment[]> {
   try {
-    return await YoutubeTranscript.fetchTranscript(videoId, { lang: "en" });
+    return await YoutubeTranscript.fetchTranscript(videoId, { lang: "en", fetch: fetchFn });
   } catch (e) {
-    if (e instanceof YoutubeTranscriptNotAvailableLanguageError) return await YoutubeTranscript.fetchTranscript(videoId);
+    if (e instanceof YoutubeTranscriptNotAvailableLanguageError) return await YoutubeTranscript.fetchTranscript(videoId, { fetch: fetchFn });
     throw e;
   }
 }
 
-export function mapYoutubeError(e: unknown, videoId: string): HttpError {
+const UNAVAILABLE_STATUSES = new Set(["ERROR", "UNPLAYABLE", "LOGIN_REQUIRED", "CONTENT_CHECK_REQUIRED", "AGE_CHECK_REQUIRED"]);
+
+export function mapYoutubeError(e: unknown, videoId: string, probe: YoutubeProbe = { playability: null }): HttpError {
   if (e instanceof HttpError) return e;
+  if (isAbortError(e)) return new HttpError(504, "youtube_timeout", "youtube took too long; try again");
+  const unavailable = () => new HttpError(404, "video_unavailable", "that video isn't available (removed, private, or sign-in only)");
+  if (e instanceof YoutubeTranscriptVideoUnavailableError) return unavailable();
   if (e instanceof YoutubeTranscriptDisabledError || e instanceof YoutubeTranscriptNotAvailableError || e instanceof YoutubeTranscriptNotAvailableLanguageError) {
+    // the library says "no tracks" for a video that doesn't exist too — trust what YouTube said about playability
+    if (probe.playability && UNAVAILABLE_STATUSES.has(probe.playability)) return unavailable();
     return new HttpError(422, "no_captions", "this video has no captions; paste a transcript instead.");
-  }
-  if (e instanceof YoutubeTranscriptVideoUnavailableError) {
-    return new HttpError(404, "video_unavailable", "that video isn't available");
   }
   if (e instanceof YoutubeTranscriptTooManyRequestError) {
     return new HttpError(429, "youtube_rate_limited", "youtube is rate-limiting us right now; try again in a bit");
   }
   const msg = e instanceof Error ? e.message : String(e);
   if (/disabled|no transcripts|not available/i.test(msg)) {
+    if (probe.playability && UNAVAILABLE_STATUSES.has(probe.playability)) return unavailable();
     return new HttpError(422, "no_captions", "this video has no captions; paste a transcript instead.");
   }
-  return new HttpError(502, "youtube_error", "couldn't pull captions for that video", { videoId, cause: msg });
+  return new HttpError(502, "youtube_error", "couldn't pull captions for that video", devDetails({ videoId, cause: msg }));
 }

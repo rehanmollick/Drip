@@ -5,7 +5,12 @@
  * so tests exercise every path except the network.
  *
  * Failure hooks for e2e: put "[[FAIL]]" in the input (plan text / node title /
- * question) → validation failure; "[[BUDGET]]" → budget failure.
+ * question) → validation failure; "[[BUDGET]]" → budget failure. Bare markers
+ * fire in every mock (so a session with one in its source never gets past
+ * planning). Scoped markers fire in ONE mock only and are ignored by the rest:
+ * "[[BUDGET:write]]" / "[[FAIL:write]]" (batch writer — planning succeeds, the
+ * budget notice / fallback shows up mid-feed), "[[FAIL:triage]]",
+ * "[[FAIL:detour]]", "[[BUDGET:plan]]".
  */
 import { BANNED_WORDS } from "@/lib/copy/banned";
 import type {
@@ -21,22 +26,14 @@ import { CANNED_TOASTS, PROMPT_VERSION as DIAL_PROMPT_VERSION } from "@/lib/prom
 import { PROMPT_VERSION as PLAN_PROMPT_VERSION } from "@/lib/prompts/plan";
 import { PROMPT_VERSION as TRIAGE_PROMPT_VERSION } from "@/lib/prompts/triage";
 import { PROMPT_VERSION as WRITE_PROMPT_VERSION } from "@/lib/prompts/write";
-import { difficultyFor } from "@/lib/prompts/shared";
+import { difficultyFor, hashStr } from "@/lib/prompts/shared";
 
 export const MOCK_MODEL = "mock";
 export const MOCK_LATENCY_MS = Math.max(0, Number(process.env.LLM_MOCK_LATENCY_MS ?? 150) || 0);
 
 // ── deterministic helpers ─────────────────────────────────────────────────────
 
-/** FNV-1a 32-bit. */
-export function hashStr(s: string): number {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, 0x01000193) >>> 0;
-  }
-  return h >>> 0;
-}
+export { hashStr };
 
 /** A valid uuid v4 shape derived from a seed (stable across runs). */
 export function deterministicUuid(seed: string): string {
@@ -60,7 +57,7 @@ const STOP = new Set([
 /** First meaningful noun-ish token of an input, clamped for use inside caps. */
 export function subjectOf(text: string): string {
   const words = (text ?? "")
-    .replace(/\[\[[A-Z]+\]\]/g, " ")
+    .replace(MARKER_RE, " ")
     .toLowerCase()
     .replace(/[^a-z0-9\s'-]/g, " ")
     .split(/\s+/)
@@ -70,13 +67,24 @@ export function subjectOf(text: string): string {
 }
 
 export type MockFailure = Extract<LlmFailureCode, "validation" | "budget"> | null;
+export type MockScope = "plan" | "write" | "triage" | "detour";
 
-/** e2e hook: "[[FAIL]]" → validation failure, "[[BUDGET]]" → budget failure. */
-export function mockFailureFor(...texts: Array<string | null | undefined>): MockFailure {
+const MARKER_RE = /\[\[(FAIL|BUDGET)(?::([a-z]+))?\]\]/g;
+
+/**
+ * e2e hook: "[[FAIL]]" → validation failure, "[[BUDGET]]" → budget failure.
+ * A marker with a scope ("[[BUDGET:write]]") only fires when `scope` matches;
+ * bare markers fire everywhere. Budget wins over fail when both are present.
+ */
+export function mockFailureFor(scope: MockScope, ...texts: Array<string | null | undefined>): MockFailure {
   const joined = texts.filter(Boolean).join("\n");
-  if (joined.includes("[[BUDGET]]")) return "budget";
-  if (joined.includes("[[FAIL]]")) return "validation";
-  return null;
+  let out: MockFailure = null;
+  for (const m of joined.matchAll(MARKER_RE)) {
+    if (m[2] && m[2] !== scope) continue;
+    if (m[1] === "BUDGET") return "budget";
+    out = "validation";
+  }
+  return out;
 }
 
 const sleep = (ms: number) => (ms > 0 ? new Promise<void>((r) => setTimeout(r, ms)) : Promise.resolve());
@@ -351,7 +359,7 @@ function typesFor(allowed: readonly CardType[], n: number, offset: number): Card
 
 export async function mockPlan(input: PlanInput): Promise<LlmResult<PlanOutput>> {
   await sleep(MOCK_LATENCY_MS);
-  const fail = mockFailureFor(input.sourceText);
+  const fail = mockFailureFor("plan", input.sourceText);
   if (fail) return failure(fail, PLAN_PROMPT_VERSION, `{"title":"[[FAIL]]"}`);
 
   const subject = subjectOf(input.sourceText);
@@ -394,7 +402,7 @@ export async function mockPlan(input: PlanInput): Promise<LlmResult<PlanOutput>>
 
 export async function mockWriteBatch(ctx: WriteContext): Promise<LlmResult<Card[]>> {
   await sleep(MOCK_LATENCY_MS);
-  const fail = mockFailureFor(ctx.node?.title, ctx.corpusSlice);
+  const fail = mockFailureFor("write", ctx.node?.title, ctx.corpusSlice);
   if (fail) return failure(fail, WRITE_PROMPT_VERSION);
 
   const subject = subjectOf(ctx.node?.title ?? ctx.corpusSlice ?? "this");
@@ -457,7 +465,7 @@ export async function mockWriteBatch(ctx: WriteContext): Promise<LlmResult<Card[
 
 export async function mockTriage(input: TriageInput): Promise<LlmResult<TriageOutput>> {
   await sleep(MOCK_LATENCY_MS);
-  const fail = mockFailureFor(input.question);
+  const fail = mockFailureFor("triage", input.question, input.corpusSlice);
   if (fail) return failure(fail, TRIAGE_PROMPT_VERSION, `{"kind":"maybe"}`);
   const q = input.question.trim();
   const wantsDetour = /\b(why|how|explain)\b/i.test(q) || q.length > 60;
@@ -469,7 +477,7 @@ export async function mockTriage(input: TriageInput): Promise<LlmResult<TriageOu
 
 export async function mockWriteDetour(ctx: DetourContext): Promise<LlmResult<Card[]>> {
   await sleep(MOCK_LATENCY_MS);
-  const fail = mockFailureFor(ctx.question, ctx.focus);
+  const fail = mockFailureFor("detour", ctx.question, ctx.focus, ctx.corpusSlice);
   if (fail) return failure(fail, DETOUR_PROMPT_VERSION);
 
   const subject = subjectOf(ctx.question) === "this" ? subjectOf(ctx.focus) : subjectOf(ctx.question);

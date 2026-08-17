@@ -1,5 +1,5 @@
 import type { DetourContext } from "@/lib/llm-types";
-import { bullets, difficultyDirective, jsonForPrompt, learnerSummary, sliceCorpus, type Prompt } from "./shared";
+import { bullets, cardForPrompt, difficultyDirective, learnerSummary, sliceCorpus, type Prompt } from "./shared";
 import { WRITE_CORPUS_CHARS, buildWriteSystem } from "./write";
 
 export const PROMPT_VERSION = "detour.v1";
@@ -19,7 +19,7 @@ export function buildDetourPrompt(ctx: DetourContext): Prompt {
     `mode: detour. someone paused on a card and asked a question. write EXACTLY ${ctx.cardCount} cards that answer it as a mini-thread spliced right after the card they're on.`,
     `their question: ${ctx.question}`,
     `what the detour must land (focus): ${ctx.focus}`,
-    `the card they were on when they asked: ${jsonForPrompt(ctx.currentCard, 2_000)}`,
+    `the card they were on when they asked: ${cardForPrompt(ctx.currentCard, 2_000)}`,
     [
       `shape:`,
       `- the FIRST card answers the question directly — a "concept" (or a "hook" whose headline IS the answer, when the answer is one bold line). no throat-clearing.`,

@@ -12,14 +12,39 @@ import { mergeCards, sortCards } from "@/lib/feed/slides";
  *   - `pump()` fills runway: first drains cards the server already has
  *     (GET /cards?after=), then POST /generate. Never more than one in flight.
  *   - empty/failed responses back off 2s → 4s → 8s → 15s (cap) and retry
+ *   - a `done` batch with no cards carries a `reason` (lib/api/contract.ts):
+ *       runway_full → the server counts ≥16 unviewed rows: land viewed marks (onRunwayFull),
+ *                     then retry ONCE immediately — no backoff, no catching-up card unless
+ *                     the runway is truly empty
+ *       budget      → today's cap is hit: stop asking until the UTC day rolls over
+ *       superseded  → the batch was invalidated by a dial/re-plan mid-flight: ask again soon
+ *       pending_plan→ a re-plan is running: normal backoff, the feed's replan watch resyncs
  *   - offline: no calls; retries on the `online` event
  *
  * The caller decides WHEN to pump (runway ≤ 4) via `wantMore`; this hook owns
  * HOW. staticMode disables all network.
  */
 const BACKOFF_MS = [2_000, 4_000, 8_000, 15_000];
+const SUPERSEDED_RETRY_MS = 300;
+const BUDGET_RETRY_CAP_MS = 60 * 60_000;
 
 export type FillState = "idle" | "pending" | "failed";
+
+const PSEUDO_REASONS = new Set(["runway_full", "budget", "superseded", "pending_plan"]);
+
+/** Why a batch carried nothing new — batch.reason, or inferred from the pseudo batch id (older servers). */
+export function batchReason(res: GenerateData): string | null {
+  if (res.batch.reason) return res.batch.reason;
+  if (PSEUDO_REASONS.has(res.batch.id)) return res.batch.id;
+  return null;
+}
+
+/** ms until the next UTC midnight (the daily cap resets then), capped so a sleeping tab still re-checks. */
+export function msUntilUtcMidnight(now = Date.now(), cap = BUDGET_RETRY_CAP_MS): number {
+  const d = new Date(now);
+  const next = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1);
+  return Math.max(1_000, Math.min(cap, next - now));
+}
 
 export function useFeedCards({
   sessionId,
@@ -28,6 +53,7 @@ export function useFeedCards({
   enabled,
   staticMode,
   beforeGenerate,
+  onRunwayFull,
 }: {
   sessionId: string;
   initialCards: CardRow[];
@@ -38,6 +64,8 @@ export function useFeedCards({
   staticMode: boolean;
   /** Awaited right before POST /generate — the feed flushes viewed/position so the server's runway math is current. */
   beforeGenerate?: () => Promise<void>;
+  /** The server answered runway_full: post `viewed` for everything at/before the active position, then we retry once. */
+  onRunwayFull?: () => Promise<void>;
 }) {
   const [cards, setCards] = useState<CardRow[]>(() => sortCards(initialCards));
   const [fill, setFill] = useState<FillState>("idle");
@@ -54,6 +82,8 @@ export function useFeedCards({
   enabledRef.current = enabled && !staticMode;
   const beforeGenerateRef = useRef(beforeGenerate);
   beforeGenerateRef.current = beforeGenerate;
+  const onRunwayFullRef = useRef(onRunwayFull);
+  onRunwayFullRef.current = onRunwayFull;
 
   const mergeIn = useCallback((incoming: CardRow[]): number => {
     if (incoming.length === 0) return 0;
@@ -85,6 +115,11 @@ export function useFeedCards({
     }, ms);
   }, []);
 
+  const backoff = useCallback(() => {
+    failures.current += 1;
+    schedule(BACKOFF_MS[Math.min(failures.current - 1, BACKOFF_MS.length - 1)]);
+  }, [schedule]);
+
   const pump = useCallback(async () => {
     if (!enabledRef.current || inFlight.current) return;
     if (typeof navigator !== "undefined" && navigator.onLine === false) {
@@ -95,6 +130,7 @@ export function useFeedCards({
     setFill("pending");
     try {
       let got: CardRow[] = [];
+      let reason: string | null = null;
       if (serverHasMore.current) {
         const after = lastIdx();
         const qs = new URLSearchParams({ limit: "24" });
@@ -105,7 +141,14 @@ export function useFeedCards({
       }
       if (got.length === 0) {
         await beforeGenerateRef.current?.().catch(() => {});
-        const res = await api.post<GenerateData>(`/api/sessions/${sessionId}/generate`, { after: lastIdx() });
+        let res = await api.post<GenerateData>(`/api/sessions/${sessionId}/generate`, { after: lastIdx() });
+        reason = batchReason(res);
+        if (reason === "runway_full" && res.cards.length === 0) {
+          // the server thinks ≥16 rows are unviewed: land our viewed marks and ask exactly once more
+          await onRunwayFullRef.current?.().catch(() => {});
+          res = await api.post<GenerateData>(`/api/sessions/${sessionId}/generate`, { after: lastIdx() });
+          reason = batchReason(res);
+        }
         got = res.cards;
       }
       const fresh = mergeIn(got);
@@ -113,19 +156,22 @@ export function useFeedCards({
       if (fresh > 0) {
         failures.current = 0;
         // caller's runway effect re-pumps if still short
+      } else if (reason === "budget") {
+        failures.current = 0;
+        schedule(msUntilUtcMidnight()); // nothing more today; the feed shows the budget notice, no catching-up tail
+      } else if (reason === "superseded") {
+        schedule(SUPERSEDED_RETRY_MS); // our own dial/re-plan invalidated that batch — ask again right away
       } else {
-        // pending batch elsewhere / nothing new yet → back off and ask again
-        failures.current += 1;
-        schedule(BACKOFF_MS[Math.min(failures.current - 1, BACKOFF_MS.length - 1)]);
+        // pending batch elsewhere / runway still full / nothing new yet → back off and ask again
+        backoff();
       }
     } catch {
       setFill("failed");
-      failures.current += 1;
-      schedule(BACKOFF_MS[Math.min(failures.current - 1, BACKOFF_MS.length - 1)]);
+      backoff();
     } finally {
       inFlight.current = false;
     }
-  }, [sessionId, lastIdx, mergeIn, schedule]);
+  }, [sessionId, lastIdx, mergeIn, schedule, backoff]);
   const pumpRef = useRef(pump);
   pumpRef.current = pump;
 
@@ -136,7 +182,7 @@ export function useFeedCards({
     else clearTimer();
   }, []);
 
-  /** Full re-sync from the server (status flip, refresh, re-plan). */
+  /** Full re-sync from the server (status flip, refresh, re-plan). Prunes local rows the server no longer has. */
   const refetchAll = useCallback(async () => {
     if (staticMode) return;
     const res = await api.get<ListCardsData>(`/api/sessions/${sessionId}/cards?limit=100`);

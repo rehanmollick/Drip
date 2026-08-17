@@ -98,6 +98,26 @@ describe("ingest/url ssrf guard", () => {
     "http://svc.internal/",
     "http://user:pass@example.com/",
     "not a url",
+    // ranges the first cut missed (ingest-pwa-security-1)
+    "http://100.100.100.200/latest/meta-data",
+    "http://192.0.0.8/",
+    "http://198.18.0.1/",
+    "http://198.19.255.255/",
+    "http://224.0.0.1/",
+    "http://240.0.0.1/",
+    "http://255.255.255.255/",
+    "http://[64:ff9b::7f00:1]:3100/",
+    "http://[64:ff9b::127.0.0.1]/",
+    "http://[::ffff:7f00:1]/",
+    "http://[::ffff:a9fe:a9fe]/",
+    "http://[2002:7f00:1::]/",
+    "http://[fd00::1]/",
+    "http://[ff02::1]/",
+    "http://[2001:db8::1]/",
+    "http://[::]/",
+    "http://intranet/",
+    "http://router.home.arpa/",
+    "http://1.0.0.127.in-addr.arpa/",
   ])("blocks %s", (u) => expect(isSafeUrl(u)).toBe(false));
 });
 
@@ -196,8 +216,11 @@ describe("ingest/repo parseRepoUrl", () => {
     ["https://github.com/vercel/next.js/tree/canary", { owner: "vercel", repo: "next.js", ref: "canary" }],
     ["https://github.com/vercel/next.js/tree/canary/packages/next", { owner: "vercel", repo: "next.js", ref: "canary" }],
     ["https://github.com/o/r/blob/main/README.md", { owner: "o", repo: "r", ref: "main" }],
-    ["https://github.com/o/r/tree/feat%2Fthing", { owner: "o", repo: "r", ref: "feat/thing" }],
-  ])("%s", (input, expected) => expect(parseRepoUrl(input)).toEqual(expected));
+    ["https://github.com/o/r/tree/feat%2Fthing", { owner: "o", repo: "r", ref: "feat/thing", refCandidates: ["feat/thing"] }],
+    // branch names can contain "/": every prefix is a candidate, longest wins on 404 (ingest-pwa-security-11)
+    ["https://github.com/o/r/tree/feat/x/src/index.ts", { owner: "o", repo: "r", ref: "feat", refCandidates: ["feat", "feat/x", "feat/x/src", "feat/x/src/index.ts"] }],
+    ["https://github.com/o/r", { owner: "o", repo: "r", ref: null, refCandidates: [] }],
+  ])("%s", (input, expected) => expect(parseRepoUrl(input)).toMatchObject(expected));
 
   it.each(["https://gitlab.com/o/r", "https://github.com/onlyowner", "nope", "https://github.com/o/r%20x"])(
     "rejects %s",

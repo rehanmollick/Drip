@@ -8,7 +8,7 @@ import { Eyebrow } from "@/components/ui/Eyebrow";
 import { Chip } from "@/components/ui/Chip";
 import { useTheme } from "@/components/theme/ThemeRoot";
 import { codeFontSize } from "./helpers";
-import { pressable } from "@/lib/motion";
+import { usePressable } from "@/lib/motion";
 
 /**
  * code — monospaced block (server-side shiki tokens when present, plain lines
@@ -17,6 +17,7 @@ import { pressable } from "@/lib/motion";
  */
 export function CodeView({ card, entered, onAskAbout }: CardViewProps<CodeCardT>) {
   const { spring, reduced } = useTheme();
+  const pressable = usePressable();
   const lines = useMemo(() => card.code.replace(/\n$/, "").split("\n"), [card.code]);
   const notes = useMemo(() => {
     const m = new Map<number, string>();

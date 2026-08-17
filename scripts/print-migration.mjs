@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // `pnpm db:migrate` — prints the SQL migrations so you can paste them into the
-// Supabase SQL editor (or run `supabase db push` if you use the CLI).
+// Supabase SQL editor (or `supabase init` + `supabase db push` if you use the CLI).
 import { readdirSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,9 +14,9 @@ process.stderr.write(
     "",
     "DRIP — database migration",
     "─────────────────────────",
-    "Apply the SQL below to your Supabase project:",
+    "Apply the SQL below to your Supabase project (all statements are idempotent; re-running is safe):",
     "  1. Supabase dashboard → SQL editor → new query → paste → run",
-    "  2. or: supabase link --project-ref <ref> && supabase db push",
+    "  2. or with the CLI: supabase init (keep existing migrations) && supabase link --project-ref <ref> && supabase db push",
     "Then set SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY in .env.local (see supabase/README.md).",
     "",
     "",

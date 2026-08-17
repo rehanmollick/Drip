@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { generateNKeysBetween } from "fractional-indexing";
 import type { CardRow } from "@/lib/schemas/session";
 import type { Card } from "@/lib/schemas/cards";
-import { compareIdx, dropUnviewedAfter, mergeCards, ordinalOf, sortCards, toSlides } from "@/lib/feed/slides";
+import { compareIdx, dropUnviewedAfter, isTodayUtc, mergeCards, ordinalOf, sortCards, toSlides } from "@/lib/feed/slides";
 import { streakBefore, topicProgress } from "@/lib/feed/progress";
 
 const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
@@ -82,14 +82,22 @@ describe("toSlides", () => {
   });
 });
 
-describe("dropUnviewedAfter", () => {
-  it("drops only unviewed main-thread cards after the idx; keeps viewed + detour cards", () => {
+describe("dropUnviewedAfter (mirrors Store.deleteUnviewedAfter exactly)", () => {
+  it("drops unviewed cards after the idx on EVERY thread; keeps viewed rows and rows at/before the idx", () => {
     const viewed = concept(2, "a1", { viewedAt: "2026-01-01T00:00:01.000Z" });
     const detour = concept(4, "a3", { detourId: "d1", payload: { id: uuid(4), type: "concept", topicNodeId: "n1", detourId: "d1", headline: "h", body: "b" } });
-    const cards = [concept(1, "a0"), viewed, concept(3, "a2"), detour, concept(5, "a4")];
+    const viewedDetour = concept(6, "a3V", { detourId: "d1", viewedAt: "2026-01-01T00:00:02.000Z", payload: { id: uuid(6), type: "concept", topicNodeId: "n1", detourId: "d1", headline: "h", body: "b" } });
+    const cards = [concept(1, "a0"), viewed, concept(3, "a2"), detour, viewedDetour, concept(5, "a4")];
     const kept = dropUnviewedAfter(cards, "a0");
-    expect(kept.map((c) => c.idx)).toEqual(["a0", "a1", "a3"]);
-    expect(dropUnviewedAfter(cards, null)).toHaveLength(5);
+    expect(kept.map((c) => c.idx)).toEqual(["a0", "a1", "a3V"]);
+    // never mutates the input
+    expect(cards).toHaveLength(6);
+  });
+
+  it("after === null drops the whole unviewed runway (a re-plan), viewed history stays", () => {
+    const viewed = concept(2, "a1", { viewedAt: "2026-01-01T00:00:01.000Z" });
+    const cards = [concept(1, "a0"), viewed, concept(3, "a2")];
+    expect(dropUnviewedAfter(cards, null).map((c) => c.idx)).toEqual(["a1"]);
   });
 });
 
@@ -99,6 +107,26 @@ describe("progress + streak", () => {
     expect(topicProgress(cards, uuid(1))).toBeCloseTo(0.25);
     expect(topicProgress(cards, uuid(4))).toBe(1);
     expect(topicProgress(cards, "nope")).toBe(0);
+  });
+
+  it("topicProgress uses the outline's estimate as the denominator floor so a landing batch never retracts the hairline", () => {
+    const three = [concept(1, "a0"), concept(2, "a1"), concept(3, "a2")];
+    const outline = [{ id: "n1", estCards: 6 }];
+    // last loaded card of the node reads half-way, not full
+    expect(topicProgress(three, uuid(3), outline)).toBeCloseTo(0.5);
+    // the next batch lands: same card, same fraction
+    const seven = [...three, concept(4, "a3"), concept(5, "a4"), concept(6, "a5"), concept(7, "a6")];
+    expect(topicProgress(seven, uuid(3), outline)).toBeCloseTo(3 / 7);
+    expect(topicProgress(seven, uuid(7), outline)).toBe(1);
+    // unknown node → loaded count as before
+    expect(topicProgress(three, uuid(3), [{ id: "other", estCards: 8 }])).toBe(1);
+  });
+
+  it("isTodayUtc compares UTC dates", () => {
+    const now = Date.parse("2026-08-17T23:30:00.000Z");
+    expect(isTodayUtc("2026-08-17T00:10:00.000Z", now)).toBe(true);
+    expect(isTodayUtc("2026-08-16T23:59:59.000Z", now)).toBe(false);
+    expect(isTodayUtc("garbage", now)).toBe(false);
   });
 
   it("streakBefore counts trailing consecutive correct scored interactions", () => {

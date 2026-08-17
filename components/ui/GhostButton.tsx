@@ -1,7 +1,7 @@
 "use client";
 import { motion } from "framer-motion";
 import type { CSSProperties, ReactNode } from "react";
-import { pressable } from "@/lib/motion";
+import { usePressable } from "@/lib/motion";
 
 /**
  * Low-emphasis pill button (dials, "lock it in", retry). --ink-2 text on a
@@ -27,6 +27,7 @@ export function GhostButton({
   style?: CSSProperties;
   ariaLabel?: string;
 }) {
+  const pressable = usePressable();
   const pad = size === "lg" ? "14px 26px" : size === "md" ? "11px 20px" : "8px 14px";
   const fs = size === "lg" ? 17 : size === "md" ? 15 : 13;
   const base: CSSProperties = {

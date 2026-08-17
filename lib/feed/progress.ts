@@ -8,8 +8,19 @@ import { sortCards } from "./slides";
  * never a number on screen.
  */
 
-/** 0..1 — how far into its topic node the given card is (index within node / count in node). */
-export function topicProgress(cards: readonly CardRow[], rowId: string): number {
+export type OutlineEst = ReadonlyArray<{ id: string; estCards: number }>;
+
+/** The outline's estimated card count for a node (0 when unknown). */
+export function estCardsFor(outline: OutlineEst | undefined, nodeId: string): number {
+  return outline?.find((n) => n.id === nodeId)?.estCards ?? 0;
+}
+
+/**
+ * 0..1 — how far into its topic node the given card is. The denominator is the larger of the
+ * cards loaded so far in the node and the outline's estimate for it, so the hairline doesn't
+ * read "full" on the last loaded card and then retract when the next batch lands.
+ */
+export function topicProgress(cards: readonly CardRow[], rowId: string, outline?: OutlineEst): number {
   const sorted = sortCards(cards);
   const row = sorted.find((c) => c.id === rowId);
   if (!row) return 0;
@@ -17,7 +28,8 @@ export function topicProgress(cards: readonly CardRow[], rowId: string): number 
   const inNode = sorted.filter((c) => (c.payload as Card).topicNodeId === node && c.detourId === row.detourId);
   if (inNode.length === 0) return 0;
   const i = inNode.findIndex((c) => c.id === rowId);
-  return Math.min(1, Math.max(0, (i + 1) / inNode.length));
+  const denom = Math.max(inNode.length, estCardsFor(outline, node));
+  return Math.min(1, Math.max(0, (i + 1) / denom));
 }
 
 /**

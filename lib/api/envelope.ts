@@ -38,9 +38,9 @@ export function handle<Ctx = unknown>(fn: Handler<Ctx>): Handler<Ctx> {
     } catch (e) {
       if (e instanceof HttpError) return fail(e.status, e.code, e.message, e.details);
       if (e instanceof ZodError) return fail(400, "invalid_request", "request failed validation", e.issues);
-      const message = e instanceof Error ? e.message : String(e);
+      // Never echo raw internals (paths, db errors, library messages) to the client — log them, say something calm.
       console.error("[api] unhandled", e);
-      return fail(500, "internal", message);
+      return fail(500, "internal", "something broke on our side. try again?");
     }
   };
 }

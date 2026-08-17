@@ -8,19 +8,26 @@ import type { Interaction } from "@/lib/schemas/session";
  * never mutates its input (JSONB mutation gotcha, spec §12.9).
  *
  * Signals → directives:
- *   - hit rate over last 10 scored cards (≥5 samples): >0.9 → difficultyDelta
+ *   - hit rate over last 10 scored cards (≥8 samples): >0.9 → difficultyDelta
  *     steps up (cap +2); <0.65 → steps down (cap −2) + scaffoldNext = missed
  *     concepts; in the flow zone the delta relaxes one step toward 0.
- *   - two consecutive misses on one node → recapDue = that concept.
+ *   - two consecutive misses on one node → recapDue = that concept (the node
+ *     is the concept granularity the schema knows; the label is the missed
+ *     card's gist so the writer knows WHAT to recap).
  *   - median dwell < 1.8s over ≥5 consecutive non-interactive → pace "compress".
- *   - dwell > 25s or scroll-back → recapDue = current card's concept.
+ *   - dwell > 25s or scroll-back on a teaching card (concept/code/diagram/reveal)
+ *     → recapDue = that card's concept. Recaps, checkpoints, hooks and system
+ *     cards never trigger a recap (no recap-of-a-recap chains).
  *   - explicit dial: globalLevel ±1 (1..5), simplerTaps/deeperTaps++.
  */
 
 export const DWELL_CAP_MS = 60_000;
 export const HIT_RATE_HIGH = 0.9;
 export const HIT_RATE_LOW = 0.65;
-export const MIN_SAMPLES = 5;
+/** Scored samples needed before difficulty moves (spec: "over last 10"; a nearly full window, not 5). */
+export const MIN_SAMPLES = 8;
+/** Non-interactive dwell samples needed before pace can flip to "compress". */
+export const MIN_DWELL_SAMPLES = 5;
 export const COMPRESS_MEDIAN_MS = 1800;
 export const LONG_DWELL_MS = 25_000;
 const KEEP_INTERACTIVE = 10;
@@ -34,24 +41,34 @@ export type InteractionEvent = {
   scrollBack?: boolean;
   /** true when this event carries the FIRST answer for a scored card (guards double counting) */
   firstAnswer?: boolean;
+  /** this card already reported dwell before (hide/resume split, revisit): `interaction.dwellMs` is the CUMULATIVE
+   *  dwell — evaluate the long-dwell trigger on it but do not push a second pace sample for the same card */
+  repeatVisit?: boolean;
 };
 
-/** Content cards whose dwell means something. */
+/** Content cards whose dwell means something for pace. */
 const DWELL_TYPES = new Set(["hook", "concept", "code", "diagram", "reveal", "checkpoint", "recap"]);
+/** Teaching cards where a long dwell / scroll-back means "stuck" → recap. Recap/checkpoint/hook never re-trigger. */
+export const RECAP_TRIGGER_TYPES = new Set(["concept", "code", "diagram", "reveal"]);
 
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
 const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
 
-/** Short label for the concept a card is about: eyebrow, else the headline/prompt gist. */
+/**
+ * Short label for the concept a card is about: the card's substantive text
+ * (bet prompt, headline, title, setup) — never the eyebrow first, which the
+ * writer fills with stylistic labels ("hot take", "the footgun") that would
+ * collapse every miss into one meaningless "concept".
+ */
 export function conceptOf(card: Card): string {
   const c = card as Record<string, unknown>;
   const raw =
+    (typeof c.headline === "string" && c.headline.trim()) ||
+    (typeof c.prompt === "string" && c.prompt.trim()) ||
+    (typeof c.title === "string" && c.title.trim()) ||
+    (typeof c.setup === "string" && c.setup.trim()) ||
+    (typeof c.label === "string" && c.label.trim()) ||
     (typeof c.eyebrow === "string" && c.eyebrow.trim()) ||
-    (typeof c.headline === "string" && c.headline) ||
-    (typeof c.prompt === "string" && c.prompt) ||
-    (typeof c.title === "string" && c.title) ||
-    (typeof c.setup === "string" && c.setup) ||
-    (typeof c.label === "string" && c.label) ||
     card.type;
   const s = String(raw).replace(/\s+/g, " ").trim();
   return s.length > 48 ? `${s.slice(0, 47).trimEnd()}…` : s;
@@ -89,7 +106,7 @@ function recomputeDirectives(next: LearnerState, opts: { scored: boolean }): voi
     d.scaffoldNext = rate < HIT_RATE_LOW ? missedConcepts(next) : [];
   }
   const dw = next.rolling.dwellMs;
-  d.pace = dw.length >= MIN_SAMPLES && median(dw) < COMPRESS_MEDIAN_MS ? "compress" : "normal";
+  d.pace = dw.length >= MIN_DWELL_SAMPLES && median(dw) < COMPRESS_MEDIAN_MS ? "compress" : "normal";
 }
 
 export function applyInteraction(state: LearnerState, ev: InteractionEvent): LearnerState {
@@ -127,15 +144,18 @@ export function applyInteraction(state: LearnerState, ev: InteractionEvent): Lea
     next.rolling = { ...next.rolling, dwellMs: [] };
   } else if (DWELL_TYPES.has(card.type) && typeof interaction.dwellMs === "number") {
     const dwell = clamp(interaction.dwellMs, 0, DWELL_CAP_MS);
-    const dwellMs = pushKeep(next.rolling.dwellMs, dwell, KEEP_DWELL);
-    next.rolling = {
-      ...next.rolling,
-      dwellMs,
-      avgDwellMs: Math.round(dwellMs.reduce((a, b) => a + b, 0) / dwellMs.length),
-    };
-    if (dwell > LONG_DWELL_MS) next.directives.recapDue = concept;
+    if (!ev.repeatVisit) {
+      // one pace sample per card: a hide/resume split or a revisit reports again with the cumulative dwell
+      const dwellMs = pushKeep(next.rolling.dwellMs, dwell, KEEP_DWELL);
+      next.rolling = {
+        ...next.rolling,
+        dwellMs,
+        avgDwellMs: Math.round(dwellMs.reduce((a, b) => a + b, 0) / dwellMs.length),
+      };
+    }
+    if (dwell > LONG_DWELL_MS && RECAP_TRIGGER_TYPES.has(card.type)) next.directives.recapDue = concept;
   }
-  if (ev.scrollBack && DWELL_TYPES.has(card.type)) next.directives.recapDue = concept;
+  if (ev.scrollBack && RECAP_TRIGGER_TYPES.has(card.type)) next.directives.recapDue = concept;
 
   recomputeDirectives(next, { scored });
   return next;
@@ -152,10 +172,18 @@ export function applyDial(state: LearnerState, direction: "simpler" | "deeper"):
   return next;
 }
 
-/** After a recap card has been inserted for `directives.recapDue`. */
-export function clearRecap(state: LearnerState): LearnerState {
+/**
+ * After a recap card has been inserted (or the trigger was consumed) for
+ * `directives.recapDue`. Pass the node when the recap answered a miss streak:
+ * the streak resets so the 3rd/4th miss doesn't spawn yet another recap — the
+ * concept has to be re-tested first (spec §8 "one recap card … re-test later").
+ */
+export function clearRecap(state: LearnerState, nodeId?: string): LearnerState {
   const next = clone(state);
   next.directives.recapDue = null;
+  if (nodeId && next.perNode[nodeId]) {
+    next.perNode = { ...next.perNode, [nodeId]: { ...next.perNode[nodeId], consecutiveMisses: 0 } };
+  }
   return next;
 }
 
@@ -166,12 +194,20 @@ export function clearScaffold(state: LearnerState): LearnerState {
   return next;
 }
 
-/** A detour question about `focus` → the writer is told to reinforce it. */
-export function addReinforce(state: LearnerState, focus: string, cap = 6): LearnerState {
+/** A detour question about `focus` → the writer is told to reinforce it (most recent 3; older ones expire). */
+export function addReinforce(state: LearnerState, focus: string, cap = 3): LearnerState {
   const next = clone(state);
   const f = focus.trim();
   if (!f) return next;
   next.directives.reinforce = pushKeep(next.directives.reinforce.filter((x) => x !== f), f, cap);
+  return next;
+}
+
+/** Reinforce directives expire: when the outline moves to the next node only the most recent `keep` survive. */
+export function trimReinforce(state: LearnerState, keep = 1): LearnerState {
+  if (state.directives.reinforce.length <= keep) return state;
+  const next = clone(state);
+  next.directives.reinforce = next.directives.reinforce.slice(-keep);
   return next;
 }
 

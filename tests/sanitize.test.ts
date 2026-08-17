@@ -13,7 +13,7 @@ describe("copy sanitize", () => {
     expect(v.title).toBe("title");
   });
   it("scrubs banned words with feed-native synonyms", () => {
-    expect(scrubBannedText("test the model")).toBe("check the model");
+    expect(scrubBannedText("test the model")).toBe("try the model");
     expect(scrubBannedText("Quiz time: two lessons")).toBe("Bet time: two bits");
     const v = scrubBannedValue({ cards: [{ eyebrow: "pop quiz", topicNodeId: "test-node" }] });
     expect(findBannedInValue(v)).toBeNull();

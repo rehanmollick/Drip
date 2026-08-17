@@ -8,7 +8,7 @@ import { Eyebrow } from "@/components/ui/Eyebrow";
 import { Visual } from "./Visual";
 import { useTheme } from "@/components/theme/ThemeRoot";
 import { ticks } from "@/lib/audio/ticks";
-import { pressable } from "@/lib/motion";
+import { usePressable } from "@/lib/motion";
 import { fitFontSize } from "./helpers";
 
 /**
@@ -17,6 +17,7 @@ import { fitFontSize } from "./helpers";
  */
 export function RevealView({ card, entered, interaction, onInteract, onAskAbout }: CardViewProps<RevealCardT>) {
   const { spring, reduced } = useTheme();
+  const pressable = usePressable();
   const [flipped, setFlipped] = useState(interaction?.choice === "revealed");
   const flip = useCallback(() => {
     if (flipped) return;

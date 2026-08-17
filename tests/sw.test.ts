@@ -27,7 +27,9 @@ function loadSw() {
 describe("public/sw.js", () => {
   it("compiles as plain JS and declares the versioned cache + offline page", () => {
     expect(() => new vm.Script(SW_SRC, { filename: "sw.js" })).not.toThrow();
-    expect(SW_SRC).toContain('const CACHE = "drip-shell-v1"');
+    expect(SW_SRC).toMatch(/const VERSION = "v\d+"/);
+    expect(SW_SRC).toContain('const SHELL_CACHE = "drip-shell-" + VERSION');
+    expect(SW_SRC).toContain('const SESSION_CACHE = "drip-session-" + VERSION');
     expect(SW_SRC).toContain('"/offline.html"');
     expect(SW_SRC).toContain('"/manifest.webmanifest"');
     expect(SW_SRC).toContain("SKIP_WAITING");

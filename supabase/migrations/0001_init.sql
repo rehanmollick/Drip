@@ -3,7 +3,13 @@
 --
 -- Notes
 --   * cards.idx is a fractional-indexing string key ordered lexicographically
---     (detour splices never rewrite rows). unique per session.
+--     (detour splices never rewrite rows). unique per session. It MUST use
+--     collate "C" (byte order: 0-9 < A-Z < a-z) — that is the order the
+--     fractional-indexing library, the local store and the client all assume.
+--     Under the database default (en_US.UTF-8 / ICU) 'aa' sorts before 'aA'
+--     and 'Zz' after 'a0', so ORDER BY / > on idx would disagree with the app
+--     and the frontier would stall after ~37 cards. Same for
+--     detours.inserted_after_idx.
 --   * batches (session_id, frontier_key) is the idempotency guard for generation.
 --   * enums are text + check constraints so adding a value is a one-line migration.
 
@@ -35,7 +41,7 @@ create index if not exists sessions_last_opened_idx on sessions (last_opened_at 
 create table if not exists cards (
   id          uuid primary key,
   session_id  uuid not null references sessions(id) on delete cascade,
-  idx         text not null,
+  idx         text collate "C" not null,   -- byte order, see header note
   type        text not null,
   payload     jsonb not null,
   detour_id   uuid,
@@ -43,9 +49,8 @@ create table if not exists cards (
   viewed_at   timestamptz,
   interaction jsonb,
   created_at  timestamptz not null default now(),
-  unique (session_id, idx)
+  unique (session_id, idx)                 -- also the (session_id, idx) index
 );
-create index if not exists cards_session_idx_idx on cards (session_id, idx);
 
 -- ── detours ─────────────────────────────────────────────────────────────────
 create table if not exists detours (
@@ -53,7 +58,7 @@ create table if not exists detours (
   session_id         uuid not null references sessions(id) on delete cascade,
   parent_detour_id   uuid,
   question           text not null,
-  inserted_after_idx text not null,
+  inserted_after_idx text collate "C" not null,
   created_at         timestamptz not null default now()
 );
 create index if not exists detours_session_idx on detours (session_id);

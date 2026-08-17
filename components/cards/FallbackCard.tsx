@@ -21,11 +21,15 @@ export function FallbackView({ card, entered, onRetry, onAskAbout }: CardViewPro
         <Eyebrow tone="muted">{card.eyebrow ?? "bump in the road"}</Eyebrow>
       </Rise>
       <Rise>
-        <h2 style={headlineStyle(34, 1.02)}>hit a pothole,<br />pull to retry.</h2>
+        {retryable ? (
+          <h2 style={headlineStyle(34, 1.02)}>hit a pothole,<br />pull to retry.</h2>
+        ) : (
+          <h2 style={headlineStyle(34, 1.02)}>hit a pothole.<br />keep scrolling.</h2>
+        )}
       </Rise>
       <Rise>
         <p className="font-body" style={{ margin: 0, fontSize: 17, lineHeight: 1.4, color: "var(--ink-2)", maxWidth: 320 }}>
-          this stretch didn&apos;t load right. one tap and we take another run at it.
+          {retryable ? "this stretch didn\u2019t load right. one tap and we take another run at it." : "this one didn\u2019t render right. the next one\u2019s fine \u2014 swipe on."}
         </p>
       </Rise>
       {retryable && (
@@ -41,15 +45,17 @@ export function FallbackView({ card, entered, onRetry, onAskAbout }: CardViewPro
           </motion.div>
         </Rise>
       )}
-      <Rise>
-        <motion.span
-          className="font-mono"
-          variants={{ hidden: { opacity: 0 }, show: { opacity: 1, transition: reduced ? { duration: 0.15 } : { ...spring, delay: 0.5 } } }}
-          style={{ fontSize: 11, letterSpacing: "0.1em", color: "var(--ink-2)" }}
-        >
-          or keep scrolling — the feed goes on.
-        </motion.span>
-      </Rise>
+      {retryable && (
+        <Rise>
+          <motion.span
+            className="font-mono"
+            variants={{ hidden: { opacity: 0 }, show: { opacity: 1, transition: reduced ? { duration: 0.15 } : { ...spring, delay: 0.5 } } }}
+            style={{ fontSize: 11, letterSpacing: "0.1em", color: "var(--ink-2)" }}
+          >
+            or keep scrolling — the feed goes on.
+          </motion.span>
+        </Rise>
+      )}
     </CardFrame>
   );
 }

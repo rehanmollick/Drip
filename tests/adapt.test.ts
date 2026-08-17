@@ -47,13 +47,14 @@ describe("learner reducer: scored cards", () => {
     expect(s.perNode.n1.attempts).toBe(2);
     expect(s.perNode.n1.hits).toBe(1);
     expect(s.perNode.n1.consecutiveMisses).toBe(1);
-    expect(s.perNode.n1.lastMissConcepts).toEqual(["ttl"]);
+    expect(s.perNode.n1.lastMissConcepts).toEqual(["kill redis and the site dies"]);
     expect(s.rolling.last10Interactive).toEqual([true, false]);
     expect(s.directives.recapDue).toBeNull();
   });
 
-  it("uses eyebrow, else headline/prompt gist, as the concept label", () => {
-    expect(conceptOf(binary())).toBe("ttl");
+  it("uses the card's own content (not the generic eyebrow) as the concept label", () => {
+    // eyebrows are decorative labels the writer fills with "hot take"/"the footgun" — never the concept
+    expect(conceptOf(binary())).toBe("kill redis and the site dies");
     expect(conceptOf(binary({ eyebrow: undefined }))).toBe("kill redis and the site dies");
     expect(conceptOf(concept({ headline: "x".repeat(80) }))).toHaveLength(48);
   });
@@ -66,7 +67,7 @@ describe("learner reducer: scored cards", () => {
   it("two consecutive misses on one concept → recapDue = that concept", () => {
     const s = answers(defaultLearnerState(), [true, false, false]);
     expect(s.perNode.n1.consecutiveMisses).toBe(2);
-    expect(s.directives.recapDue).toBe("ttl");
+    expect(s.directives.recapDue).toBe("kill redis and the site dies");
     // cleared explicitly once the recap is inserted, and a hit resets the streak
     const cleared = clearRecap(s);
     expect(cleared.directives.recapDue).toBeNull();
@@ -88,24 +89,26 @@ describe("learner reducer: difficulty directives", () => {
     expect(s.directives.difficultyDelta).toBe(0);
   });
 
-  it("hit rate > 0.9 → +1 per scored card, capped at +2", () => {
-    const s5 = answers(defaultLearnerState(), Array(5).fill(true));
-    expect(s5.directives.difficultyDelta).toBe(1);
-    const s9 = answers(s5, Array(4).fill(true));
-    expect(s9.directives.difficultyDelta).toBe(2);
+  it("hit rate > 0.9 → +1 per scored card, capped at +2 (needs a real window first)", () => {
+    const s7 = answers(defaultLearnerState(), Array(7).fill(true));
+    expect(s7.directives.difficultyDelta).toBe(0); // fewer than MIN_SAMPLES → no move
+    const s8 = answers(s7, [true]);
+    expect(s8.directives.difficultyDelta).toBe(1);
+    const s12 = answers(s8, Array(4).fill(true));
+    expect(s12.directives.difficultyDelta).toBe(2);
   });
 
   it("hit rate < 0.65 → −1 (cap −2) and scaffoldNext = missed concepts", () => {
-    const misses = [false, false, false, true, false];
+    const misses = [false, false, false, true, false, false, true, false];
     const s = answers(defaultLearnerState(), misses);
     expect(s.directives.difficultyDelta).toBe(-1);
-    expect(s.directives.scaffoldNext).toEqual(["ttl"]);
+    expect(s.directives.scaffoldNext).toEqual(["kill redis and the site dies"]);
     const s2 = answers(s, [false, false, false]);
     expect(s2.directives.difficultyDelta).toBe(-2);
     // a different missed concept shows up too, most recent last
-    const s3 = answers(s2, [false], binary({ eyebrow: "stampede", topicNodeId: "n2" }));
-    expect(s3.directives.scaffoldNext).toEqual(["ttl", "stampede"]);
-    expect(missedConcepts(s3)).toEqual(["ttl", "stampede"]);
+    const s3 = answers(s2, [false], binary({ prompt: "the stampede", topicNodeId: "n2" }));
+    expect(s3.directives.scaffoldNext).toEqual(["kill redis and the site dies", "the stampede"]);
+    expect(missedConcepts(s3)).toEqual(["kill redis and the site dies", "the stampede"]);
   });
 
   it("flow zone relaxes the delta one step toward zero and clears scaffolds", () => {
@@ -151,7 +154,7 @@ describe("learner reducer: dwell + pace", () => {
 
   it("scroll-back → recapDue for the current concept", () => {
     const s = applyInteraction(defaultLearnerState(), { card: concept({ eyebrow: "the idea" }), interaction: { at }, scrollBack: true });
-    expect(s.directives.recapDue).toBe("the idea");
+    expect(s.directives.recapDue).toBe("a cache is a bet on repetition");
   });
 
   it("ignores dwell on non-content cards", () => {
@@ -175,10 +178,13 @@ describe("learner reducer: dial + reinforce + hash", () => {
     expect(s.prefs.simplerTaps).toBe(6);
   });
 
-  it("addReinforce dedupes and caps", () => {
+  it("addReinforce dedupes and keeps only the freshest few (they expire; they don't pile up all session)", () => {
     let s = defaultLearnerState();
     for (const f of ["a", "b", "a", "c", "d", "e", "f", "g"]) s = addReinforce(s, f);
-    expect(s.directives.reinforce).toEqual(["a", "c", "d", "e", "f", "g"]);
+    expect(s.directives.reinforce).toEqual(["e", "f", "g"]);
+    // re-asking about something already queued moves it to the front of the queue rather than duplicating
+    s = addReinforce(s, "e");
+    expect(s.directives.reinforce).toEqual(["f", "g", "e"]);
   });
 
   it("learnerStateHash is stable, short, and ignores rolling dwell noise", () => {

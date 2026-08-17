@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiClientError } from "@/lib/api/client";
 import type { CreateSessionBody, IngestData, SessionPublic } from "@/lib/api/contract";
-import { ingestPath, routeInput } from "@/lib/feed/input";
+import { clampTitle, INPUT_MAX, ingestPath, routeInput } from "@/lib/feed/input";
 import type { DepthPreset } from "@/lib/schemas/learner";
 import { useTheme } from "@/components/theme/ThemeRoot";
 import { BottomSheet, Segmented, Toggle } from "./BottomSheet";
@@ -21,6 +21,17 @@ const DEPTHS: { value: DepthPreset; label: string }[] = [
  * /api/ingest/* first; ingest errors show in-sheet (never a hang). Then
  * POST /api/sessions and navigate straight to the feed — it handles planning.
  */
+/** In-sheet error copy: ingest routes author lowercase sheet-voice messages (a dead link, a slow page,
+ *  no captions…) at any status — show those; only truly generic failures get the generic line. */
+const GENERIC = "that didn't go through. try again?";
+const OPAQUE_CODES = new Set(["internal", "bad_response", "http_error", "unknown"]);
+export function sheetError(e: unknown): string {
+  if (!(e instanceof ApiClientError)) return typeof navigator !== "undefined" && navigator.onLine === false ? "you're offline. the sheet needs a signal." : GENERIC;
+  if (e.code === "invalid_request") return "that's a lot of text — keep it under 400k characters.";
+  if (OPAQUE_CODES.has(e.code) || !e.message) return GENERIC;
+  return e.message.toLowerCase();
+}
+
 export function NewSessionSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
   const router = useRouter();
   const { spring, reduced } = useTheme();
@@ -32,6 +43,8 @@ export function NewSessionSheet({ open, onClose }: { open: boolean; onClose: () 
   const [nudge, setNudge] = useState<string | null>(null);
   const areaRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const textRef = useRef(text);
+  textRef.current = text;
 
   useEffect(() => {
     if (open) {
@@ -52,9 +65,13 @@ export function NewSessionSheet({ open, onClose }: { open: boolean; onClose: () 
     }
     try {
       const body = await f.text();
-      setText((prev) => (prev.trim() ? `${prev.trimEnd()}\n\n${body}` : body));
+      const prev = textRef.current;
+      const joined = prev.trim() ? `${prev.trimEnd()}\n\n${body}` : body;
+      // the textarea's maxLength doesn't apply to programmatic text; the server caps input at 400k chars
+      const clipped = joined.length > INPUT_MAX;
+      setText(clipped ? joined.slice(0, INPUT_MAX) : joined);
       setFile(f.name);
-      setNudge(null);
+      setNudge(clipped ? "big one — kept the first 400k characters." : null);
     } catch {
       setNudge("couldn't read that file.");
     }
@@ -72,7 +89,8 @@ export function NewSessionSheet({ open, onClose }: { open: boolean; onClose: () 
       } else {
         setBusy("reading");
         const ing = await api.post<IngestData>(ingestPath(route.kind), { url: route.url });
-        body = { input: ing.text, sourceKind: ing.sourceKind, sourceMeta: { ...ing.meta, url: route.url }, settings: { chillMode: chill, depthPreset: depth }, title: ing.title };
+        // titles are capped at 60 chars (D12): clamp at a word boundary, never let a long page title 400 the session
+        body = { input: ing.text.slice(0, INPUT_MAX), sourceKind: ing.sourceKind, sourceMeta: { ...ing.meta, url: route.url }, settings: { chillMode: chill, depthPreset: depth }, title: clampTitle(ing.title) };
       }
       setBusy("brewing");
       const res = await api.post<{ session: SessionPublic }>("/api/sessions", body);
@@ -81,8 +99,7 @@ export function NewSessionSheet({ open, onClose }: { open: boolean; onClose: () 
       router.push(`/s/${res.session.id}`);
     } catch (e) {
       setBusy(null);
-      const msg = e instanceof ApiClientError && e.status < 500 ? e.message : "that didn't go through. try again?";
-      setNudge(msg.toLowerCase());
+      setNudge(sheetError(e));
     }
   }, [text, busy, file, chill, depth, router]);
 
