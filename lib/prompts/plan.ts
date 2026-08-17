@@ -6,7 +6,7 @@ import {
   schemaText, sliceCorpus, type Prompt,
 } from "./shared";
 
-export const PROMPT_VERSION = "plan.v1";
+export const PROMPT_VERSION = "plan.v2";
 
 /** Corpus budget for the planner (chars). Sonnet sees this much + a headings sample. */
 export const PLAN_CORPUS_CHARS = 24_000;
@@ -32,7 +32,7 @@ const PERSONA_RULES = `persona rules (the voice every card is written in):
 - the persona talks like the smartest friend who happens to live in this subject's world (an on-call SRE for a caching doc, a marine biologist who has been cold and wet for 20 years for tide pools). lowercase, dry, warm.`;
 
 const OUTLINE_RULES = `outline rules (ordered tree of what the feed will teach):
-- depth preset drives length: skim → 3–6 nodes; standard → 4–14 nodes; deep → 8–20 nodes. each node estCards 3–8.
+- depth preset drives length: skim → 3–5 nodes; standard → 5–8 nodes; deep → 8–14 nodes. each node estCards 3–8.
 - each node: short id (like "n1", "n2"…), title (≤ 60, lowercase, feed-native — "the stampede", not "Chapter 3: Cache Failures"), estCards, dependsOn (ids of nodes that must come first), brief (≤ 240: what this node must LAND, for the writer), corpusHint (≤ 200: headings/keywords where this lives in the source).
 - order for momentum: open with the most surprising, concrete idea; save prerequisites for the moment they're needed; end with the payoff that reframes everything.
 - chill mode ON → fewer, meatier nodes (no bets, so pacing comes from hooks/reveals/diagrams). depth deep → include edge cases, failure modes, history.
@@ -41,6 +41,12 @@ const OUTLINE_RULES = `outline rules (ordered tree of what the feed will teach):
 const CLARIFIER_RULES = `clarifiers (ONLY when sourceKind is "sentence" AND the sentence is genuinely ambiguous about audience/angle/depth): up to 3 tap-to-answer setup cards, keys like "audience", "angle", "depth", "level". prompt ≤ 140, 2–3 options ≤ 40 chars each. if the input is a document/url/transcript or the sentence is clear, emit an empty array. when clarifierAnswers are provided, do NOT emit clarifiers — re-plan using the answers.`;
 
 const FIRST_CARDS_RULES = `firstCards (fast path — the feed becomes scrollable the moment planning lands): EXACTLY 3 cards, in order: 1 "hook" then 2 "concept", all for the FIRST outline node (topicNodeId = outline[0].id), detourId null, fresh uuid v4 ids. they are the first thing the person sees: the hook is the single most surprising claim in the source; the two concepts land the first idea cleanly. these cards must be self-contained even if nothing follows for a moment.`;
+
+const HARD_CAPS = `HARD CHARACTER CAPS — anything over is rejected and you get called again (slow, expensive). aim for ~70% of each cap:
+title 60 · theme.name 40 · theme.mood 120 · theme.signature 160 · persona.name 24 · each trait 40 · each tic 60 · humor 60 · neverDoes 80 · voiceSample 160 (or omit it)
+node.title 60 · node.brief 120 (cap 240 — keep it to one tight sentence) · node.corpusHint 200 (omit for a single-sentence source)
+clarifier.prompt 140 · clarifier.option 40 · card.eyebrow 28 · hook.headline 90 · hook.sub 120 · concept.headline 64 · concept.body 320 (~55 words)
+be brief everywhere: the whole object should be ~1,500 tokens. standard depth → 5–8 nodes.`;
 
 const OUTPUT_SCHEMA = schemaText(PlanOutputSchema.omit({ firstCards: true }));
 
@@ -53,6 +59,7 @@ export const PLAN_SYSTEM = [
   OUTLINE_RULES,
   CLARIFIER_RULES,
   FIRST_CARDS_RULES,
+  HARD_CAPS,
   BASE_CARD_FIELDS,
   cardSchemaBlock(["hook", "concept"]),
   JSON_ONLY,

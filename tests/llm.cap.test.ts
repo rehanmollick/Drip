@@ -36,7 +36,7 @@ describe("spend cap (fails closed)", () => {
     expect(store.calls).toHaveLength(1);
     expect(store.calls[0].ok).toBe(false);
     expect(store.calls[0].purpose).toBe("write");
-    expect(store.calls[0].promptVersion).toBe("write.v1");
+    expect(store.calls[0].promptVersion).toBe("write.v2");
     expect(store.calls[0].error).toMatch(/budget/);
   });
 
@@ -89,7 +89,7 @@ describe("logging + mock pipeline", () => {
     expect(p.ok && w.ok && t.ok && d.ok).toBe(true);
     expect(typeof toast).toBe("string");
     expect(store.calls.map((c) => c.purpose)).toEqual(["plan", "write", "triage", "detour", "chat"]);
-    expect(store.calls.map((c) => c.promptVersion)).toEqual(["plan.v1", "write.v1", "triage.v1", "detour.v1", "dial.v1"]);
+    expect(store.calls.map((c) => c.promptVersion)).toEqual(["plan.v2", "write.v2", "triage.v1", "detour.v1", "dial.v1"]);
     for (const c of store.calls) {
       expect(c.ok).toBe(true);
       expect(c.model).toBe("mock");
@@ -101,7 +101,7 @@ describe("logging + mock pipeline", () => {
     }
     if (p.ok) {
       expect(PlanOutputSchema.safeParse(p.value).success).toBe(true);
-      expect(p.meta.promptVersion).toBe("plan.v1");
+      expect(p.meta.promptVersion).toBe("plan.v2");
       expect(p.meta.attempts).toBe(1);
     }
     if (w.ok) for (const c of w.value) expect(CardSchema.safeParse(c).success).toBe(true);

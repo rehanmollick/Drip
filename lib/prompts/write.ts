@@ -7,7 +7,7 @@ import {
   learnerSummary, personaBlock, sliceCorpus, themeGroundingBlock, type Prompt,
 } from "./shared";
 
-export const PROMPT_VERSION = "write.v1";
+export const PROMPT_VERSION = "write.v2";
 
 /** Corpus budget for one writer call (chars). The caller already slices per node; this is a hard ceiling. */
 export const WRITE_CORPUS_CHARS = 12_000;

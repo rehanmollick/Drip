@@ -10,7 +10,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { randomUUID } from "crypto";
 import { z } from "zod";
-import { findBannedInValue } from "@/lib/copy/banned";
+import { findBannedInValue, scrubBannedValue } from "@/lib/copy/banned";
 import { getStore } from "@/lib/db";
 import type { Store } from "@/lib/db/store";
 import type {
@@ -36,8 +36,10 @@ export const WRITE_MODEL = () => process.env.LLM_WRITE_MODEL ?? "claude-haiku-4-
 export const isMockMode = () => process.env.LLM_MODE === "mock";
 export const dailyCallCap = () => Number(process.env.LLM_DAILY_CALL_CAP ?? 500);
 
-// plan runs with adaptive thinking on Sonnet, and thinking tokens count against max_tokens — give it headroom.
-const MAX_TOKENS = { plan: 12_000, batch: 4_000, triage: 600, toast: 200 } as const;
+// The plan is a single JSON object (~2–3k tokens); no extended thinking — the spec budgets 10–20s for
+// planning and a thinking-heavy Sonnet call blew past the watchdog. Streaming keeps long outputs off the
+// idle-timeout path.
+const MAX_TOKENS = { plan: 8_000, batch: 4_000, triage: 600, toast: 200 } as const;
 const REQUEST_TIMEOUT_MS = 120_000;
 
 // ── dependency injection (tests) ──────────────────────────────────────────────
@@ -156,6 +158,59 @@ export function normalizeCards(cards: unknown, detourId: string | null): unknown
   });
 }
 
+/**
+ * Word-boundary truncation for fields that are NEVER on screen (planner art-direction,
+ * persona notes, outline briefs) or are tiny labels (eyebrows). A 40s Sonnet call should
+ * not be thrown away because a "brief" ran 12 characters long. On-screen copy stays strict.
+ */
+export function softClamp(v: unknown, max: number): unknown {
+  if (typeof v !== "string" || v.length <= max) return v;
+  const cut = v.slice(0, max - 1);
+  const sp = cut.lastIndexOf(" ");
+  return (sp > max * 0.6 ? cut.slice(0, sp) : cut).replace(/[\s,;:—-]+$/, "") + "…";
+}
+
+const PLAN_CLAMPS: Array<[path: string[], max: number]> = [
+  [["title"], 60],
+  [["theme", "name"], 40], [["theme", "mood"], 120], [["theme", "signature"], 160],
+  [["persona", "name"], 24], [["persona", "humor"], 60], [["persona", "neverDoes"], 80], [["persona", "voiceSample"], 160],
+];
+
+export function clampPlanInternalFields(parsed: unknown): unknown {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return parsed;
+  const o = JSON.parse(JSON.stringify(parsed)) as Record<string, unknown>;
+  for (const [path, max] of PLAN_CLAMPS) {
+    let cur: Record<string, unknown> | undefined = o;
+    for (const k of path.slice(0, -1)) cur = cur?.[k] as Record<string, unknown> | undefined;
+    const last = path[path.length - 1];
+    if (cur && typeof cur === "object" && last in cur) cur[last] = softClamp(cur[last], max);
+  }
+  const persona = o.persona as Record<string, unknown> | undefined;
+  if (persona && Array.isArray(persona.traits)) persona.traits = persona.traits.map((t) => softClamp(t, 40));
+  if (persona && Array.isArray(persona.tics)) persona.tics = persona.tics.map((t) => softClamp(t, 60));
+  if (Array.isArray(o.outline)) {
+    o.outline = o.outline.map((n) => {
+      if (!n || typeof n !== "object") return n;
+      const node = n as Record<string, unknown>;
+      return { ...node, title: softClamp(node.title, 60), brief: softClamp(node.brief, 240), corpusHint: softClamp(node.corpusHint, 200) };
+    });
+  }
+  if (Array.isArray(o.clarifiers)) {
+    o.clarifiers = o.clarifiers.map((c) => {
+      if (!c || typeof c !== "object") return c;
+      const cl = c as Record<string, unknown>;
+      return { ...cl, prompt: softClamp(cl.prompt, 140), options: Array.isArray(cl.options) ? cl.options.map((x) => softClamp(x, 40)) : cl.options };
+    });
+  }
+  return o;
+}
+
+/** Eyebrows are 28-char labels — clamp rather than reject the whole batch. */
+export function clampEyebrows(cards: unknown): unknown {
+  if (!Array.isArray(cards)) return cards;
+  return cards.map((c) => (c && typeof c === "object" && "eyebrow" in (c as object) ? { ...(c as Record<string, unknown>), eyebrow: softClamp((c as Record<string, unknown>).eyebrow, 28) } : c));
+}
+
 type Validation<T> = { ok: true; value: T } | { ok: false; error: string };
 
 function validate<T>(schema: z.ZodType<T>, parsed: unknown, checkBanned: boolean): Validation<T> {
@@ -189,14 +244,16 @@ type CallOutcome =
 async function callAnthropic(opts: { apiKey: string; model: string; system: string; user: string; maxTokens: number; plan: boolean }): Promise<CallOutcome> {
   const started = Date.now();
   try {
-    const res = await getClient(opts.apiKey).messages.create({
-      model: opts.model,
-      max_tokens: opts.maxTokens,
-      system: [{ type: "text", text: opts.system, cache_control: { type: "ephemeral" } }],
-      messages: [{ role: "user", content: opts.user }],
-      // planning only (Sonnet): let the model think about theme + outline; Haiku gets no thinking param.
-      ...(opts.plan ? { thinking: { type: "adaptive" as const }, output_config: { effort: "medium" as const } } : {}),
-    });
+    // Streamed so a long JSON body never trips the non-streaming idle timeout; finalMessage() assembles it.
+    const res = await getClient(opts.apiKey)
+      .messages.stream({
+        model: opts.model,
+        max_tokens: opts.maxTokens,
+        system: [{ type: "text", text: opts.system, cache_control: { type: "ephemeral" } }],
+        messages: [{ role: "user", content: opts.user }],
+      })
+      .finalMessage();
+    void opts.plan;
     const latencyMs = Date.now() - started;
     const inTokens = res.usage.input_tokens + (res.usage.cache_read_input_tokens ?? 0) + (res.usage.cache_creation_input_tokens ?? 0);
     const outTokens = res.usage.output_tokens;
@@ -321,8 +378,13 @@ async function generate<T>(o: GenerateOpts<T>): Promise<LlmResult<T>> {
           if (banned && attempt === 1) {
             problem = `banned school vocabulary on screen: "${banned.word}" at ${banned.path}. rewrite that string without it.`;
           } else {
-            if (banned) console.warn(`[llm] ${o.purpose}: banned word "${banned.word}" survived the retry at ${banned.path}; accepting.`);
-            value = v.value;
+            if (banned) {
+              // never on screen: scrub with feed-native synonyms rather than throwing the batch away
+              console.warn(`[llm] ${o.purpose}: banned word "${banned.word}" survived the retry at ${banned.path}; scrubbing.`);
+              value = scrubBannedValue(v.value);
+            } else {
+              value = v.value;
+            }
           }
         } else {
           problem = v.error;
@@ -368,8 +430,8 @@ async function plan(input: PlanInput): Promise<LlmResult<PlanOutput>> {
     checkBanned: true,
     normalize: (parsed) => {
       if (!parsed || typeof parsed !== "object") return parsed;
-      const o = parsed as Record<string, unknown>;
-      return { ...o, firstCards: normalizeCards(o.firstCards, null) };
+      const o = clampPlanInternalFields(parsed) as Record<string, unknown>;
+      return { ...o, firstCards: clampEyebrows(normalizeCards(o.firstCards, null)) };
     },
     mock: () => mock.mockPlan(input),
   });
@@ -389,7 +451,7 @@ async function writeBatch(ctx: WriteContext): Promise<LlmResult<Card[]>> {
     normalize: (parsed) => {
       if (!parsed || typeof parsed !== "object") return parsed;
       const o = parsed as Record<string, unknown>;
-      return { ...o, cards: normalizeCards(o.cards, ctx.detourId) };
+      return { ...o, cards: clampEyebrows(normalizeCards(o.cards, ctx.detourId)) };
     },
     mock: async () => {
       const m = await mock.mockWriteBatch(ctx);
