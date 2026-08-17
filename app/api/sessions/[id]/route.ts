@@ -1,9 +1,8 @@
 import { after } from "next/server";
 import { PatchSessionBody } from "@/lib/api/contract";
 import { handle, ok, parseBody } from "@/lib/api/envelope";
-import { answerClarifiers, countCards, getSessionOr404, patchSession, replan } from "@/lib/generation/engine";
+import { answerClarifiers, countCards, deleteSession, getSessionOr404, patchSession, providedSettings, replan } from "@/lib/generation/engine";
 import { toPublic } from "@/lib/generation/public";
-import { getStore } from "@/lib/db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -20,9 +19,10 @@ export const GET = handle<Ctx>(async (_req, { params }) => {
 /** PATCH /api/sessions/:id — settings / position / title / archive / clarifier answers. */
 export const PATCH = handle<Ctx>(async (req, { params }) => {
   const { id } = await params;
+  const raw = (await req.clone().json().catch(() => null)) as { settings?: unknown } | null;
   const body = await parseBody(req, PatchSessionBody);
   await getSessionOr404(id);
-  let session = await patchSession(id, body);
+  let session = await patchSession(id, { ...body, settings: body.settings ? providedSettings(body.settings, raw?.settings) : undefined });
   if (body.clarifierAnswers && Object.keys(body.clarifierAnswers).length) {
     const res = await answerClarifiers(id, body.clarifierAnswers);
     session = res.session;
@@ -35,7 +35,6 @@ export const PATCH = handle<Ctx>(async (req, { params }) => {
 export const DELETE = handle<Ctx>(async (_req, { params }) => {
   const { id } = await params;
   await getSessionOr404(id);
-  const store = await getStore();
-  await store.deleteSession(id);
+  await deleteSession(id);
   return ok({ deleted: true as const });
 });

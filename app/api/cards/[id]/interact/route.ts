@@ -1,6 +1,7 @@
+import { after } from "next/server";
 import { InteractBody } from "@/lib/api/contract";
 import { handle, ok, parseBody } from "@/lib/api/envelope";
-import { interact } from "@/lib/generation/engine";
+import { interact, replan } from "@/lib/generation/engine";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -11,5 +12,7 @@ type Ctx = { params: Promise<{ id: string }> };
 export const POST = handle<Ctx>(async (req, { params }) => {
   const { id } = await params;
   const body = await parseBody(req, InteractBody);
-  return ok(await interact(id, body));
+  const { card, learnerState, inserted, replanReady } = await interact(id, body);
+  if (replanReady) after(() => replan(card.sessionId));
+  return ok({ card, learnerState, inserted });
 });

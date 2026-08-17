@@ -514,13 +514,15 @@ describe("interact", () => {
     expect(llm.calls.filter((c) => c.fn === "writeBatch").length).toBe(calls);
   });
 
-  it("system cards do not touch learner state", async () => {
+  it("system cards do not touch learner state; tapping a clarify card records the answer", async () => {
     llm.state.plan = makePlan({ clarifiers: [{ key: "audience", prompt: "who's this for?", options: ["me", "a friend"] }] });
     const s = await planned();
     const [clar] = await store.listAllCards(s.id);
-    const r = await interact(clar.id, { choice: "me", dwellMs: 40_000 });
-    expect(r.card.interaction?.choice).toBe("me");
+    const r = await interact(clar.id, { choice: 1, dwellMs: 40_000 });
+    expect(r.card.interaction?.choice).toBe(1);
     expect(r.learnerState).toEqual(s.learnerState);
+    expect(r.replanReady).toBe(true);
+    expect((await store.getSession(s.id))!.clarifierAnswers).toEqual({ audience: "a friend" });
     await expect(interact(uuid(), {})).rejects.toMatchObject({ status: 404 });
   });
 });
@@ -539,8 +541,8 @@ describe("clarifiers + remix", () => {
     expect(a2.session.clarifierAnswers).toEqual({ audience: "me", angle: "ops" });
     const after = await replan(s.id);
     expect(after!.outline.map((n) => n.id)).toEqual(["r1", "r2"]);
-    expect(after!.title).toBe("cache stampedes (refined)");
-    expect(after!.theme?.name).toBe("terminal noir"); // theme kept
+    expect(after!.title).toBe("cache stampedes"); // title + theme are kept mid-session (no flicker)
+    expect(after!.theme?.name).toBe("terminal noir");
     expect(after!.sourceMeta.replannedAt).toBeTruthy();
     const cards = await store.listAllCards(s.id);
     // viewed clarify + hook stay; unviewed concept cards were replaced by the new first cards

@@ -341,7 +341,7 @@ async function applyPlan(store: Store, session: Session, plan: PlanOutput, opts:
   void _dropped;
   const titleIsAuto = session.title === autoTitle(session.sourceText) || session.title === "untitled";
   return store.updateSession(session.id, {
-    title: !opts.replan && !titleIsAuto ? session.title : plan.title,
+    title: titleIsAuto ? plan.title : session.title,
     theme: opts.replan && session.theme ? session.theme : plan.theme,
     persona: plan.persona,
     outline: plan.outline,
@@ -551,7 +551,9 @@ async function buildBatch(llm: LlmApi, session: Session, all: CardRow[]): Promis
 // ── interact ────────────────────────────────────────────────────────────────
 const CONTENT_TYPES = new Set<string>(WRITER_CARD_TYPES);
 
-export async function interact(cardId: string, body: InteractBody): Promise<{ card: CardRow; learnerState: LearnerState; inserted: CardRow[] }> {
+export type InteractResult = { card: CardRow; learnerState: LearnerState; inserted: CardRow[]; /** clarify card answered → every clarifier answered → route should schedule replan() */ replanReady?: boolean };
+
+export async function interact(cardId: string, body: InteractBody): Promise<InteractResult> {
   const { llm, store } = await deps();
   const card = await store.getCard(cardId);
   if (!card) throw new HttpError(404, "not_found", "card not found");
@@ -571,6 +573,15 @@ export async function interact(cardId: string, body: InteractBody): Promise<{ ca
   const updated = await store.updateCard(cardId, { viewedAt: card.viewedAt ?? now, interaction: merged });
 
   if (!CONTENT_TYPES.has(card.type)) {
+    // clarify cards: the tap IS the answer (no model call here; the replan runs after the response)
+    if (card.payload.type === "clarify" && body.choice !== undefined) {
+      const opts = card.payload.options;
+      const answer = typeof body.choice === "number" ? opts[body.choice] : Array.isArray(body.choice) ? body.choice[0] : body.choice;
+      if (answer !== undefined) {
+        const { session: s2, ready } = await answerClarifiers(session.id, { [card.payload.key]: String(answer) });
+        return { card: updated, learnerState: s2.learnerState, inserted: [], replanReady: ready };
+      }
+    }
     return { card: updated, learnerState: session.learnerState, inserted: [] };
   }
 
@@ -798,6 +809,21 @@ export async function patchSession(sessionId: string, patch: { settings?: Partia
   });
 }
 
+/**
+ * Zod 4 quirk: `SessionSettingsSchema.partial()` still fills defaults for
+ * missing keys, so a PATCH of `{ chillMode: true }` would silently reset
+ * depthPreset. Keep only the keys the client actually sent.
+ */
+export function providedSettings(parsed: Partial<Session["settings"]> | undefined, rawSettings: unknown): Partial<Session["settings"]> {
+  if (!parsed) return {};
+  if (!rawSettings || typeof rawSettings !== "object") return {};
+  const out: Partial<Session["settings"]> = {};
+  for (const k of Object.keys(rawSettings as Record<string, unknown>) as (keyof Session["settings"])[]) {
+    if (k in parsed) (out as Record<string, unknown>)[k] = parsed[k];
+  }
+  return out;
+}
+
 /** GET session: lazy watchdog + not-found. */
 export async function getSessionOr404(sessionId: string): Promise<Session> {
   const { store } = await deps();
@@ -810,6 +836,17 @@ export async function listCardsPage(sessionId: string, after: string | null, lim
   const { store } = await deps();
   const page = await store.listCards(sessionId, { after, limit: limit + 1 });
   return { cards: page.slice(0, limit), hasMore: page.length > limit };
+}
+
+export async function listSessions(): Promise<Session[]> {
+  const { store } = await deps();
+  return store.listSessions();
+}
+
+export async function deleteSession(sessionId: string): Promise<void> {
+  const { store } = await deps();
+  await store.deleteSession(sessionId);
+  watchdogs.delete(sessionId);
 }
 
 export async function countCards(sessionId: string): Promise<number> {
