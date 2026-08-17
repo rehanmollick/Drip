@@ -312,6 +312,31 @@ export function cardsSchemaFor(allowed: readonly CardType[]) {
   return z.object({ cards: z.array(item).min(1).max(8) });
 }
 
+/**
+ * Salvage pass for card batches: one over-long string in one card would otherwise throw away three
+ * perfectly good cards and burn a retry (the writer overshoots a cap ~1 batch in 4). Keep the cards
+ * that validate on their own, as long as most of the batch survives; the caller retries otherwise.
+ * Cards are independent by construction — each is its own screen — so dropping one is safe.
+ */
+export function salvageCards(
+  parsed: unknown,
+  schema: z.ZodType<{ cards: Card[] }>,
+  want: number,
+): { value: { cards: Card[] }; dropped: number } | null {
+  if (!parsed || typeof parsed !== "object" || !Array.isArray((parsed as { cards?: unknown }).cards)) return null;
+  const raw = (parsed as { cards: unknown[] }).cards;
+  const kept: unknown[] = [];
+  for (const c of raw) {
+    if (schema.safeParse({ cards: [c] }).success) kept.push(c);
+  }
+  const dropped = raw.length - kept.length;
+  if (!kept.length || dropped === 0) return null;
+  // keep the batch only if it still carries most of what was asked for; a mostly-broken batch is a retry
+  if (kept.length < Math.max(1, Math.ceil(Math.min(want, raw.length) / 2))) return null;
+  const r = schema.safeParse({ cards: kept });
+  return r.success ? { value: r.data, dropped } : null;
+}
+
 /** The fast-path cards: a hook first, then writer types only (chill mode → no bets/sliders). */
 export function planSchemaFor(allowed: readonly CardType[]) {
   const set = new Set<CardType>(allowed.filter((t) => (WRITER_CARD_TYPES as readonly CardType[]).includes(t)));
@@ -399,6 +424,8 @@ type GenerateOpts<T> = {
   checkBanned?: boolean;
   /** Top-level keys of the value that reach the screen; undefined = everything (cards). */
   onScreenKeys?: readonly string[];
+  /** Card batches only: how many cards the prompt asked for. Enables the per-card salvage pass. */
+  salvageWant?: number;
   mock: () => Promise<LlmResult<T>>;
 };
 
@@ -494,7 +521,15 @@ async function generate<T>(o: GenerateOpts<T>): Promise<LlmResult<T>> {
       }
       if (!problem) {
         const normalized = o.normalize ? o.normalize(parsed) : parsed;
-        const v = validate(o.schema, normalized);
+        let v = validate(o.schema, normalized);
+        if (!v.ok && o.salvageWant !== undefined) {
+          // one over-long string shouldn't cost three good cards and a retry
+          const s = salvageCards(normalized, o.schema as unknown as z.ZodType<{ cards: Card[] }>, o.salvageWant);
+          if (s) {
+            console.warn(`[llm] ${o.purpose}: dropped ${s.dropped} card(s) that failed validation, kept ${s.value.cards.length}. ${v.error}`);
+            v = { ok: true, value: s.value as unknown as T };
+          }
+        }
         if (v.ok) {
           const banned = o.checkBanned ? findBannedInValue(onScreen(v.value, o.onScreenKeys)) : null;
           if (banned && attempt === 1) {
@@ -585,6 +620,7 @@ async function writeBatch(ctx: WriteContext): Promise<LlmResult<Card[]>> {
     maxTokens: batchMaxTokens(ctx.mode === "teaser" || ctx.mode === "adjacent" ? 2 : ctx.mode === "recap" || ctx.mode === "scaffold" ? 1 : ctx.batchSize),
     deadlineMs: DEADLINE_MS.batch,
     checkBanned: true,
+    salvageWant: ctx.batchSize,
     normalize: (parsed) => {
       if (!parsed || typeof parsed !== "object") return parsed;
       const o = parsed as Record<string, unknown>;
@@ -636,6 +672,7 @@ async function writeDetour(ctx: DetourContext): Promise<LlmResult<Card[]>> {
     maxTokens: batchMaxTokens(ctx.cardCount),
     deadlineMs: DEADLINE_MS.batch,
     checkBanned: true,
+    salvageWant: ctx.cardCount,
     normalize: (parsed) => {
       if (!parsed || typeof parsed !== "object") return parsed;
       const o = parsed as Record<string, unknown>;

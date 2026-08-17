@@ -135,7 +135,7 @@ describe("logging + mock pipeline", () => {
     expect(typeof toast).toBe("string");
     expect(store.calls.map((c) => c.purpose)).toEqual(["plan", "write", "triage", "detour", "chat"]);
     const shared = /\+shared\.v\d+\.[0-9a-f]{8}$/;
-    expect(store.calls.map((c) => c.promptVersion.replace(shared, ""))).toEqual(["plan.v2", "write.v3", "triage.v1", "detour.v1+write.v3", "dial.v1"]);
+    expect(store.calls.map((c) => c.promptVersion.replace(shared, ""))).toEqual(["plan.v2", "write.v3", "triage.v2", "detour.v1+write.v3", "dial.v1"]);
     for (const c of store.calls) expect(c.promptVersion).toMatch(shared);
     for (const c of store.calls) {
       expect(c.ok).toBe(true);

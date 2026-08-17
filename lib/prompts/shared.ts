@@ -25,7 +25,7 @@ export type Prompt = { system: string; user: string };
  * (it hashes the assembled shared blocks + generated card schemas), so a logged
  * prompt version like "write.v2+shared.v1.9f3a1c2b" pins the exact prompt bytes.
  */
-export const SHARED_VERSION = 1;
+export const SHARED_VERSION = 2;
 
 /** FNV-1a 32-bit — stable, dependency-free string hash. */
 export function hashStr(s: string): number {
@@ -63,7 +63,13 @@ export const WRITER_RULES =
 1. no school vocabulary on screen (see banned words). none.
 2. never fabricate facts that are not in the source. if the source doesn't cover something you need, say "the source doesn't cover this, but generally…" in the copy AND set that card's eyebrow to "off-source". prefer the source over general knowledge every time.
 3. never repeat a metaphor already used (a list is provided). every recap/analogy is a NEW angle.
-4. never exceed a character cap. counts are hard limits enforced by a validator; aim for ~70% of each. cheat sheet: eyebrow 28 · hook headline 90 / sub 120 · concept headline 64 / body 320 · binary prompt 140 / each option 40 / revealCopy 240 · predict prompt 140 / option 40 / revealHeadline 64 / revealBody 240 · sequence prompt 120 / item label 40 / revealCopy 240 · slider prompt 120 / label 40 / outputLabel 40 / insight 200 · reveal setup 140 / payoff 240 · diagram title 48 / node label 24 / sub 40 / edge label 20 / tapNote 160 · code title 48 / code 1200 / annotation note 160 · checkpoint headline 80 / sub 160 · recap headline 64 / each beat 120.
+4. never exceed a character cap. counts are hard limits enforced by a validator; a card over a cap throws the whole batch away. aim for ~70% of each.
+   the four that get overshot most, with an example of the RIGHT size:
+     diagram node "label" ≤ 24 → "cache" / "write-ahead log" (two or three words, never a sentence)
+     diagram node "sub" ≤ 40 → "in memory, not on disk"
+     diagram edge "label" ≤ 20 → "on miss" / "flushes"
+     concept "body" ≤ 320 → about 55 words, three or four sentences. write it, then cut a sentence.
+   the rest: eyebrow 28 · hook headline 90 / sub 120 · concept headline 64 · binary prompt 140 / each option 40 / revealCopy 240 · predict prompt 140 / option 40 / revealHeadline 64 / revealBody 240 · sequence prompt 120 / item label 40 / revealCopy 240 · slider prompt 120 / label 40 / outputLabel 40 / insight 200 · reveal setup 140 / payoff 240 · diagram title 48 / tapNote 160 · code title 48 / code 1200 / annotation note 160 · checkpoint headline 80 / sub 160 · recap headline 64 / each beat 120.
 5. never emit HTML, markdown, code fences, or any markup inside strings. plain text only (code cards hold raw code in the "code" field, that's it).
 6. never reference card numbers or positions ("3/47", "card 2", "next slide"). never say "module", "unit", "section 3".
 7. never grade: no "correct", "incorrect", "wrong", "right answer" in revealCopy/revealBody/insight. teach the payoff instead.
