@@ -6,6 +6,7 @@ import {
   cycleOrder,
   flowLevels,
   flowOrientation,
+  edgeLabelWidth,
   layoutDiagram,
   rectsOverlap,
   validEdges,
@@ -326,4 +327,32 @@ describe("DiagramCard shape guard", () => {
       for (const n of c.nodes) expect(n.label.length).toBeLessThanOrEqual(24);
     }
   });
+});
+
+describe("edge labels stay inside the box", () => {
+  const BOXES: Box[] = [{ w: 361, h: 460 }, { w: 345, h: 520 }, { w: 300, h: 300 }];
+  const LABEL = "x".repeat(20); // schema max
+
+  for (const variant of DIAGRAM_VARIANTS) {
+    it(`${variant}: worst-case labels never hang outside`, () => {
+      const nodes = Array.from({ length: 8 }, (_, i) => ({ id: `n${i}`, label: `node ${i} label text`, sub: `sub label ${i}` }));
+      const edges = [
+        ...nodes.slice(0, -1).map((n, i) => ({ from: n.id, to: nodes[i + 1].id, label: LABEL })),
+        { from: "n7", to: "n0", label: LABEL }, // the routed skip edge that used to escape left
+      ];
+      for (const box of BOXES) {
+        const layout = layoutDiagram({ variant, nodes, edges }, box);
+        for (const e of layout.edges) {
+          if (!e.label) continue;
+          const rotated = Math.abs(((e.labelRotate ?? 0) % 180) - 90) < 45;
+          const halfW = (rotated ? 18 : edgeLabelWidth(e.label)) / 2;
+          const halfH = (rotated ? edgeLabelWidth(e.label) : 18) / 2;
+          expect(e.labelAt.x - halfW, `${variant} ${box.w}x${box.h} ${e.key} left`).toBeGreaterThanOrEqual(-0.5);
+          expect(e.labelAt.x + halfW, `${variant} ${box.w}x${box.h} ${e.key} right`).toBeLessThanOrEqual(box.w + 0.5);
+          expect(e.labelAt.y - halfH, `${variant} ${box.w}x${box.h} ${e.key} top`).toBeGreaterThanOrEqual(-0.5);
+          expect(e.labelAt.y + halfH, `${variant} ${box.w}x${box.h} ${e.key} bottom`).toBeLessThanOrEqual(box.h + 0.5);
+        }
+      }
+    });
+  }
 });

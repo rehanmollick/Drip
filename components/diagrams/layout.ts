@@ -958,11 +958,34 @@ export const LAYOUTS: Record<
   layers: layoutLayers,
 };
 
+/** Rendered height of an edge-label chip (12px line-height + 3px padding each side). */
+const EDGE_LABEL_H = 18;
+
+/**
+ * Edge labels are centered on `labelAt` by the renderer, so a wide label anchored near a wall
+ * hangs outside the diagram (worst case: a routed skip-edge with a 20-char label). Pull each
+ * label's center in far enough that the whole chip lands inside the box.
+ */
+function clampEdgeLabels(layout: DiagramLayout, box: Box): DiagramLayout {
+  return {
+    ...layout,
+    edges: layout.edges.map((e) => {
+      if (!e.label) return e;
+      const rotated = Math.abs(((e.labelRotate ?? 0) % 180) - 90) < 45;
+      const halfW = (rotated ? EDGE_LABEL_H : edgeLabelWidth(e.label)) / 2;
+      const halfH = (rotated ? edgeLabelWidth(e.label) : EDGE_LABEL_H) / 2;
+      const x = Math.min(Math.max(e.labelAt.x, halfW), Math.max(halfW, box.w - halfW));
+      const y = Math.min(Math.max(e.labelAt.y, halfH), Math.max(halfH, box.h - halfH));
+      return x === e.labelAt.x && y === e.labelAt.y ? e : { ...e, labelAt: { x: Math.round(x * 10) / 10, y: Math.round(y * 10) / 10 } };
+    }),
+  };
+}
+
 export function layoutDiagram(
   card: Pick<DiagramCard, "variant" | "nodes" | "edges">,
   box: Box,
   em: TextMetrics = DEFAULT_METRICS,
 ): DiagramLayout {
   const safe: Box = { w: Math.max(40, Math.floor(box.w)), h: Math.max(40, Math.floor(box.h)) };
-  return LAYOUTS[card.variant](card.nodes, card.edges, safe, em);
+  return clampEdgeLabels(LAYOUTS[card.variant](card.nodes, card.edges, safe, em), safe);
 }
