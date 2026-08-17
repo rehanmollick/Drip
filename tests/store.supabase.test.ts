@@ -5,7 +5,7 @@ import path from "path";
 import { generateNKeysBetween } from "fractional-indexing";
 import {
   batchToRow, cardToRow, createSupabaseStore, detourToRow, isDefinite, isTransient, llmCallToRow, rowToBatch, rowToCard,
-  rowToDetour, rowToLlmCall, rowToSession, sessionToRow,
+  rowToDetour, rowToLlmCall, rowToSession, sessionToRow, isSchemaMissing, SupabaseStoreError,
 } from "@/lib/db/supabase";
 import type { Batch, CardRow, Detour, LlmCall, Session } from "@/lib/schemas/session";
 import { defaultLearnerState } from "@/lib/schemas/learner";
@@ -144,7 +144,7 @@ describe("supabase store behaviour (fake client)", () => {
     ]);
     const store = createSupabaseStore({ client, retryDelayMs: 1 });
     await store.getSession(session.id);
-    await expect(store.getSession(session.id)).rejects.toThrow(/relation does not exist/);
+    await expect(store.getSession(session.id)).rejects.toThrow(/DRIP tables are missing/);
   });
 
   it("countLlmCallsSince throws when the count is unreadable (fail closed)", async () => {
@@ -177,7 +177,7 @@ describe("supabase store: retry policy", () => {
       () => ({ data: null, error: { code: "42P01", message: "relation does not exist" } }),
     ]);
     const store = createSupabaseStore({ client, retryDelayMs: 1 });
-    await expect(store.listSessions()).rejects.toThrow(/relation does not exist/);
+    await expect(store.listSessions()).rejects.toThrow(/DRIP tables are missing/);
     expect(calls.filter((c) => c === "sessions.select")).toHaveLength(1);
   });
 
@@ -315,5 +315,16 @@ describe("supabase store: idx byte order", () => {
     expect((await store.listAllCards(session.id)).map((c) => c.idx)).toEqual(["a9", "aA", "aZ", "aa"]);
     expect((await store.lastCard(session.id))?.idx).toBe("aa");
     expect(calls.filter((c) => c === "cards.select")).toHaveLength(2);
+  });
+});
+
+describe("un-migrated project", () => {
+  it("turns PostgREST's schema-cache miss into an actionable message, not a raw 500", () => {
+    const e = new SupabaseStoreError("getSession", { code: "PGRST205", message: "Could not find the table 'public.sessions' in the schema cache" });
+    expect(e.code).toBe("schema_missing");
+    expect(e.message).toMatch(/0001_init\.sql/);
+    expect(e.message).toMatch(/DRIP_STORE=local/);
+    expect(isSchemaMissing({ code: "42P01", message: 'relation "sessions" does not exist' })).toBe(true);
+    expect(isSchemaMissing({ code: "23505", message: "duplicate key" })).toBe(false);
   });
 });

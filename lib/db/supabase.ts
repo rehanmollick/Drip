@@ -197,11 +197,22 @@ export function llmCallToRow(c: LlmCall): Row {
 type PgError = { code?: string; message: string; details?: string | null; hint?: string | null } | null;
 type Res<T> = { data: T; error: PgError; count?: number | null };
 
+/** PostgREST reports an un-migrated project as "Could not find the table ... in the schema cache". */
+export function isSchemaMissing(e: { code?: string; message?: string } | null | undefined): boolean {
+  if (!e) return false;
+  if (String(e.code) === "PGRST205" || String(e.code) === "42P01") return true;
+  return /schema cache|does not exist/i.test(e.message ?? "");
+}
+
+const MIGRATION_HINT =
+  "the DRIP tables are missing from this Supabase project — open the SQL editor and run supabase/migrations/0001_init.sql " +
+  "then 0002_idx_collation.sql (`pnpm db:migrate` prints them), or run with DRIP_STORE=local while you set it up";
+
 export class SupabaseStoreError extends Error {
   code: string;
   constructor(op: string, e: { code?: string; message: string }) {
-    super(`[supabase:${op}] ${e.message}`);
-    this.code = e.code ?? "supabase_error";
+    super(isSchemaMissing(e) ? `[supabase:${op}] ${MIGRATION_HINT}` : `[supabase:${op}] ${e.message}`);
+    this.code = isSchemaMissing(e) ? "schema_missing" : e.code ?? "supabase_error";
   }
 }
 

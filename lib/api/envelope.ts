@@ -30,6 +30,15 @@ export function fail(status: number, code: string, message: string, details?: un
 
 type Handler<Ctx> = (req: Request, ctx: Ctx) => Promise<Response> | Response;
 
+/**
+ * Config errors the operator must act on (missing DB schema). Their messages are written for a
+ * human running the app and contain no request data, paths, or credentials — safe to return.
+ */
+const OPERATOR_CODES = new Set(["schema_missing"]);
+function isOperatorError(e: unknown): e is { code: string; message: string } {
+  return !!e && typeof e === "object" && typeof (e as { code?: unknown }).code === "string" && OPERATOR_CODES.has((e as { code: string }).code) && typeof (e as { message?: unknown }).message === "string";
+}
+
 /** Wrap a route handler so every thrown error becomes an enveloped response. */
 export function handle<Ctx = unknown>(fn: Handler<Ctx>): Handler<Ctx> {
   return async (req, ctx) => {
@@ -40,6 +49,8 @@ export function handle<Ctx = unknown>(fn: Handler<Ctx>): Handler<Ctx> {
       if (e instanceof ZodError) return fail(400, "invalid_request", "request failed validation", e.issues);
       // Never echo raw internals (paths, db errors, library messages) to the client — log them, say something calm.
       console.error("[api] unhandled", e);
+      // One exception: a misconfigured deployment is the operator's problem to fix, not a leak. Say what to do.
+      if (isOperatorError(e)) return fail(503, e.code, e.message.replace(/^\[[^\]]+\]\s*/, ""));
       return fail(500, "internal", "something broke on our side. try again?");
     }
   };
