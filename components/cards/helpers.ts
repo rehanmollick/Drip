@@ -118,3 +118,144 @@ export function estimateLines(text: string, cols = 40): number {
 export function reserveHeight(text: string, fontPx: number, cols = 40, lineHeight = 1.4, extra = 8): number {
   return Math.ceil(estimateLines(text, cols) * fontPx * lineHeight + extra);
 }
+
+// ── inline glossary (cards carrying `terms`) ────────────────────────────────
+
+export type GlossSegment = {
+  text: string;
+  /** set when this segment is a matched glossary term */
+  term?: string;
+  gloss?: string;
+};
+
+/** Escape a term for use inside a RegExp. */
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+const WORDISH = /[\p{L}\p{N}_]/u;
+
+/** Ranges of `text` that sit inside backticks — code, never glossed. */
+function codeRanges(text: string): Array<[number, number]> {
+  const out: Array<[number, number]> = [];
+  const re = /`[^`\n]*`/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) out.push([m.index, m.index + m[0].length]);
+  return out;
+}
+
+/**
+ * Split `text` into plain + glossed segments. Matching rules (tested in
+ * tests/cards.glossary.test.ts):
+ *   - whole words only (a term never matches inside a longer word)
+ *   - case-insensitive, but the ORIGINAL casing of the text is preserved
+ *   - FIRST occurrence of each term only — a card underlines a word once
+ *   - never inside `code spans`
+ *   - overlapping terms: the earlier match in the text wins
+ */
+export function splitGlossed(
+  text: string,
+  terms?: ReadonlyArray<{ term: string; gloss: string }> | null,
+): GlossSegment[] {
+  if (!text) return [];
+  const list = (terms ?? []).filter((t) => t && t.term.trim().length > 0);
+  if (list.length === 0) return [{ text }];
+
+  const skip = codeRanges(text);
+  const inCode = (a: number, b: number) => skip.some(([s, e]) => a < e && b > s);
+
+  type Hit = { start: number; end: number; term: string; gloss: string };
+  const hits: Hit[] = [];
+  for (const { term, gloss } of list) {
+    const needle = term.trim();
+    // a term the writer gave as "TTL" still has to catch "TTLs" in the copy
+    const plural = WORDISH.test(needle[needle.length - 1]) ? "(?:['\u2019]s|es|s)?" : "";
+    const re = new RegExp(escapeRe(needle) + plural, "gi");
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text))) {
+      const start = m.index;
+      const end = start + m[0].length;
+      if (re.lastIndex === m.index) re.lastIndex++;         // zero-length guard
+      const before = start > 0 ? text[start - 1] : "";
+      const after = end < text.length ? text[end] : "";
+      const boundaryOk =
+        (!WORDISH.test(needle[0]) || !before || !WORDISH.test(before)) &&
+        (!WORDISH.test(needle[needle.length - 1]) || !after || !WORDISH.test(after));
+      if (!boundaryOk || inCode(start, end)) continue;
+      hits.push({ start, end, term: needle, gloss });
+      break;                                                 // first occurrence only
+    }
+  }
+  if (hits.length === 0) return [{ text }];
+
+  hits.sort((a, b) => a.start - b.start || b.end - a.end);
+  const out: GlossSegment[] = [];
+  let cursor = 0;
+  for (const h of hits) {
+    if (h.start < cursor) continue;                          // overlapped by an earlier hit
+    if (h.start > cursor) out.push({ text: text.slice(cursor, h.start) });
+    out.push({ text: text.slice(h.start, h.end), term: h.term, gloss: h.gloss });
+    cursor = h.end;
+  }
+  if (cursor < text.length) out.push({ text: text.slice(cursor) });
+  return out;
+}
+
+// ── stat card sizing + scale ────────────────────────────────────────────────
+
+const MAGNITUDE: Record<string, number> = { k: 1e3, m: 1e6, b: 1e9, t: 1e12 };
+
+/**
+ * Parse a schema `value` string ("80%", "1.2M", "0.2ms", "$4.5k", "10x") into a
+ * number plus the unit that survives it. k/M/B/T fold into the number so
+ * "1.2M" and "300k" are directly comparable.
+ */
+export function parseStatValue(raw: string): { n: number; unit: string } | null {
+  const s = raw.trim().replace(/,/g, "");
+  const m = /^([^\d.\-+]*)([-+]?\d*\.?\d+)\s*([a-zA-Z%µ/]*)$/.exec(s);
+  if (!m) return null;
+  const n = Number(m[2]);
+  if (!Number.isFinite(n)) return null;
+  let unit = (m[3] ?? "").trim();
+  let mult = 1;
+  if (unit.length > 0) {
+    const head = unit[0].toLowerCase();
+    const isBare = unit.length === 1;
+    const isMag = MAGNITUDE[head] !== undefined;
+    // "1.2M" → magnitude; "3ms" → milliseconds (m followed by more letters is a unit, not a magnitude)
+    if (isMag && (isBare || (head !== "m" && head !== "b" && head !== "t"))) {
+      mult = MAGNITUDE[head];
+      unit = unit.slice(1);
+    }
+  }
+  return { n: n * mult, unit: unit.toLowerCase() };
+}
+
+/**
+ * Bar fractions (0..1) for a stat and its comparison, or null when the two
+ * numbers aren't comparable (different units / unparseable / non-positive).
+ * The smaller bar keeps a visible sliver so a 1000× gap still reads as a bar.
+ */
+export function statBars(value: string, compare: string): { value: number; compare: number } | null {
+  const a = parseStatValue(value);
+  const b = parseStatValue(compare);
+  if (!a || !b || a.unit !== b.unit) return null;
+  if (!(a.n > 0) || !(b.n > 0)) return null;
+  const max = Math.max(a.n, b.n);
+  const floor = 0.04;
+  return {
+    value: Math.max(floor, Math.min(1, a.n / max)),
+    compare: Math.max(floor, Math.min(1, b.n / max)),
+  };
+}
+
+/**
+ * Font size (px) for the huge number on a stat card. The unit rides beside the
+ * number at ~0.34em, so it counts as roughly a third of a character each.
+ */
+export function statFontSize(value: string, unit?: string): number {
+  const len = value.length + (unit ? unit.length * 0.42 : 0);
+  return fitFontSize("x".repeat(Math.ceil(len)), [
+    [2, 140], [3, 124], [4, 108], [5, 94], [6, 82], [7, 74], [8, 66], [10, 56], [12, 47], [Infinity, 42],
+  ]);
+}

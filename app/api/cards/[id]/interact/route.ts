@@ -8,11 +8,11 @@ export const dynamic = "force-dynamic";
 
 type Ctx = { params: Promise<{ id: string }> };
 
-/** POST /api/cards/:id/interact — record view/choice/dwell, reduce learner state, maybe insert a recap. */
+/** POST /api/cards/:id/interact — record view/choice/typed answer/dwell, reduce learner state, maybe insert a recap. */
 export const POST = handle<Ctx>(async (req, { params }) => {
   const { id } = await params;
   const body = await parseBody(req, InteractBody);
-  const { card, learnerState, inserted, replanReady } = await interact(id, body);
+  const { card, learnerState, inserted, feedback, replanReady } = await interact(id, body);
   if (replanReady) after(() => replan(card.sessionId));
-  return ok({ card, learnerState, inserted });
+  return ok({ card, feedback, learnerState, inserted });
 });

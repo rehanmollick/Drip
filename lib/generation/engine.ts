@@ -1,8 +1,8 @@
-import { CARD_SCHEMA_VERSION, CHILL_EXCLUDED_TYPES, WRITER_CARD_TYPES, type Card, type CardType, type ClarifyCard } from "@/lib/schemas/cards";
+import { CARD_SCHEMA_VERSION, CHILL_EXCLUDED_TYPES, CardSchema, WRITER_CARD_TYPES, type Card, type CardType, type ClarifyCard, type OpenCard } from "@/lib/schemas/cards";
 import { ProgressSchema, type Batch, type CardRow, type Detour, type Interaction, type Session } from "@/lib/schemas/session";
 import { SessionSettingsSchema, defaultLearnerState, type LearnerState } from "@/lib/schemas/learner";
 import type { OutlineNode, Persona, PlanOutput } from "@/lib/schemas/plan";
-import type { CreateSessionBody, GenerateData, AskData, InteractBody, DialData } from "@/lib/api/contract";
+import type { CreateSessionBody, GenerateData, AskData, InteractBody, DialData, ChooseBody, OpenFeedback } from "@/lib/api/contract";
 import type { DetourContext, LlmApi, LlmResult, WriteContext, WriteMode } from "@/lib/llm-types";
 import { llm as realLlm } from "@/lib/llm";
 import { getStore } from "@/lib/db";
@@ -11,11 +11,15 @@ import { HttpError } from "@/lib/api/envelope";
 import { nowIso, uuid } from "@/lib/id";
 import { highlightCards } from "@/lib/highlight";
 import {
-  addReinforce, applyDial, applyInteraction, clearRecap, clearScaffold, learnerStateHash, missedConcepts, withPrefs,
+  addReinforce, applyDial, applyInteraction, clearRecap, clearScaffold, learnerStateHash, missedConcepts,
+  noteMissedConcepts, withPrefs,
 } from "@/lib/adapt/learner";
 import { sliceFor } from "./corpus";
-import { recentSummaries, usedMetaphors } from "./summaries";
+import { recentSummaries, recentTypes, usedMetaphors } from "./summaries";
 import { budgetNotice, fallbackCard, isBudgetNotice, isFallback, SYSTEM_NODE } from "./system-cards";
+import { buildCrossroadsCard, buildWrapCard } from "./crossroads";
+import { advanceStoryline, initialStoryline, mergeStoryline, reanchorDirective } from "./storyline";
+import { describeViolations, enforceVariety, narrowAllowed, varietyDirectives } from "./variety";
 import { buildDetourRows, keyBetween, keysBetween } from "@/lib/detour/splice";
 
 /**
@@ -28,6 +32,9 @@ import { buildDetourRows, keyBetween, keysBetween } from "@/lib/detour/splice";
  *                   was writing is dropped as "superseded" — never inserted
  *   interact      → card row + learner-state reduction under the session lock,
  *                   auto recap insertion (the ONLY consumer of recapDue)
+ *   choose        → the crossroads: keep going / one more layer / ask / wrap up.
+ *                   generation PAUSES at every topic boundary (progress.awaitingChoice)
+ *                   until the reader picks — the feed asks instead of running on
  *   dial          → level ±1, drop unviewed runway, bump epoch (regeneration is lazy)
  *   ask           → triage → inline | detour splice (nesting-safe)
  *   answerClarifiers / replan (single-flight, pendingReplan), retry, remix, watchdog
@@ -53,6 +60,9 @@ export const BATCH_HEARTBEAT_MS = 20_000;
 export const MAX_UNVIEWED_RUNWAY = 16;
 /** How long dial() waits for the persona toast before answering with the canned line (the runway drop must not wait). */
 export const DIAL_TOAST_WAIT_MS = 2_500;
+/** Extra cards granted by "one more layer here" at a crossroads (4 on the deep preset). */
+export const DEEPER_CARDS = 3;
+export const DEEPER_CARDS_DEEP = 4;
 const POLL_MS = 400;
 const CORPUS_SLICE_CHARS = 6000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -71,6 +81,8 @@ const COPY = {
   planningTimeout: "planning took too long",
   toastSimpler: "say less. rewinding the jargon.",
   toastDeeper: "bet. going a layer deeper.",
+  /** `open` cards when the grader is unavailable: never fake a verdict on what someone wrote. */
+  openUngraded: "couldn't read that one properly just now. here's how i'd have put it:",
 };
 
 // ── deps (injectable) ───────────────────────────────────────────────────────
@@ -105,6 +117,26 @@ async function updateSessionLocked(store: Store, id: string, fn: (fresh: Session
     const patch = fn(fresh);
     return patch ? store.updateSession(id, patch) : fresh;
   });
+}
+
+/**
+ * Fire-and-forget work that must never hold up a card (the storyline refresh).
+ * Failures are logged and swallowed; tests await `settleBackgroundForTests()`.
+ */
+const background = new Map<string, Promise<unknown>>();
+let jobSeq = 0;
+function inBackground(label: string, fn: () => Promise<unknown>): void {
+  const key = `${label}:${++jobSeq}`;
+  const p = fn()
+    .catch((e: unknown) => console.warn("[engine] background job failed", label, e instanceof Error ? e.message : e))
+    .finally(() => {
+      if (background.get(key) === p) background.delete(key);
+    });
+  background.set(key, p);
+}
+/** Tests only: wait for the fire-and-forget jobs to settle. */
+export async function settleBackgroundForTests(): Promise<void> {
+  for (let i = 0; i < 20 && background.size; i++) await Promise.allSettled(Array.from(background.values()));
 }
 
 /** Single-flight per session for long background jobs (planning, re-plan): a double tap joins the live run. */
@@ -186,6 +218,8 @@ function baseContext(session: Session, all: CardRow[], node: OutlineNode | null)
     learnerState: session.learnerState,
     settings: session.settings,
     recent: recentSummaries(payloads, 6),
+    recentTypes: recentTypes(payloads, 6),
+    storyline: session.storyline,
     usedMetaphors: usedMetaphors(payloads),
     allowedTypes: allowedTypes(session),
     detourId: null,
@@ -234,29 +268,49 @@ function lastViewedIdx(cards: CardRow[]): string | null {
   return m;
 }
 
+/** Types that count toward a node's card budget. Recaps, crossroads, wraps and every system card do not. */
+const COUNTS_TOWARD_NODE: ReadonlySet<string> = new Set(WRITER_CARD_TYPES.filter((t) => t !== "recap"));
+// the payload is the source of truth for a row's shape (the `type` column mirrors it)
+const countsTowardNode = (c: CardRow) => !c.detourId && COUNTS_TOWARD_NODE.has(c.payload.type);
+
+/** Main-thread cards already written for a node. */
+export function cardsInNodeCount(cards: CardRow[], nodeId: string): number {
+  return cards.filter((c) => countsTowardNode(c) && c.payload.topicNodeId === nodeId).length;
+}
+
+/** True while the reader is parked on an unanswered crossroads (or on the wrap that ended the thread). */
+function atOpenChoice(cards: CardRow[]): boolean {
+  return cards.some((c) => c.payload.type === "wrap" || (c.payload.type === "crossroads" && c.interaction?.choice === undefined));
+}
+
 /** Recompute the frontier after cards were dropped (dial / replan / chill / retry). Recaps don't count toward a node. */
 export function recomputeProgress(session: Session, cards: CardRow[]): Session["progress"] {
   const outlineIds = new Set(session.outline.map((n) => n.id));
-  const main = cards.filter((c) => !c.detourId && c.type !== "recap" && outlineIds.has(c.payload.topicNodeId));
+  const main = cards.filter((c) => countsTowardNode(c) && outlineIds.has(c.payload.topicNodeId));
   const lastMain = main[main.length - 1];
   let nodeIdx = 0;
   let cardsInNode = 0;
   if (lastMain) {
     nodeIdx = Math.max(0, session.outline.findIndex((n) => n.id === lastMain.payload.topicNodeId));
     cardsInNode = main.filter((c) => c.payload.topicNodeId === lastMain.payload.topicNodeId).length;
-    const est = session.outline[nodeIdx]?.estCards ?? BATCH_SIZE;
+    const deeper = nodeIdx === session.progress.nodeIdx ? session.progress.deeperCards ?? 0 : 0;
+    const est = (session.outline[nodeIdx]?.estCards ?? BATCH_SIZE) + deeper;
     if (cardsInNode >= est) {
       nodeIdx += 1;
       cardsInNode = 0;
     }
   }
+  const last = cards[cards.length - 1];
   return {
     ...session.progress,
     nodeIdx,
     cardsInNode,
     exhausted: session.outline.length > 0 && nodeIdx >= session.outline.length,
     totalGenerated: cards.length,
-    lastIdx: cards[cards.length - 1]?.idx ?? null,
+    lastIdx: last?.idx ?? null,
+    // the crossroads the reader was parked on may have just been dropped with the runway
+    awaitingChoice: !!last && (last.payload.type === "wrap" || (last.payload.type === "crossroads" && last.interaction?.choice === undefined)),
+    deeperCards: nodeIdx === session.progress.nodeIdx ? session.progress.deeperCards ?? 0 : 0,
   };
 }
 
@@ -433,8 +487,10 @@ async function applyPlan(store: Store, session: Session, plan: PlanOutput, opts:
     };
     void _a; void _b; void _c;
     const titleIsAuto = fresh.title === autoTitle(fresh.sourceText) || fresh.title === "untitled";
+    const title = titleIsAuto ? plan.title : fresh.title;
     return store.updateSession(session.id, {
-      title: titleIsAuto ? plan.title : fresh.title,
+      title,
+      storyline: initialStoryline(title, plan.outline, rows[rows.length - 1]?.idx ?? null),
       theme: opts.replan && fresh.theme ? fresh.theme : plan.theme,
       persona: plan.persona,
       outline: plan.outline,
@@ -451,6 +507,8 @@ async function applyPlan(store: Store, session: Session, plan: PlanOutput, opts:
         lastIdx: rows[rows.length - 1]?.idx ?? fresh.progress.lastIdx,
         epoch: fresh.progress.epoch + (opts.replan ? 1 : 0),
         pendingReplan: false,
+        awaitingChoice: false,
+        deeperCards: 0,
       },
     });
   });
@@ -512,6 +570,21 @@ export async function generateNext(sessionId: string, opts: { waitMs?: number } 
   const last = all[all.length - 1] ?? null;
   const now = nowIso();
 
+  // The thread was wrapped on request: the feed stays scrollable, nothing more is written.
+  if (last && last.payload.type === "wrap") {
+    return { batch: pseudo("wrapped", "done", `wrapped:${sessionId}`, "wrapped"), cards: [] };
+  }
+  // A topic just closed and the reader hasn't picked a direction: the feed ASKS instead of running on.
+  if (session.progress.awaitingChoice) {
+    if (atOpenChoice(all)) {
+      return { batch: pseudo("awaiting_choice", "done", `choice:${sessionId}:${last?.idx ?? "start"}`, "awaiting_choice"), cards: [] };
+    }
+    // the crossroads went with a dropped runway — heal rather than stall forever
+    await updateSessionLocked(store, sessionId, (fresh) =>
+      fresh.progress.awaitingChoice ? { progress: { ...fresh.progress, awaitingChoice: false } } : null,
+    ).catch(() => undefined);
+  }
+
   // Guards: don't stack budget notices or fallbacks; don't run past a sane runway.
   if (last && isBudgetNotice(last.payload) && sameUtcDay(last.createdAt, now)) {
     return { batch: pseudo("budget", "done", `budget:${sessionId}`, "budget"), cards: [last] };
@@ -567,22 +640,35 @@ export async function generateNext(sessionId: string, opts: { waitMs?: number } 
       let state = fresh.learnerState;
       if (built.consumedScaffold) state = clearScaffold(state);
       const p = { ...fresh.progress, totalGenerated: fresh.progress.totalGenerated + inserted.length, lastIdx: inserted[inserted.length - 1]?.idx ?? fresh.progress.lastIdx };
+      let storyline = fresh.storyline;
       if (built.outcome === "ok" && built.node) {
         p.cardsInNode += built.mainCount;
-        const est = built.node.estCards;
-        if (p.cardsInNode >= est) {
-          p.nodeIdx += 1;
-          p.cardsInNode = 0;
+        p.deeperCards = Math.max(0, (fresh.progress.deeperCards ?? 0) - built.mainCount);
+        if (built.endsNode) {
+          // the batch's last row IS the crossroads: the node does NOT advance here, the choice advances it
+          p.awaitingChoice = true;
+          storyline = advanceStoryline(storyline, {
+            title: fresh.title,
+            outline: fresh.outline,
+            finishedIdx: Math.max(0, fresh.outline.findIndex((n) => n.id === built.node!.id)),
+            lastIdx: p.lastIdx,
+          });
         }
-        if (p.nodeIdx >= fresh.outline.length) p.exhausted = true;
       } else if (built.outcome === "ok" && !built.node) {
         p.exhausted = true;
         p.extensions += 1;
+        p.deeperCards = Math.max(0, (fresh.progress.deeperCards ?? 0) - built.mainCount);
+        if (built.endsNode) p.awaitingChoice = true;
       }
-      await store.updateSession(sessionId, { learnerState: state, progress: p });
+      await store.updateSession(sessionId, { learnerState: state, progress: p, storyline });
       return inserted;
     });
     if (rows === null) return await superseded();
+    // the through-line refresh is cheap and must never hold up a card: it runs after the response
+    if (built.endsNode && built.outcome === "ok" && built.node) {
+      const finishedIdx = Math.max(0, session.outline.findIndex((n) => n.id === built.node!.id));
+      refreshStorylineSoon(llm, store, sessionId, finishedIdx);
+    }
     return { batch: { id: batch.id, status, frontierKey }, cards: rows };
   } catch (e) {
     const message = (e instanceof Error ? e.message : String(e)).slice(0, 200);
@@ -612,9 +698,22 @@ type Built = {
   node: OutlineNode | null;
   mainCount: number;
   consumedScaffold: boolean;
+  /** This batch closed the topic: its last row is a crossroads and generation pauses there. */
+  endsNode: boolean;
 };
 
-/** Compose one batch: optional scaffold re-angle + the main write. (Recaps are inserted by interact(), never here.) */
+/**
+ * How many recent batches had cards dropped for repeating a shape. In-memory and
+ * best-effort — it only sharpens the next batch's directives (lib/generation/variety.ts).
+ */
+const varietyPressure = new Map<string, number>();
+
+/**
+ * Compose one batch: optional scaffold re-angle + the main write, and — when the
+ * batch closes the topic — one deterministic `crossroads` card as its last row.
+ * The boundary must never wait on a model, so that card is assembled locally.
+ * (Recaps are inserted by interact(), never here.)
+ */
 async function buildBatch(llm: LlmApi, session: Session, all: CardRow[]): Promise<Built> {
   const node = currentNode(session);
   const base = baseContext(session, all, node);
@@ -634,64 +733,307 @@ async function buildBatch(llm: LlmApi, session: Session, all: CardRow[]): Promis
 
   const scaffoldConcept = d.scaffoldNext[0];
   if (scaffoldConcept) {
-    const r = await write({ ...base, mode: "scaffold", batchSize: 1, missedConcepts: d.scaffoldNext, extraDirectives: [...base.extraDirectives, `re-angle "${scaffoldConcept}" as one concept card before the next bet — new example, plainer words`] });
+    const r = await write({ ...base, mode: "scaffold", batchSize: 1, missedConcepts: d.scaffoldNext, extraDirectives: [...base.extraDirectives, `re-angle "${scaffoldConcept}" as one card before the next bet — new example, plainer words, and give it something to look at`] });
     if (r?.length) {
       cards.push(...adopt(r.slice(0, 1), topic, null));
       consumedScaffold = true;
     }
-    if (st.outcome === "budget") return { cards: [...cards, budgetNotice()], outcome: "budget", node, mainCount: 0, consumedScaffold };
+    if (st.outcome === "budget") return { cards: [...cards, budgetNotice()], outcome: "budget", node, mainCount: 0, consumedScaffold, endsNode: false };
   }
 
-  // main write
+  // ── main write ──
+  const tieIn = consumedScaffold && scaffoldConcept ? [`a gentler re-angle of "${scaffoldConcept}" sits right before this batch — make this batch's bet re-test "${scaffoldConcept}" from a fresh angle`] : [];
+  /** "one more layer here" at a crossroads grants this many extra cards on the current thread. */
+  const deeperOwed = session.progress.deeperCards ?? 0;
+  const misses = missedConcepts(session.learnerState, 4);
+  const useResurface = !node && misses.length > 0 && session.progress.extensions % 2 === 0;
+  const batchSize = deeperOwed > 0
+    ? Math.max(2, Math.min(6, deeperOwed))
+    : node ? BATCH_SIZE : useResurface ? BATCH_SIZE : 2;
+
+  // the variety governor decides what this batch is allowed to look like BEFORE the call
+  const seen = base.recentTypes ?? [];
+  const pressure = varietyPressure.get(session.id) ?? 0;
+  const variety = varietyDirectives({ recentTypes: seen, batchSize, allowedTypes: base.allowedTypes, pressure });
+  const allowed = narrowAllowed(base.allowedTypes, variety.forbidden);
+  const cameBackFromDetour = all.length > 0 && all[all.length - 1].detourId !== null;
+  const shared = [
+    ...base.extraDirectives,
+    ...tieIn,
+    ...(cameBackFromDetour ? [reanchorDirective(session.storyline, node?.title ?? null)] : []),
+    ...(deeperOwed > 0 ? [`they tapped "one more layer" on ${node?.title ?? "what just went by"} — go UNDER what is already on screen: the mechanism, the edge case, the part that surprises. never restate a card they have already seen.`] : []),
+    ...variety.lines,
+  ];
+
   let main: Card[] | null = null;
   let mainTopic = topic;
-  const tieIn = consumedScaffold && scaffoldConcept ? [`a gentler re-angle of "${scaffoldConcept}" sits right before this batch — make this batch's bet re-test "${scaffoldConcept}" from a fresh angle`] : [];
   if (node) {
-    const completes = session.progress.cardsInNode + BATCH_SIZE >= node.estCards;
-    const extra = [...base.extraDirectives, ...tieIn];
-    if (completes) extra.push("this batch completes the current idea — end it with a checkpoint card (flex copy, no scores)");
-    main = await write({ ...base, mode: "normal", batchSize: BATCH_SIZE, extraDirectives: extra });
+    const completes = deeperOwed > 0 || session.progress.cardsInNode + batchSize >= node.estCards;
+    const extra = [...shared];
+    if (completes && deeperOwed === 0) extra.push("this batch completes the current idea — end it with a checkpoint card (flex copy, no scores)");
+    main = await write({ ...base, allowedTypes: allowed, mode: "normal", batchSize, extraDirectives: extra });
   } else {
-    const misses = missedConcepts(session.learnerState, 4);
-    const useResurface = misses.length > 0 && session.progress.extensions % 2 === 0;
     const mode: WriteMode = useResurface ? "resurface" : "adjacent";
     mainTopic = mode;
     main = await write({
       ...base,
+      allowedTypes: allowed,
       mode,
       node: null,
-      batchSize: useResurface ? BATCH_SIZE : 2,
+      batchSize,
       missedConcepts: useResurface ? misses : undefined,
       extraDirectives: [
-        ...base.extraDirectives,
-        ...tieIn,
+        ...shared,
         useResurface
           ? "the outline is done: reframe these near-misses as fresh bets — new angle, never the same wording"
-          : "the outline is done: two 'adjacent waters' cards — a hook that offers to go one layer deeper into a neighbouring idea (\"wanna go one layer deeper into X? keep scrolling\") and one concept that starts it",
+          : "the outline is done: two 'adjacent waters' cards — a hook that offers to go one layer deeper into a neighbouring idea (\"wanna go one layer deeper into X? keep scrolling\") and one card that starts it",
       ],
     });
   }
+
+  let kept: Card[] = [];
   if (main?.length) {
-    cards.push(...adopt(main, mainTopic, null));
+    // the governor again, this time on what actually came back: drop the repeats, keep the batch
+    const history = [...seen, ...cards.map((c) => c.type)];
+    const v = enforceVariety(history, main);
+    kept = v.kept;
+    if (v.violations.length) {
+      console.warn(`[engine] variety: kept ${v.kept.length}/${main.length} cards (${describeViolations(v.violations)}) session=${session.id}`);
+      varietyPressure.set(session.id, Math.min(3, pressure + 1));
+    } else {
+      varietyPressure.delete(session.id);
+    }
+    cards.push(...adopt(kept, mainTopic, null));
   } else if (st.outcome === "budget") {
-    return { cards: [...cards, budgetNotice()], outcome: "budget", node, mainCount: 0, consumedScaffold };
+    return { cards: [...cards, budgetNotice()], outcome: "budget", node, mainCount: 0, consumedScaffold, endsNode: false };
   } else {
     const key = frontierKeyFor(session, all[all.length - 1]?.idx ?? null);
     const error = st.error ?? "writer returned nothing";
-    return { cards: [...cards, fallbackCard(error, key)], outcome: "failed", error, node, mainCount: 0, consumedScaffold };
+    return { cards: [...cards, fallbackCard(error, key)], outcome: "failed", error, node, mainCount: 0, consumedScaffold, endsNode: false };
   }
+
+  // ── the boundary: one crossroads card, built here, never by the model ──
+  const mainCount = kept.length;
+  const endsNode = node
+    ? deeperOwed > 0
+      ? mainCount >= deeperOwed
+      : session.progress.cardsInNode + mainCount >= node.estCards
+    : true;
+  if (endsNode) {
+    const idx = node ? session.outline.findIndex((n) => n.id === node.id) : -1;
+    cards.push(buildCrossroadsCard({
+      finished: node?.title ?? (mainTopic === "resurface" ? "the ones that wobbled" : "the extra layer"),
+      upNext: idx >= 0 ? session.outline[idx + 1]?.title ?? null : null,
+      nodeId: node?.id ?? SYSTEM_NODE,
+      seed: idx >= 0 ? idx : session.progress.extensions,
+    }));
+  }
+
   const highlighted = await highlightCards(cards);
-  return { cards: highlighted, outcome: "ok", node, mainCount: main.length, consumedScaffold };
+  return { cards: highlighted, outcome: "ok", node, mainCount, consumedScaffold, endsNode };
+}
+
+// ── the crossroads: the feed asks before it runs on ─────────────────────────
+export type ChooseResult = { session: Session; cards: CardRow[] };
+
+/**
+ * The reader picked a direction at a topic boundary (spec: their #6, "don't just
+ * keep autogenerating"). Under the session lock, idempotent under a double tap —
+ * the choice is recorded on the card row, and a second tap is a no-op.
+ *
+ *   continue → advance to the next topic and fill the runway
+ *   deeper   → 3–4 more cards on the SAME topic, told to go a layer under it
+ *              (at the end of the outline that becomes the adjacent/near-miss stretch)
+ *   ask      → nothing generated here; the client opens the ask bar, the detour flow does the rest
+ *   wrap     → the ending, then the thread rests: still scrollable, nothing more written
+ */
+export async function chooseAtCrossroads(sessionId: string, cardId: string, choice: ChooseBody["choice"]): Promise<ChooseResult> {
+  const { llm, store } = await deps();
+  const card = isUuid(cardId) ? await store.getCard(cardId) : null;
+  if (!card || card.sessionId !== sessionId) throw new HttpError(404, "not_found", "card not found");
+  if (card.payload.type !== "crossroads") throw new HttpError(400, "invalid_request", "that card has no choices on it");
+  const crossroads = card.payload;
+  if (!crossroads.choices.some((c) => c.kind === choice)) throw new HttpError(400, "invalid_request", "that direction isn't on this card");
+
+  const claim = await withSessionLock(sessionId, async () => {
+    const fresh = await store.getSession(sessionId);
+    if (!fresh) throw new HttpError(404, "not_found", "session not found");
+    const row = await store.getCard(cardId);
+    if (!row) throw new HttpError(404, "not_found", "card not found");
+    if (row.interaction?.choice !== undefined) return { session: fresh, taken: false as const }; // double tap
+    const now = nowIso();
+    await store.updateCard(cardId, { viewedAt: row.viewedAt ?? now, interaction: { ...(row.interaction ?? {}), choice, at: now } });
+
+    const all = await store.listAllCards(sessionId);
+    const p = { ...fresh.progress, awaitingChoice: false };
+    const finishedIdx = fresh.outline.findIndex((n) => n.id === row.payload.topicNodeId);
+    if (choice === "continue" || choice === "ask") {
+      // asking is also a step forward: the detour splices in here, the main thread carries on after it
+      const from = finishedIdx >= 0 ? finishedIdx : fresh.progress.nodeIdx;
+      const target = Math.min(fresh.outline.length, Math.max(fresh.progress.nodeIdx, from + 1));
+      p.nodeIdx = target;
+      p.cardsInNode = target < fresh.outline.length ? cardsInNodeCount(all, fresh.outline[target].id) : 0;
+      p.deeperCards = 0;
+      p.exhausted = fresh.outline.length > 0 && target >= fresh.outline.length;
+    } else if (choice === "deeper") {
+      p.deeperCards = fresh.settings.depthPreset === "deep" ? DEEPER_CARDS_DEEP : DEEPER_CARDS;
+      if (crossroads.upNext === null) {
+        // nothing left in the outline: one more layer means the adjacent / near-miss stretch
+        p.nodeIdx = fresh.outline.length;
+        p.cardsInNode = 0;
+        p.exhausted = true;
+      } else if (finishedIdx >= 0) {
+        p.nodeIdx = finishedIdx;
+        p.cardsInNode = cardsInNodeCount(all, fresh.outline[finishedIdx].id);
+        p.exhausted = false;
+      }
+    } else {
+      p.awaitingChoice = true; // wrap: nothing more is ever written on this thread
+    }
+    return { session: await store.updateSession(sessionId, { progress: p }), taken: true as const };
+  });
+  if (!claim.taken) return { session: claim.session, cards: [] };
+  if (choice === "ask") return { session: claim.session, cards: [] };
+  if (choice === "wrap") return wrapUp(llm, store, sessionId);
+
+  const g = await generateNext(sessionId);
+  return { session: (await store.getSession(sessionId)) ?? claim.session, cards: g.cards };
+}
+
+/**
+ * The ending they asked for. `llm.writeWrap` when it's available, a deterministic
+ * wrap built from the through-line when it isn't — "wrap it up" always lands
+ * something. The session goes quiet (archived) but stays scrollable; the feed
+ * offers a new thread rather than dead-ending.
+ */
+async function wrapUp(llm: LlmApi, store: Store, sessionId: string): Promise<ChooseResult> {
+  const session = await store.getSession(sessionId);
+  if (!session) throw new HttpError(404, "not_found", "session not found");
+  const payloads = (await store.listAllCards(sessionId)).map((r) => r.payload);
+  let payload: Card | null = null;
+  try {
+    const r = await llm.writeWrap({
+      sessionId,
+      persona: session.persona ?? PLACEHOLDER_PERSONA,
+      theme: themeSlice(session),
+      storyline: session.storyline,
+      outline: session.outline,
+      covered: recentSummaries(payloads, 12),
+      learnerState: session.learnerState,
+    });
+    if (r.ok) {
+      const parsed = CardSchema.safeParse(r.value);
+      if (parsed.success && parsed.data.type === "wrap") payload = parsed.data;
+    }
+  } catch (e) {
+    console.warn("[engine] writeWrap failed", sessionId, e instanceof Error ? e.message : e);
+  }
+  if (!payload) {
+    payload = buildWrapCard({ title: session.title, storyline: session.storyline, outline: session.outline, nodeIdx: session.progress.nodeIdx });
+  }
+  const [wrap] = adopt([payload], SYSTEM_NODE, null);
+  const rows = await withSessionLock(sessionId, async () => {
+    const fresh = await store.getSession(sessionId);
+    if (!fresh) return [];
+    const inserted = await insertAfterLast(store, sessionId, [wrap], null);
+    await store.updateSession(sessionId, {
+      status: fresh.status === "active" ? "archived" : fresh.status,
+      progress: {
+        ...fresh.progress,
+        awaitingChoice: true,
+        deeperCards: 0,
+        totalGenerated: fresh.progress.totalGenerated + inserted.length,
+        lastIdx: inserted[inserted.length - 1]?.idx ?? fresh.progress.lastIdx,
+      },
+    });
+    return inserted;
+  });
+  return { session: (await store.getSession(sessionId)) ?? session, cards: rows };
+}
+
+/**
+ * Refresh the through-line after a topic closes. Cheap, background, and never on
+ * the path of a card: the deterministic advance already happened, so a failure
+ * here just leaves the previous storyline in place.
+ */
+function refreshStorylineSoon(llm: LlmApi, store: Store, sessionId: string, nodeIdx: number): void {
+  inBackground(`storyline:${sessionId}`, async () => {
+    const session = await store.getSession(sessionId);
+    if (!session || session.outline.length === 0) return;
+    const baseline = session.storyline?.updatedAtIdx ?? null;
+    const all = await store.listAllCards(sessionId);
+    const node = session.outline[nodeIdx] ?? null;
+    const r = await llm.updateStoryline({
+      sessionId,
+      prev: session.storyline,
+      title: session.title,
+      outline: session.outline,
+      nodeIdx,
+      recent: recentSummaries(all.map((c) => c.payload), 8),
+      corpusSlice: sliceFor(session.sourceText, node, 2000, { nodeIdx, nodeCount: session.outline.length }),
+    });
+    if (!r.ok) return;
+    await withSessionLock(sessionId, async () => {
+      const fresh = await store.getSession(sessionId);
+      if (!fresh) return;
+      if ((fresh.storyline?.updatedAtIdx ?? null) !== baseline) return; // a newer boundary already moved it
+      const merged = mergeStoryline(fresh.storyline, r.value, fresh.progress.lastIdx);
+      if (merged) await store.updateSession(sessionId, { storyline: merged });
+    });
+  });
 }
 
 // ── interact ────────────────────────────────────────────────────────────────
 const CONTENT_TYPES = new Set<string>(WRITER_CARD_TYPES);
 
-export type InteractResult = { card: CardRow; learnerState: LearnerState; inserted: CardRow[]; /** clarify card answered → every clarifier answered → route should schedule replan() */ replanReady?: boolean };
+export type InteractResult = {
+  card: CardRow;
+  learnerState: LearnerState;
+  inserted: CardRow[];
+  /** `open` cards: the reply written against what they actually typed (replayed on scroll-back). */
+  feedback: OpenFeedback | null;
+  /** clarify card answered → every clarifier answered → route should schedule replan() */
+  replanReady?: boolean;
+};
 
 type Reduced =
   | { kind: "system"; card: CardRow; session: Session; replanReady?: boolean }
   | { kind: "content"; card: CardRow; session: Session; recap: { concept: string; viaMiss: boolean } | null };
+
+/**
+ * Grade a typed answer against the card's own rubric. Runs BEFORE the session
+ * lock (never hold a lock across a model call). When the grader is unavailable
+ * it degrades to showing the answer we'd have given — `graded: false` means the
+ * verdict is not a judgement and never reaches the learner state.
+ */
+async function evaluateOpenAnswer(llm: LlmApi, store: Store, sessionId: string, card: OpenCard, answer: string): Promise<{ feedback: OpenFeedback; graded: boolean }> {
+  const ungraded = {
+    feedback: { verdict: "close" as const, feedback: `${COPY.openUngraded} ${card.modelAnswer}`.slice(0, 600), missed: [] },
+    graded: false,
+  };
+  try {
+    const session = await store.getSession(sessionId);
+    const node = session ? session.outline.find((n) => n.id === card.topicNodeId) ?? currentNode(session) : null;
+    const nodeIdx = session && node ? session.outline.findIndex((n) => n.id === node.id) : 0;
+    const r = await llm.evaluateOpen({
+      sessionId,
+      prompt: card.prompt,
+      rubric: card.rubric,
+      modelAnswer: card.modelAnswer,
+      answer,
+      persona: session?.persona ?? PLACEHOLDER_PERSONA,
+      corpusSlice: session ? sliceFor(session.sourceText, node, 2500, { nodeIdx: Math.max(0, nodeIdx), nodeCount: session.outline.length }) : "",
+    });
+    if (!r.ok) return ungraded;
+    return {
+      feedback: { verdict: r.value.verdict, feedback: r.value.feedback.slice(0, 600), missed: r.value.missed.slice(0, 5) },
+      graded: true,
+    };
+  } catch (e) {
+    console.warn("[engine] evaluateOpen failed", sessionId, e instanceof Error ? e.message : e);
+    return ungraded;
+  }
+}
 
 /**
  * Record a view / answer / dwell / scroll-back. The card row's interaction merge,
@@ -708,6 +1050,9 @@ export async function interact(cardId: string, body: InteractBody): Promise<Inte
   const sessionId = peek.sessionId;
   const now = nowIso();
   const visitDwell = typeof body.dwellMs === "number" ? Math.max(0, Math.min(60_000, body.dwellMs)) : undefined;
+  // `open` cards: they answered in their own words, so the reply is written against THAT, before the lock.
+  const answer = typeof body.text === "string" ? body.text.trim().slice(0, 1200) : "";
+  const open = peek.payload.type === "open" && answer ? await evaluateOpenAnswer(llm, store, sessionId, peek.payload, answer) : null;
 
   const r = await withSessionLock(sessionId, async (): Promise<Reduced> => {
     const card = await store.getCard(cardId);
@@ -716,10 +1061,14 @@ export async function interact(cardId: string, body: InteractBody): Promise<Inte
     if (!session) throw new HttpError(404, "not_found", "session not found");
 
     const prev = card.interaction ?? null;
-    const firstAnswer = body.correct !== undefined && prev?.correct === undefined;
+    // got_it / close are hits; close also records what they missed. An ungraded reply scores nothing.
+    const scoredResult = body.correct ?? (open?.graded ? open.feedback.verdict !== "not_yet" : undefined);
+    const firstAnswer = scoredResult !== undefined && prev?.correct === undefined;
     const merged: Interaction = { ...(prev ?? {}), at: now };
     if (body.choice !== undefined) merged.choice = body.choice;
-    if (body.correct !== undefined && prev?.correct === undefined) merged.correct = body.correct;
+    if (answer && card.payload.type === "open") merged.text = answer;
+    if (open) merged.feedback = open.feedback;
+    if (scoredResult !== undefined && prev?.correct === undefined) merged.correct = scoredResult;
     if (body.value !== undefined) merged.value = body.value;
     // cumulative across hide/resume splits and revisits, hard-capped like any single dwell (spec §8)
     if (visitDwell !== undefined) merged.dwellMs = Math.min(60_000, (prev?.dwellMs ?? 0) + visitDwell);
@@ -738,7 +1087,7 @@ export async function interact(cardId: string, body: InteractBody): Promise<Inte
       return { kind: "system", card: updated, session };
     }
 
-    const scored = firstAnswer && typeof body.correct === "boolean";
+    const scored = firstAnswer && typeof merged.correct === "boolean";
     let state = applyInteraction(session.learnerState, {
       card: card.payload,
       interaction: { ...merged, dwellMs: visitDwell !== undefined ? merged.dwellMs : undefined },
@@ -746,17 +1095,22 @@ export async function interact(cardId: string, body: InteractBody): Promise<Inte
       firstAnswer,
       repeatVisit: prev?.dwellMs !== undefined,
     });
+    if (open?.graded && open.feedback.missed.length) {
+      // "close" is still a hit — the ledger stays, but the writer learns what wobbled
+      state = noteMissedConcepts(state, card.payload.topicNodeId, open.feedback.missed);
+    }
     // claim the recap trigger in the same write: one trigger → at most one recap, whoever else is generating
     let recap: { concept: string; viaMiss: boolean } | null = null;
     if (state.directives.recapDue) {
-      recap = { concept: state.directives.recapDue, viaMiss: scored && body.correct === false };
+      recap = { concept: state.directives.recapDue, viaMiss: scored && merged.correct === false };
       state = clearRecap(state, card.payload.topicNodeId);
     }
     const s2 = await store.updateSession(sessionId, { learnerState: state });
     return { kind: "content", card: updated, session: s2, recap };
   });
 
-  if (r.kind === "system") return { card: r.card, learnerState: r.session.learnerState, inserted: [], replanReady: r.replanReady };
+  const feedback = (r.card.interaction?.feedback ?? null) as OpenFeedback | null;
+  if (r.kind === "system") return { card: r.card, learnerState: r.session.learnerState, inserted: [], feedback, replanReady: r.replanReady };
 
   const inserted: CardRow[] = [];
   if (r.recap) {
@@ -780,8 +1134,26 @@ export async function interact(cardId: string, body: InteractBody): Promise<Inte
         // a miss is reported while the user is ON the card → right after it. dwell / scroll-back are reported when
         // they have already moved on → after the next card in this thread, so the recap is ahead of them, never behind.
         const nextInThread = ahead.find((x) => x.detourId === card.detourId) ?? null;
-        const anchor = r.recap.viaMiss || !nextInThread ? card : nextInThread;
-        const anchorPos = anchor === card ? -1 : ahead.findIndex((x) => x.id === anchor.id);
+        let anchor = r.recap.viaMiss || !nextInThread ? card : nextInThread;
+        let anchorPos = anchor === card ? -1 : ahead.findIndex((x) => x.id === anchor.id);
+        // NOTHING IS EVER INSERTED ABOVE THE READER. Interactions are reported from an outbox, so by
+        // the time a dwell lands they may be several cards further on; anchoring to the card that
+        // triggered it would drop the recap behind them, where it silently shifts their slot and is
+        // never seen. The furthest viewed row is the floor.
+        const floor = lastViewedIdx(all);
+        if (floor !== null && anchor.idx <= floor) {
+          const past = ahead.findIndex((x) => x.idx > floor && x.detourId === card.detourId);
+          if (past > 0) {
+            anchor = ahead[past - 1];
+            anchorPos = past - 1;
+          } else if (past === 0) {
+            anchor = card;
+            anchorPos = -1;
+          } else {
+            anchor = ahead[ahead.length - 1] ?? card;
+            anchorPos = ahead.length - 1;
+          }
+        }
         const before = ahead[anchorPos + 1] ?? null;
         const key = keyBetween(anchor.idx, before?.idx ?? null);
         try {
@@ -794,7 +1166,7 @@ export async function interact(cardId: string, body: InteractBody): Promise<Inte
     }
   }
   const learnerState = inserted.length ? ((await store.getSession(sessionId))?.learnerState ?? r.session.learnerState) : r.session.learnerState;
-  return { card: r.card, learnerState, inserted };
+  return { card: r.card, learnerState, inserted, feedback };
 }
 
 // ── dial ────────────────────────────────────────────────────────────────────

@@ -1,8 +1,11 @@
 import type { DetourContext } from "@/lib/llm-types";
-import { bullets, cardForPrompt, difficultyDirective, learnerSummary, sliceCorpus, type Prompt } from "./shared";
+import {
+  bullets, cardForPrompt, difficultyDirective, learnerSummary, recentTypesBlock, sliceCorpus,
+  storylineBlock, type Prompt,
+} from "./shared";
 import { WRITE_CORPUS_CHARS, buildWriteSystem } from "./write";
 
-export const PROMPT_VERSION = "detour.v1";
+export const PROMPT_VERSION = "detour.v2";
 
 /**
  * Detour writer: same system prompt as the batch writer (persona + theme +
@@ -22,14 +25,17 @@ export function buildDetourPrompt(ctx: DetourContext): Prompt {
     `the card they were on when they asked: ${cardForPrompt(ctx.currentCard, 2_000)}`,
     [
       `shape:`,
-      `- the FIRST card answers the question directly — a "concept" (or a "hook" whose headline IS the answer, when the answer is one bold line). no throat-clearing.`,
-      `- then mixed types that deepen it: diagram/code when the answer has structure, a reveal for the twist${interactiveAllowed && !chill ? `, and one bet (binary/predict) near the end so the answer sticks` : ` (chill mode: no bets)`}.`,
+      `- the FIRST card answers the question directly — a "concept" (or a "hook" whose headline IS the answer, when the answer is one bold line, or a "stat" when the answer IS a number). no throat-clearing.`,
+      `- then mixed shapes that deepen it: "diagram"/"code" when the answer has structure, "stat" when it has a number, a "reveal" for the twist${interactiveAllowed && !chill ? `, and one bet (binary/predict) near the end so the answer sticks` : ` (chill mode: no bets)`}.`,
+      `- never two prose cards (concept/recap) in a row. a detour that is three paragraphs is a worse answer than two pictures.`,
       `- the last card leaves them clear, not with a cliffhanger — the main thread resumes after this.`,
-      `- asking about this implies it needs reinforcement: keep it concrete, one example, no jargon they haven't earned.`,
+      `- asking about this implies it needs reinforcement: keep it concrete, one example, no jargon they haven't earned. anything they might not know goes in that card's "terms".`,
     ].join("\n"),
     `set on every card: "topicNodeId": "${topicNodeId}", "detourId": "${ctx.detourId}".`,
     `allowed card types for this call: ${ctx.allowedTypes.join(", ")}.`,
     difficultyDirective(ctx.learnerState),
+    storylineBlock(ctx.storyline),
+    recentTypesBlock(ctx.recentTypes),
     `learner:\n${learnerSummary(ctx.learnerState)}`,
     ctx.extraDirectives.length ? `extra directives:\n${bullets(ctx.extraDirectives)}` : null,
     ctx.recent.length ? `recent cards (do NOT repeat):\n${bullets(ctx.recent.map((r) => `${r.type}: ${r.gist}${r.metaphor ? ` [metaphor: ${r.metaphor}]` : ""}`))}` : null,

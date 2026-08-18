@@ -3,6 +3,9 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { findBannedInValue, findBannedWord } from "@/lib/copy/banned";
 import { SAMPLE_CARDS } from "@/lib/sample/cards";
+import { DEV_CARDS, SAMPLE_CARDS_V2 } from "@/lib/feed/dev";
+import { WORST_CARDS } from "@/lib/feed/worst";
+import { CARD_TYPES } from "@/lib/schemas/cards";
 
 const ROOT = process.cwd();
 const DIRS = ["components/cards", "components/ui", "components/feed", "components/home", "components/diagrams"];
@@ -46,6 +49,39 @@ describe("banned words (Prime Directive rule 1)", () => {
       const hit = findBannedInValue(c);
       expect(hit, `${c.type} ${c.id}: ${JSON.stringify(hit)}`).toBeNull();
     }
+  });
+
+  it("no v2 fixture — showcase deck or schema-max ruler — contains a banned word", () => {
+    for (const c of [...SAMPLE_CARDS_V2, ...WORST_CARDS]) {
+      const hit = findBannedInValue(c);
+      expect(hit, `${c.type} ${c.id}: ${JSON.stringify(hit)}`).toBeNull();
+    }
+  });
+
+  it("the showcase deck covers every card type, so the screenshot pass sees all of them", () => {
+    const types = new Set(DEV_CARDS.map((c) => c.type));
+    for (const t of CARD_TYPES) {
+      if (t === "notice" || t === "fallback" || t === "clarify" || t === "detour_marker") continue; // system cards, covered separately
+      expect(types.has(t), `${t} missing from the showcase deck`).toBe(true);
+    }
+    // and the system ones are in there too
+    for (const t of ["notice", "fallback", "clarify", "detour_marker"] as const) expect(types.has(t), t).toBe(true);
+  });
+
+  it("no card fixture shows a bare progress counter (\"3/47\")", () => {
+    const counter = /\b\d+\s*\/\s*\d+\b/;
+    const scan = (v: unknown, path: string): string[] => {
+      if (typeof v === "string") return counter.test(v) ? [`${path}: ${v}`] : [];
+      if (Array.isArray(v)) return v.flatMap((x, i) => scan(x, `${path}[${i}]`));
+      if (v && typeof v === "object") {
+        return Object.entries(v as Record<string, unknown>)
+          .filter(([k]) => k !== "code" && k !== "expression" && k !== "id")
+          .flatMap(([k, x]) => scan(x, `${path}.${k}`));
+      }
+      return [];
+    };
+    const offenders = [...DEV_CARDS, ...WORST_CARDS].flatMap((c) => scan(c, `${c.type} ${c.id}`));
+    expect(offenders, offenders.join("\n")).toEqual([]);
   });
 
   it("no UI component string literal contains a banned word", () => {

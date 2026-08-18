@@ -4,6 +4,7 @@ import { useCallback, useState } from "react";
 import type { RevealCard as RevealCardT } from "@/lib/schemas/cards";
 import type { CardViewProps } from "./types";
 import { CardFrame, Rise, bodyStyle, headlineStyle } from "./CardFrame";
+import { Glossed } from "./Glossed";
 import { Eyebrow } from "@/components/ui/Eyebrow";
 import { Visual } from "./Visual";
 import { useTheme } from "@/components/theme/ThemeRoot";
@@ -87,7 +88,11 @@ export function RevealView({ card, entered, interaction, onInteract, onAskAbout 
               }}
             >
               <span className="font-mono uppercase" style={{ fontSize: 11, letterSpacing: "0.16em", color: "var(--accent)" }}>the payoff</span>
-              <p style={{ ...bodyStyle(payoffFs), borderLeft: "3px solid var(--accent)", paddingLeft: 14 }}>{card.payoff}</p>
+              <Glossed
+                text={card.payoff}
+                terms={flipped ? card.terms : null}
+                style={{ ...bodyStyle(payoffFs), borderLeft: "3px solid var(--accent)", paddingLeft: 14 }}
+              />
             </motion.div>
           </motion.div>
         </motion.div>

@@ -1,6 +1,9 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { findBannedInValue } from "@/lib/copy/banned";
-import { CHILL_EXCLUDED_TYPES, CardBatchSchema, CardSchema, WRITER_CARD_TYPES, type CardType } from "@/lib/schemas/cards";
+import {
+  CHILL_EXCLUDED_TYPES, CardBatchSchema, CardSchema, PROSE_CARD_TYPES, VISUAL_CARD_TYPES,
+  WRITER_CARD_TYPES, type CardType,
+} from "@/lib/schemas/cards";
 import { PlanOutputSchema, TriageOutputSchema } from "@/lib/schemas/plan";
 import { ThemeSchema } from "@/lib/schemas/theme";
 import { CORPUS, PERSONA, detourCtx, planInput, triageInput, writeCtx } from "./llm.fixtures.test";
@@ -14,6 +17,7 @@ beforeAll(async () => {
 });
 
 const chillTypes = WRITER_CARD_TYPES.filter((t) => !(CHILL_EXCLUDED_TYPES as readonly string[]).includes(t));
+const INTERACTIVE: readonly string[] = ["binary", "predict", "sequence", "slider", "open"];
 
 describe("mock plan", () => {
   it("validates, is banned-word free, and is deterministic for the same input", async () => {
@@ -25,7 +29,8 @@ describe("mock plan", () => {
     expect(findBannedInValue(a.value)).toBeNull();
     expect(JSON.stringify(a.value)).toEqual(JSON.stringify(b.value));
     expect(a.value.outline.map((n) => n.id)).toEqual(["n1", "n2", "n3", "n4"]);
-    expect(a.value.firstCards.map((c) => c.type)).toEqual(["hook", "concept", "concept"]);
+    // hook → the concrete thing → one idea. two prose cards in a row is the paragraph deck.
+    expect(a.value.firstCards.map((c) => c.type)).toEqual(["hook", "stat", "concept"]);
     for (const c of a.value.firstCards) {
       expect(c.topicNodeId).toBe("n1");
       expect(c.detourId).toBeNull();
@@ -89,9 +94,70 @@ describe("mock writeBatch", () => {
     expect(r.value).toHaveLength(4);
     const types = r.value.map((c) => c.type);
     expect(new Set(types).size).toBeGreaterThan(1);
-    expect(types.some((t) => ["binary", "predict", "sequence", "slider"].includes(t))).toBe(true);
+    expect(types.some((t) => INTERACTIVE.includes(t))).toBe(true);
     expect(types.some((t) => t === "code" || t === "diagram")).toBe(true);
     for (const c of r.value) expect(c.topicNodeId).toBe("n1");
+  });
+
+  it("every window of 4 in the cycle carries a visual shape and an interactive, and never two prose in a row", async () => {
+    // the reader's #3: "70% of the cards are the same — title screen + a verbose paragraph".
+    for (let i = 0; i < 12; i++) {
+      const recent = Array.from({ length: i }, (_, k) => ({ type: "concept" as CardType, gist: `g${i}-${k}` }));
+      const r = await m.mockWriteBatch(writeCtx({ batchSize: 4, recent }));
+      expect(r.ok, `batch ${i}`).toBe(true);
+      if (!r.ok) continue;
+      const types = r.value.map((c) => c.type);
+      expect(types.some((t) => (VISUAL_CARD_TYPES as readonly string[]).includes(t)), `batch ${i} ${types.join(",")}`).toBe(true);
+      expect(types.some((t) => INTERACTIVE.includes(t)), `batch ${i} ${types.join(",")}`).toBe(true);
+      const prose = types.filter((t) => (PROSE_CARD_TYPES as readonly string[]).includes(t));
+      expect(prose.length, `batch ${i} ${types.join(",")}`).toBeLessThanOrEqual(1);
+      for (let k = 1; k < types.length; k++) {
+        const pair = [types[k - 1], types[k]].every((t) => (PROSE_CARD_TYPES as readonly string[]).includes(t));
+        expect(pair, `batch ${i}: ${types.join(",")}`).toBe(false);
+      }
+    }
+  });
+
+  it("chill mode still leads with shapes, not paragraphs", async () => {
+    for (let i = 0; i < 12; i++) {
+      const recent = Array.from({ length: i }, (_, k) => ({ type: "concept" as CardType, gist: `c${i}-${k}` }));
+      const r = await m.mockWriteBatch(writeCtx({ batchSize: 4, allowedTypes: chillTypes, recent }));
+      expect(r.ok, `batch ${i}`).toBe(true);
+      if (!r.ok) continue;
+      const types = r.value.map((c) => c.type);
+      for (const t of types) expect((CHILL_EXCLUDED_TYPES as readonly string[]).includes(t), t).toBe(false);
+      expect(types.some((t) => (VISUAL_CARD_TYPES as readonly string[]).includes(t)), `batch ${i} ${types.join(",")}`).toBe(true);
+      for (let k = 1; k < types.length; k++) {
+        const pair = [types[k - 1], types[k]].every((t) => (PROSE_CARD_TYPES as readonly string[]).includes(t));
+        expect(pair, `batch ${i}: ${types.join(",")}`).toBe(false);
+      }
+    }
+  });
+
+  it("produces stat and open cards, and glosses some terms inline", async () => {
+    const seen = new Set<string>();
+    let withTerms = 0;
+    let withoutTerms = 0;
+    for (let i = 0; i < 12; i++) {
+      const r = await m.mockWriteBatch(writeCtx({ batchSize: 4, recent: Array.from({ length: i }, (_, k) => ({ type: "hook" as CardType, gist: `t${i}-${k}` })) }));
+      if (!r.ok) continue;
+      for (const c of r.value) {
+        seen.add(c.type);
+        if ("terms" in c && c.terms?.length) {
+          withTerms++;
+          for (const t of c.terms) {
+            expect(t.term.length).toBeLessThanOrEqual(32);
+            expect(t.gloss.length).toBeLessThanOrEqual(140);
+          }
+        } else if (c.type === "concept" || c.type === "stat" || c.type === "open" || c.type === "reveal") {
+          withoutTerms++;
+        }
+      }
+    }
+    expect(seen.has("stat")).toBe(true);
+    expect(seen.has("open")).toBe(true);
+    expect(withTerms).toBeGreaterThan(0);
+    expect(withoutTerms).toBeGreaterThan(0); // not every card gets a glossary — the renderer needs both paths
   });
 
   it("obeys allowedTypes (chill mode → zero interactives)", async () => {

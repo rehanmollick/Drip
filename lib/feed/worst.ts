@@ -53,6 +53,14 @@ const CODE = [
   "});",
 ].join("\n");
 
+/** Glossary ruler: 3 terms at the 32-char cap, each with a 140-char gloss, embedded in the copy below. */
+const GT = [
+  exact(32, "write behind buffer flush window"),
+  exact(32, "thundering herd of cold readers"),
+  exact(32, "negative caching sentinel value"),
+];
+const GLOSS = GT.map((term) => ({ term, gloss: exact(140, `${term} is the thing this card had to name and did not want to spend its whole word budget defining right here`) }));
+
 export const WORST_CARDS: Card[] = [
   {
     id: id(1), type: "hook", topicNodeId: N, detourId: null, eyebrow: exact(28, "the footgun nobody mentions"),
@@ -157,6 +165,49 @@ export const WORST_CARDS: Card[] = [
     id: id(15), type: "fallback", topicNodeId: "system", detourId: null, eyebrow: exact(28),
     reason: "fixture",
     retryable: true,
+  },
+  {
+    id: id(16), type: "stat", topicNodeId: N, detourId: null, eyebrow: exact(28),
+    value: exact(12, "1,234,567ms"),
+    unit: exact(12, "queries/sec"),
+    label: exact(48, "what the database absorbs every single second"),
+    context: `${GT[0]} ${GT[1]} ${GT[2]} ${exact(58, "is what the number actually means once you sit with it")}`,
+    compare: { value: exact(12, "9,876,543ms"), label: exact(40, "the same read straight off the disk") },
+    terms: GLOSS,
+  },
+  {
+    id: id(17), type: "open", topicNodeId: N, detourId: null, eyebrow: exact(28),
+    prompt: `${GT[0]} ${exact(126, "explain what just happened to someone who has never once thought about where an answer comes from")}`,
+    placeholder: exact(48, "say it however it comes out no need to be neat"),
+    rubric: exact(240),
+    modelAnswer: `${GT[1]} ${GT[2]} ${exact(214, "is roughly how you would say it back if you had to say it out loud to someone who missed the whole thing")}`,
+    difficulty: 3,
+    terms: GLOSS,
+  },
+  {
+    id: id(18), type: "crossroads", topicNodeId: N, detourId: null, eyebrow: exact(28),
+    finished: exact(60, "how a cache answers before the database wakes up"),
+    upNext: exact(60, "what happens when the cached answer is quietly wrong"),
+    headline: exact(80, "that is the whole read path start to finish so where do you want to go"),
+    choices: [
+      { kind: "continue", label: exact(40, "keep going on the main thread") },
+      { kind: "deeper", label: exact(40, "one layer deeper on this same bit") },
+      { kind: "ask", label: exact(40, "ask something of your own instead") },
+      { kind: "wrap", label: exact(40, "wrap it up and give me the thread") },
+    ],
+  },
+  {
+    id: id(19), type: "wrap", topicNodeId: N, detourId: null, eyebrow: exact(28),
+    headline: exact(80, "you can draw the whole read path on a whiteboard from memory now"),
+    beats: Array.from({ length: 5 }, (_, i) => exact(120, `beat ${i} lands the point and hands you the next one without repeating itself`)),
+    stat: { value: exact(12, "1,234,567ms"), label: exact(40) },
+    openThread: exact(140, "we never touched what happens when two servers hold different answers for the same key at the same moment"),
+  },
+  {
+    id: id(20), type: "concept", topicNodeId: N, detourId: null, eyebrow: exact(28),
+    headline: exact(64, "three words you would have had to look up, glossed in place"),
+    body: `${GT[0]} ${GT[1]} ${GT[2]} ${exact(218, "and the rest of the body copy runs to the cap around them so the underlines have to survive a full wall of text")}`,
+    terms: GLOSS,
   },
 ];
 

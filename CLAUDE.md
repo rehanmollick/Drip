@@ -10,13 +10,17 @@ If it feels like a course, it is wrong.
 
 1. **Never use school vocabulary on screen.** Banned in any user-facing string: `quiz, test, lesson, module, objective, curriculum, assessment, exam, chapter, homework, syllabus` (word-boundary, case-insensitive; enforced by `lib/copy/banned.ts` + tests). Fine in code and identifiers.
 2. **Every card is complete on its own screen.** No scrolling within a card. Too much content → two cards.
-3. **The feed never dead-ends and never shows a spinner mid-scroll.** Buffered generation makes waiting invisible; the only "waiting" surface is a themed `notice` card.
+3. **The feed never dead-ends and never shows a spinner mid-scroll.** Buffered generation makes waiting invisible; the only "waiting" surface is a themed `notice` card. It does not, however, run on forever: at each topic boundary a `crossroads` card asks where to go and generation STOPS (`progress.awaitingChoice`) until the reader picks. Asking is not a dead end.
 4. **Interactions are disguised as content.** Question cards read like hot takes or bets.
 5. **Progress reads like flexing, not grading.** Never "3/47", never "80%". Checkpoints say "you now know more about X than most Y".
 6. **Motion is juice.** Snap physics, springs, tactile taps. Exact values in spec §5.
 
 ## 1. Architecture rules
 
+- **A placeholder under the thumb is sacred.** The reader's current slide never changes identity or slot. Client-side pseudo slides are pinned while active (`lib/feed/placeholder.ts`) and the engine never inserts a card above the furthest row the reader has viewed. This is the one bug users notice instantly ("my slide turned into something else").
+- **Variety is enforced in code, not just asked for in the prompt** (`lib/generation/variety.ts`): never two prose cards in a row, ≤2 concepts per 4-card batch, every batch of 3+ carries a visual type (diagram/code/slider/sequence/stat). A deck of headline+paragraph cards is the failure mode the reader actually complains about.
+- **The storyline is carried, not re-derived** (`session.storyline`: spine / covered / next). Last-6-card summaries keep local continuity; the storyline keeps a card 40 slides deep on the same thread.
+- **Explain without spending words**: cards carry `terms: [{term, gloss}]`; the renderer underlines the term and a tap shows the gloss. Never assume, never pad.
 - **AI fills schemas, components render them. The AI never generates markup.** Every card is JSON validated by `CardSchema` (`lib/schemas/cards.ts`) before anything renders. Invalid → regenerate once with the Zod error appended → second failure inserts one `fallback` card and logs raw output. The feed cannot crash on content.
 - **One-file LLM rule.** `lib/llm.ts` is the ONLY file that imports `@anthropic-ai/sdk`. Every call: spend-cap check (fails closed) → call → log to `llm_calls` → Zod validate → retry once → return or fallback. `ANTHROPIC_API_KEY` exists only in server env; all model calls happen in API routes.
 - **Prompts** live as versioned `.ts` files in `lib/prompts/`; each exports `PROMPT_VERSION`, logged with every call.

@@ -1,4 +1,4 @@
-import type { Card, PredictCard } from "@/lib/schemas/cards";
+import type { Card, CrossroadsCard, PredictCard } from "@/lib/schemas/cards";
 import type { Interaction } from "@/lib/schemas/session";
 
 /**
@@ -31,6 +31,20 @@ export type CardViewProps<T extends Card = Card> = {
   onAction?: () => void;
   /** streak shown on checkpoint cards. */
   streak?: number;
+  /**
+   * `open` cards: the reader answered in their own words. The handler posts the text and the
+   * reply lands back on this card as `interaction.feedback` (which is what the answered state
+   * renders, on this mount and on every scroll-back). Return a promise to keep the card in its
+   * themed waiting state until the reply lands. With no handler wired the card falls back to
+   * showing `modelAnswer` — it never grades locally.
+   */
+  onAnswer?: (text: string) => void | Promise<unknown>;
+  /**
+   * `crossroads` cards: the reader picked a direction. Generation is stopped until this fires
+   * (POST /api/sessions/:id/choose). The card also reports the pick through `onInteract`
+   * ({choice: kind}) so scrolling back replays the resolved state.
+   */
+  onChoose?: (kind: CrossroadsCard["choices"][number]["kind"]) => void | Promise<unknown>;
 };
 
 /**

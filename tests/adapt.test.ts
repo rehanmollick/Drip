@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   addReinforce, applyDial, applyInteraction, clearRecap, conceptOf, learnerStateHash, median, missedConcepts,
+  noteMissedConcepts,
 } from "@/lib/adapt/learner";
 import { defaultLearnerState, type LearnerState } from "@/lib/schemas/learner";
 import type { Card } from "@/lib/schemas/cards";
@@ -185,6 +186,31 @@ describe("learner reducer: dial + reinforce + hash", () => {
     // re-asking about something already queued moves it to the front of the queue rather than duplicating
     s = addReinforce(s, "e");
     expect(s.directives.reinforce).toEqual(["f", "g", "e"]);
+  });
+
+  it("noteMissedConcepts records what an open answer half-missed without touching the ledger", () => {
+    const s0 = defaultLearnerState();
+    // an unknown node is created rather than lost
+    const s1 = noteMissedConcepts(s0, "n1", ["eviction", " ttl ", ""]);
+    expect(s1).not.toBe(s0);
+    expect(s0.perNode.n1).toBeUndefined();
+    expect(s1.perNode.n1.lastMissConcepts).toEqual(["eviction", "ttl"]);
+    expect(s1.perNode.n1.attempts).toBe(0);   // a "close" answer is still a hit: no attempt is invented
+    expect(s1.perNode.n1.hits).toBe(0);
+    expect(s1.perNode.n1.consecutiveMisses).toBe(0);
+    expect(missedConcepts(s1)).toContain("eviction");
+    // re-missing moves it to the front of the queue, and the list stays bounded
+    const s2 = noteMissedConcepts(s1, "n1", ["eviction"]);
+    expect(s2.perNode.n1.lastMissConcepts).toEqual(["ttl", "eviction"]);
+    const s3 = noteMissedConcepts(s2, "n1", ["a", "b", "c", "d", "e", "f"]);
+    expect(s3.perNode.n1.lastMissConcepts).toHaveLength(5);
+    // nothing worth recording → the same state back
+    expect(noteMissedConcepts(s3, "n1", ["  "])).toBe(s3);
+    // long labels are trimmed so they stay readable in a prompt
+    const long = noteMissedConcepts(s0, "n1", ["x".repeat(90)]);
+    expect(long.perNode.n1.lastMissConcepts[0].length).toBeLessThanOrEqual(48);
+    // and it changes what the writer sees next
+    expect(learnerStateHash(s1)).not.toBe(learnerStateHash(s0));
   });
 
   it("learnerStateHash is stable, short, and ignores rolling dwell noise", () => {

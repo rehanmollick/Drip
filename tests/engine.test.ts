@@ -13,9 +13,10 @@ import { SAMPLE_THEME_TERMINAL_NOIR } from "@/lib/theme/defaults";
 import { uuid } from "@/lib/id";
 import { findBannedInValue } from "@/lib/copy/banned";
 import {
-  answerClarifiers, ask, createSession, dial, generateNext, interact, reapIfStuck, remixSession, replan, retrySession,
-  setEngineDepsForTests, startPlanning, PLANNING_TIMEOUT_MS,
+  answerClarifiers, ask, chooseAtCrossroads, createSession, dial, generateNext, interact, reapIfStuck, remixSession,
+  replan, retrySession, setEngineDepsForTests, startPlanning, PLANNING_TIMEOUT_MS,
 } from "@/lib/generation/engine";
+import type { CrossroadsCard } from "@/lib/schemas/cards";
 
 // ── fake LLM ────────────────────────────────────────────────────────────────
 const okR = <T>(value: T): LlmResult<T> => ({ ok: true, value, meta: { model: "fake", promptVersion: "t", latencyMs: 1, inTokens: 1, outTokens: 1, attempts: 1 } });
@@ -27,6 +28,7 @@ const concept = (i: string, topicNodeId = "n1"): Card => ({ id: uuid(), type: "c
 const hook = (i: string): Card => ({ id: uuid(), type: "hook", topicNodeId: "n1", detourId: null, headline: `hook ${i}` });
 const binary = (i: string): Card => ({ id: uuid(), type: "binary", topicNodeId: "n1", detourId: null, eyebrow: `bet ${i}`, prompt: `hot take ${i}`, options: ["real", "nah"], correctIndex: 1, revealCopy: "nah.", difficulty: 2 });
 const code = (i: string): Card => ({ id: uuid(), type: "code", topicNodeId: "n1", detourId: null, lang: "ts", code: `const a${i} = 1;`, annotations: [] });
+const stat = (i: string): Card => ({ id: uuid(), type: "stat", topicNodeId: "n1", detourId: null, value: "80%", label: `hit rate ${i}`, context: `context ${i}` });
 const recap = (i: string): Card => ({ id: uuid(), type: "recap", topicNodeId: "n1", detourId: null, headline: `again ${i}`, beats: ["a", "b", "c"], metaphor: `metaphor ${i}` });
 
 function makePlan(over: Partial<PlanOutput> = {}): PlanOutput {
@@ -45,13 +47,25 @@ function makePlan(over: Partial<PlanOutput> = {}): PlanOutput {
   });
 }
 
-type Fake = LlmApi & { calls: { fn: string; ctx: unknown }[]; state: { planFail: boolean; writeMode: "ok" | "budget" | "fail"; triage: "inline" | "detour"; plan: PlanOutput } };
+type Fake = LlmApi & {
+  calls: { fn: string; ctx: unknown }[];
+  state: {
+    planFail: boolean;
+    writeMode: "ok" | "budget" | "fail";
+    triage: "inline" | "detour";
+    plan: PlanOutput;
+    /** open-card grader: "off" degrades (no verdict), otherwise it returns that verdict */
+    grade: "off" | "got_it" | "close" | "not_yet";
+    storyline: boolean;
+    wrap: boolean;
+  };
+};
 
 function fakeLlm(): Fake {
   let seq = 0;
   const f: Fake = {
     calls: [],
-    state: { planFail: false, writeMode: "ok", triage: "inline", plan: makePlan() },
+    state: { planFail: false, writeMode: "ok", triage: "inline", plan: makePlan(), grade: "off", storyline: false, wrap: false },
     async plan(input) {
       f.calls.push({ fn: "plan", ctx: input });
       if (f.state.planFail) return apiFail();
@@ -71,7 +85,7 @@ function fakeLlm(): Fake {
         case "scaffold": return okR([concept(`scaffold-${i}`)]);
         case "adjacent": return okR([hook(`adjacent-${i}`), concept(`adjacent-${i}`)]);
         case "resurface": return okR([binary(`re-${i}a`), binary(`re-${i}b`), binary(`re-${i}c`), binary(`re-${i}d`)]);
-        default: return okR([concept(`${i}a`), binary(`${i}b`), code(`${i}c`), concept(`${i}d`)]);
+        default: return okR([stat(`${i}a`), binary(`${i}b`), code(`${i}c`), concept(`${i}d`)]);
       }
     },
     async triage(input) {
@@ -87,9 +101,28 @@ function fakeLlm(): Fake {
     async dialToast({ direction }) {
       return direction === "simpler" ? "say less." : "bet.";
     },
-    async evaluateOpen() { return { ok: false as const, code: "api" as const, error: "n/a" }; },
-    async updateStoryline() { return { ok: false as const, code: "api" as const, error: "n/a" }; },
-    async writeWrap() { return { ok: false as const, code: "api" as const, error: "n/a" }; },
+    async evaluateOpen(input) {
+      f.calls.push({ fn: "evaluateOpen", ctx: input });
+      if (f.state.grade === "off") return { ok: false as const, code: "api" as const, error: "n/a" };
+      return okR({
+        verdict: f.state.grade,
+        feedback: `you said "${input.answer.slice(0, 20)}" — nice.`,
+        missed: f.state.grade === "got_it" ? [] : ["eviction"],
+      });
+    },
+    async updateStoryline(input) {
+      f.calls.push({ fn: "updateStoryline", ctx: input });
+      if (!f.state.storyline) return { ok: false as const, code: "api" as const, error: "n/a" };
+      return okR({ spine: "a sharpened spine", covered: ["what a cache is"], next: "stampedes", updatedAtIdx: null });
+    },
+    async writeWrap(ctx) {
+      f.calls.push({ fn: "writeWrap", ctx });
+      if (!f.state.wrap) return { ok: false as const, code: "api" as const, error: "n/a" };
+      return okR({
+        id: uuid(), type: "wrap" as const, topicNodeId: "system", detourId: null,
+        headline: "that's the thread.", beats: ["one", "two", "three"], openThread: "ttl math",
+      });
+    },
   };
   return f;
 }
@@ -207,12 +240,12 @@ describe("generateNext", () => {
       expect(r.batch.status).toBe("done");
       expect(r.cards.map((c) => c.id)).toEqual(results[0].cards.map((c) => c.id));
     }
-    expect(results[0].cards).toHaveLength(4);
+    expect(results[0].cards).toHaveLength(5); // 4 written + the crossroads that closes the topic
     expect(llm.calls.filter((c) => c.fn === "writeBatch")).toHaveLength(1);
     const all = await store.listAllCards(s.id);
-    expect(all).toHaveLength(7);
-    expect(new Set(all.map((c) => c.id)).size).toBe(7);
-    expect(new Set(all.map((c) => c.idx)).size).toBe(7);
+    expect(all).toHaveLength(8);
+    expect(new Set(all.map((c) => c.id)).size).toBe(8);
+    expect(new Set(all.map((c) => c.idx)).size).toBe(8);
     expect(isSorted(all.map((c) => c.idx))).toBe(true);
     // code cards are highlighted server-side
     const codeCard = all.find((c) => c.type === "code")!;
@@ -222,12 +255,12 @@ describe("generateNext", () => {
     for (const c of all) expect(findBannedInValue(c.payload)).toBeNull();
   });
 
-  it("runway grows and progress advances through the outline; node completion asks for a checkpoint", async () => {
+  it("a finished topic ends in a crossroads, generation stops, and 'keep going' moves to the next topic", async () => {
     const s = await planned();
     const g1 = await generateNext(s.id); // node n1: 3 + 4 → complete
-    expect(g1.cards).toHaveLength(4);
+    expect(g1.cards.map((c) => c.type)).toEqual(["stat", "binary", "code", "concept", "crossroads"]);
     let cur = (await store.getSession(s.id))!;
-    expect(cur.progress).toMatchObject({ nodeIdx: 1, cardsInNode: 0, totalGenerated: 7 });
+    expect(cur.progress).toMatchObject({ nodeIdx: 0, cardsInNode: 7, awaitingChoice: true, totalGenerated: 8 });
     const ctx1 = llm.calls.filter((c) => c.fn === "writeBatch").at(-1)!.ctx as WriteContext;
     expect(ctx1.mode).toBe("normal");
     expect(ctx1.node?.id).toBe("n1");
@@ -235,50 +268,114 @@ describe("generateNext", () => {
     expect(ctx1.recent.length).toBeGreaterThan(0);
     expect(ctx1.batchSize).toBe(4);
 
-    const g2 = await generateNext(s.id); // node n2
-    expect(g2.batch.id).not.toBe(g1.batch.id);
-    expect(g2.cards.every((c) => c.payload.topicNodeId === "n2")).toBe(true);
+    // the crossroads is built here, with no model call, and it names both sides of the boundary
+    const fork = g1.cards.at(-1)!.payload as CrossroadsCard;
+    expect(fork.finished).toBe("what a cache is");
+    expect(fork.upNext).toBe("stampedes");
+    expect(fork.choices.map((c) => c.kind)).toEqual(["continue", "deeper", "ask", "wrap"]);
+    expect(fork.choices[0].label).toContain("stampedes");
+    expect(findBannedInValue(fork)).toBeNull();
+    expect(CardSchema.safeParse(fork).success).toBe(true);
+
+    // nothing more is written while the reader is at the fork
+    const writes = llm.calls.filter((c) => c.fn === "writeBatch").length;
+    const paused = await generateNext(s.id);
+    expect(paused.batch.status).toBe("done");
+    expect(paused.batch.reason).toBe("awaiting_choice");
+    expect(paused.cards).toEqual([]);
+    expect(llm.calls.filter((c) => c.fn === "writeBatch").length).toBe(writes);
+
+    // keep going → the flag clears, the node advances, the next stretch lands
+    const crossroadsRow = g1.cards.at(-1)!;
+    const r = await chooseAtCrossroads(s.id, crossroadsRow.id, "continue");
+    expect(r.cards.length).toBeGreaterThan(0);
+    expect(r.cards.filter((c) => c.type !== "crossroads").every((c) => c.payload.topicNodeId === "n2")).toBe(true);
     cur = (await store.getSession(s.id))!;
-    expect(cur.progress).toMatchObject({ nodeIdx: 2, totalGenerated: 11 });
-    expect(await store.listAllCards(s.id)).toHaveLength(11);
+    expect(cur.progress.nodeIdx).toBe(1);
     expect(isSorted(await idxs(s.id))).toBe(true);
+
+    // double tap: the second choice is a no-op, no second batch
+    const after = (await store.listAllCards(s.id)).length;
+    const again = await chooseAtCrossroads(s.id, crossroadsRow.id, "continue");
+    expect(again.cards).toEqual([]);
+    expect((await store.listAllCards(s.id)).length).toBe(after);
   });
 
-  it("outline exhausted → continuation (adjacent / resurface), the feed never ends", async () => {
+  it("end of the outline drops 'keep going'; 'one more layer' opens the continuation stretch", async () => {
     const s = await planned();
-    await generateNext(s.id); // n1
-    await generateNext(s.id); // n2
-    await generateNext(s.id); // n3
-    let cur = (await store.getSession(s.id))!;
-    expect(cur.progress.exhausted).toBe(true);
-    // needs runway room: mark everything viewed
-    await markViewed((await store.listAllCards(s.id)).map((c) => c.id));
-    const g = await generateNext(s.id);
-    expect(g.cards.length).toBeGreaterThan(0);
+    const viewAll = async () => markViewed((await store.listAllCards(s.id)).map((c) => c.id));
+    const lastRow = async () => (await store.listAllCards(s.id)).at(-1)!;
+
+    await generateNext(s.id); // n1 → crossroads
+    await viewAll();
+    let fork = await lastRow();
+    expect(fork.type).toBe("crossroads");
+    await chooseAtCrossroads(s.id, fork.id, "continue"); // n2 → crossroads
+    await viewAll();
+    fork = await lastRow();
+    await chooseAtCrossroads(s.id, fork.id, "continue"); // n3 → crossroads (outline done)
+    await viewAll();
+    fork = await lastRow();
+    const end = fork.payload as CrossroadsCard;
+    expect(end.upNext).toBeNull();
+    expect(end.choices.map((c) => c.kind)).toEqual(["deeper", "ask", "wrap"]);
+
+    // one more layer at the end of the outline → adjacent waters / resurfaced near-misses
+    const r = await chooseAtCrossroads(s.id, fork.id, "deeper");
+    expect(r.cards.length).toBeGreaterThan(0);
     const ctx = llm.calls.filter((c) => c.fn === "writeBatch").at(-1)!.ctx as WriteContext;
     expect(["adjacent", "resurface"]).toContain(ctx.mode);
     expect(ctx.node).toBeNull();
-    cur = (await store.getSession(s.id))!;
+    expect(ctx.extraDirectives.join(" ")).toMatch(/one more layer/);
+    const cur = (await store.getSession(s.id))!;
+    expect(cur.progress.exhausted).toBe(true);
     expect(cur.progress.extensions).toBe(1);
-    // with near-misses recorded, resurface mode gets used
-    const bet = (await store.listAllCards(s.id)).find((c) => c.type === "binary")!;
-    await interact(bet.id, { correct: false, choice: 0 });
-    await markViewed((await store.listAllCards(s.id)).map((c) => c.id));
-    await generateNext(s.id);
-    await markViewed((await store.listAllCards(s.id)).map((c) => c.id));
-    await generateNext(s.id);
-    const modes = llm.calls.filter((c) => c.fn === "writeBatch").slice(-2).map((c) => (c.ctx as WriteContext).mode);
-    expect(modes).toContain("resurface");
-    const rs = llm.calls.filter((c) => c.fn === "writeBatch").find((c) => (c.ctx as WriteContext).mode === "resurface")!.ctx as WriteContext;
-    expect(rs.missedConcepts?.length).toBeGreaterThan(0);
+    // and the continuation stretch asks again rather than running on
+    expect(r.cards.at(-1)!.type).toBe("crossroads");
+    expect((await generateNext(s.id)).batch.reason).toBe("awaiting_choice");
+  });
+
+  it("'one more layer' mid-outline writes more of the SAME topic, told to go under it", async () => {
+    const s = await planned();
+    const g1 = await generateNext(s.id);
+    const fork = g1.cards.at(-1)!;
+    const r = await chooseAtCrossroads(s.id, fork.id, "deeper");
+    const ctx = llm.calls.filter((c) => c.fn === "writeBatch").at(-1)!.ctx as WriteContext;
+    expect(ctx.node?.id).toBe("n1");
+    expect(ctx.batchSize).toBe(3);
+    expect(ctx.extraDirectives.join(" ")).toMatch(/one more layer/);
+    expect(r.cards.filter((c) => c.type !== "crossroads").every((c) => c.payload.topicNodeId === "n1")).toBe(true);
+    const cur = (await store.getSession(s.id))!;
+    expect(cur.progress.nodeIdx).toBe(0);
+    expect(cur.progress.deeperCards).toBe(0); // the debt was paid by this batch
+    expect(cur.progress.awaitingChoice).toBe(true); // …and it ends in another fork
   });
 
   it("stops generating when the unviewed runway is already deep", async () => {
+    llm.state.plan = makePlan({
+      outline: [
+        { id: N(1), title: "what a cache is", estCards: 4, dependsOn: [] },
+        { id: N(2), title: "stampedes", estCards: 8, dependsOn: [] },
+      ],
+    });
     const s = await planned();
-    for (let i = 0; i < 4; i++) await generateNext(s.id);
-    const before = (await store.listAllCards(s.id)).length; // 3 + 4*4 = 19 unviewed ≥ 16
-    const g = await generateNext(s.id);
-    expect(g.batch.id).toBe("runway_full");
+    const g = await generateNext(s.id);                      // n1 closes → crossroads
+    const fork = g.cards.at(-1)!;
+    await chooseAtCrossroads(s.id, fork.id, "continue");     // n2 (estCards 8) → 4 cards, no boundary yet
+    expect((await store.getSession(s.id))!.progress.awaitingChoice).toBe(false);
+    // a fast scroller's buffer: plenty of unviewed rows ahead of them
+    const seed = (await store.listAllCards(s.id)).at(-1)!;
+    await store.insertCards(Array.from({ length: 12 }, (_, i) => ({
+      ...seed,
+      id: uuid(),
+      idx: `${seed.idx}${String.fromCharCode(97 + i)}`,
+      payload: { ...seed.payload, id: uuid() },
+      viewedAt: null,
+      interaction: null,
+    })));
+    const before = (await store.listAllCards(s.id)).length;
+    const blocked = await generateNext(s.id);
+    expect(blocked.batch.id).toBe("runway_full");
     expect((await store.listAllCards(s.id)).length).toBe(before);
   });
 
@@ -321,8 +418,8 @@ describe("generateNext", () => {
     expect((await store.listAllCards(s.id)).filter((c) => c.type === "fallback")).toHaveLength(0);
     const g2 = await generateNext(s.id);
     expect(g2.batch.status).toBe("done");
-    expect(g2.cards).toHaveLength(4);
-    expect((await store.listAllCards(s.id))).toHaveLength(7);
+    expect(g2.cards).toHaveLength(5);
+    expect((await store.listAllCards(s.id))).toHaveLength(8);
   });
 
   it("recapDue / scaffoldNext prepend one recap / scaffold card and clear the directives", async () => {
@@ -332,13 +429,14 @@ describe("generateNext", () => {
     });
     const g = await generateNext(s.id);
     // the recap belongs to interact() — one trigger, one recap, whoever else is generating (spec §8)
-    expect(g.cards.map((c) => c.type)).toEqual(["concept", "concept", "binary", "code", "concept"]);
+    expect(g.cards.map((c) => c.type)).toEqual(["concept", "stat", "binary", "code", "concept", "crossroads"]);
     const modes = llm.calls.filter((c) => c.fn === "writeBatch").map((c) => (c.ctx as WriteContext).mode);
     expect(modes).toEqual(["scaffold", "normal"]);
     const cur = (await store.getSession(s.id))!;
     expect(cur.learnerState.directives.scaffoldNext).toEqual([]);
-    expect(cur.progress.cardsInNode).toBe(0); // 3 + 4 main cards ≥ 4 → advanced (recap/scaffold don't count)
-    expect(cur.progress.nodeIdx).toBe(1);
+    expect(cur.progress.cardsInNode).toBe(7); // 3 + 4 main cards ≥ 4 → the topic closed (the scaffold doesn't count)
+    expect(cur.progress.nodeIdx).toBe(0);     // …and the CHOICE advances the node, not the writer
+    expect(cur.progress.awaitingChoice).toBe(true);
   });
 
   it("chill mode removes interactive types from allowedTypes", async () => {
@@ -346,7 +444,10 @@ describe("generateNext", () => {
     await generateNext(s.id);
     const ctx = llm.calls.filter((c) => c.fn === "writeBatch").at(-1)!.ctx as WriteContext;
     expect(ctx.allowedTypes).not.toContain("binary");
-    expect(ctx.allowedTypes).toContain("concept");
+    expect(ctx.allowedTypes).not.toContain("open");
+    expect(ctx.allowedTypes).toContain("stat");
+    // …and the variety governor took `concept` off the table: the opening was already two of them
+    expect(ctx.allowedTypes).not.toContain("concept");
   });
 });
 
@@ -370,7 +471,7 @@ describe("dial", () => {
     // the next generate uses a new frontier (idx + state hash changed) → fresh batch
     const g = await generateNext(s.id);
     expect(g.batch.status).toBe("done");
-    expect(g.cards).toHaveLength(4);
+    expect(g.cards).toHaveLength(5); // 4 written + the crossroads that closes n2
     expect(isSorted(await idxs(s.id))).toBe(true);
     const ctx = llm.calls.filter((c) => c.fn === "writeBatch").at(-1)!.ctx as WriteContext;
     expect(ctx.learnerState.globalLevel).toBe(2);
@@ -462,7 +563,7 @@ describe("ask", () => {
     // and generation continues after the detour close marker
     const g = await generateNext(s.id);
     const later = await store.listAllCards(s.id);
-    expect(later.slice(-4).map((c) => c.id)).toEqual(g.cards.map((c) => c.id));
+    expect(later.slice(-g.cards.length).map((c) => c.id)).toEqual(g.cards.map((c) => c.id));
     expect(isSorted(later.map((c) => c.idx))).toBe(true);
   });
 });

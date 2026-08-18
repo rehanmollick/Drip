@@ -194,6 +194,29 @@ export function clearScaffold(state: LearnerState): LearnerState {
   return next;
 }
 
+/**
+ * Concepts an `open` answer half-missed. A "close" verdict is still a hit — they
+ * said the idea back — so the hit/miss ledger is untouched; only the writer's
+ * "what wobbled" list grows, which is what steers the next batch.
+ */
+export function noteMissedConcepts(state: LearnerState, nodeId: string, concepts: readonly string[]): LearnerState {
+  const clean = Array.from(
+    new Set(
+      concepts
+        .map((c) => c.replace(/\s+/g, " ").trim())
+        .filter(Boolean)
+        .map((c) => (c.length > 48 ? `${c.slice(0, 47).trimEnd()}…` : c)),
+    ),
+  );
+  if (clean.length === 0) return state;
+  const next = clone(state);
+  const node = next.perNode[nodeId] ?? { level: next.globalLevel, attempts: 0, hits: 0, lastMissConcepts: [], consecutiveMisses: 0 };
+  let list = node.lastMissConcepts;
+  for (const c of clean) list = pushKeep(list.filter((x) => x !== c), c, KEEP_MISSES);
+  next.perNode = { ...next.perNode, [nodeId]: { ...node, lastMissConcepts: list } };
+  return next;
+}
+
 /** A detour question about `focus` → the writer is told to reinforce it (most recent 3; older ones expire). */
 export function addReinforce(state: LearnerState, focus: string, cap = 3): LearnerState {
   const next = clone(state);

@@ -1,7 +1,9 @@
 /** Shared fixtures for the LLM-layer tests (not a test file itself). */
-import type { DetourContext, PlanInput, TriageInput, WriteContext } from "@/lib/llm-types";
+import type {
+  DetourContext, EvaluateOpenInput, PlanInput, StorylineInput, TriageInput, WrapContext, WriteContext,
+} from "@/lib/llm-types";
 import type { Store } from "@/lib/db/store";
-import type { LlmCall } from "@/lib/schemas/session";
+import type { LlmCall, Storyline } from "@/lib/schemas/session";
 import { WRITER_CARD_TYPES } from "@/lib/schemas/cards";
 import { defaultLearnerState } from "@/lib/schemas/learner";
 import type { Persona } from "@/lib/schemas/plan";
@@ -83,6 +85,59 @@ export function detourCtx(over: Partial<DetourContext> = {}): DetourContext {
     cardCount: 3,
     currentCard: SAMPLE_CARDS[1],
     detourId: "d-1",
+    ...over,
+  };
+}
+
+export const STORYLINE: Storyline = {
+  spine: "a cache is a bet that you'll ask for the same thing twice, and every hard part of caching is what happens when the bet is wrong.",
+  covered: ["a cache is a bet on repetition", "a miss costs a whole db read"],
+  next: "what an empty cache does to the database",
+  updatedAtIdx: "a0",
+};
+
+export function evaluateInput(over: Partial<EvaluateOpenInput> = {}): EvaluateOpenInput {
+  return {
+    sessionId: SESSION_ID,
+    prompt: "in your own words — why does an empty cache hurt the database?",
+    rubric: "every ask becomes a miss; the misses all land at once; the database was only sized for the misses",
+    modelAnswer: "nothing is in memory, so every ask goes to the database at the same moment — and it was never sized for all of them at once.",
+    answer: "because every request becomes a miss and they all hit the database at once",
+    persona: PERSONA,
+    corpusSlice: CORPUS,
+    ...over,
+  };
+}
+
+export function storylineInput(over: Partial<StorylineInput> = {}): StorylineInput {
+  return {
+    sessionId: SESSION_ID,
+    prev: STORYLINE,
+    title: "caching, scrolled in",
+    outline: [
+      { id: "n1", title: "caching: the core idea", estCards: 4, dependsOn: [], brief: "land what a cache is" },
+      { id: "n2", title: "where caching breaks", estCards: 4, dependsOn: ["n1"], brief: "stampedes and staleness" },
+    ],
+    nodeIdx: 0,
+    recent: [{ type: "stat", gist: "10x fewer db reads" }, { type: "diagram", gist: "flow: a miss, start to finish" }],
+    corpusSlice: CORPUS,
+    ...over,
+  };
+}
+
+export function wrapCtx(over: Partial<WrapContext> = {}): WrapContext {
+  return {
+    sessionId: SESSION_ID,
+    persona: PERSONA,
+    theme: SAMPLE_THEME_TERMINAL_NOIR,
+    storyline: STORYLINE,
+    outline: storylineInput().outline,
+    covered: [
+      { type: "hook", gist: "your site is one restart from a stampede" },
+      { type: "stat", gist: "10x fewer db reads" },
+      { type: "diagram", gist: "flow: a miss, start to finish" },
+    ],
+    learnerState: defaultLearnerState(),
     ...over,
   };
 }

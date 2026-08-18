@@ -1,15 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { BANNED_WORDS } from "@/lib/copy/banned";
-import { WRITER_CARD_TYPES } from "@/lib/schemas/cards";
+import { CardSchema, PROSE_CARD_TYPES, VISUAL_CARD_TYPES, WRITER_CARD_TYPES } from "@/lib/schemas/cards";
 import { defaultLearnerState } from "@/lib/schemas/learner";
 import { DISPLAY_FONTS, BODY_FONTS, MONO_FONTS } from "@/lib/schemas/theme";
 import * as detour from "@/lib/prompts/detour";
 import * as dial from "@/lib/prompts/dial";
+import * as evaluate from "@/lib/prompts/evaluate";
 import * as plan from "@/lib/prompts/plan";
 import * as shared from "@/lib/prompts/shared";
+import * as storyline from "@/lib/prompts/storyline";
 import * as triage from "@/lib/prompts/triage";
+import * as wrap from "@/lib/prompts/wrap";
 import * as write from "@/lib/prompts/write";
-import { CORPUS, PERSONA, detourCtx, planInput, triageInput, writeCtx } from "./llm.fixtures.test";
+import { CORPUS, PERSONA, detourCtx, evaluateInput, planInput, storylineInput, triageInput, wrapCtx, writeCtx } from "./llm.fixtures.test";
 
 const bigCorpus = () => {
   const parts: string[] = [];
@@ -25,11 +28,17 @@ const prompts = () => ({
   triage: triage.buildTriagePrompt(triageInput()),
   detour: detour.buildDetourPrompt(detourCtx()),
   dial: dial.buildDialPrompt({ persona: PERSONA, direction: "simpler" }),
+  evaluate: evaluate.buildEvaluatePrompt(evaluateInput()),
+  storyline: storyline.buildStorylinePrompt(storylineInput()),
+  wrap: wrap.buildWrapPrompt(wrapCtx()),
 });
 
 describe("prompt files", () => {
   it("export unique PROMPT_VERSIONs", () => {
-    const versions = [plan.PROMPT_VERSION, write.PROMPT_VERSION, triage.PROMPT_VERSION, detour.PROMPT_VERSION, dial.PROMPT_VERSION];
+    const versions = [
+      plan.PROMPT_VERSION, write.PROMPT_VERSION, triage.PROMPT_VERSION, detour.PROMPT_VERSION,
+      dial.PROMPT_VERSION, evaluate.PROMPT_VERSION, storyline.PROMPT_VERSION, wrap.PROMPT_VERSION,
+    ];
     for (const v of versions) expect(v).toMatch(/^[a-z]+\.v\d+$/);
     expect(new Set(versions).size).toBe(versions.length);
   });
@@ -121,7 +130,7 @@ describe("prompt files", () => {
     const cp = write.buildWritePrompt(writeCtx({ extraDirectives: ["end of node → checkpoint"] }));
     expect(cp.user).toMatch(/LAST card a "checkpoint"/);
 
-    for (const [mode, needle] of [["teaser", "reading your stuff"], ["resurface", "FRESH bets"], ["adjacent", "one layer deeper"], ["recap", 'EXACTLY 1 "recap"'], ["scaffold", 'EXACTLY 1 "concept"']] as const) {
+    for (const [mode, needle] of [["teaser", "reading your stuff"], ["resurface", "FRESH bets"], ["adjacent", "one layer deeper"], ["recap", 'EXACTLY 1 "recap"'], ["scaffold", "EXACTLY 1 card"]] as const) {
       const p = write.buildWritePrompt(writeCtx({ mode, missedConcepts: ["TTL"] }));
       expect(p.user, mode).toContain(needle);
     }
@@ -148,6 +157,175 @@ describe("prompt files", () => {
     expect(p.system).toContain(PERSONA.tics[0]);
     expect(p.user).toContain("what is a TTL?");
     expect(triage.buildTriagePrompt(triageInput({ corpusSlice: bigCorpus() })).user.length).toBeLessThan(triage.TRIAGE_CORPUS_CHARS + 6_000);
+  });
+
+  // ── the reader's #3 and #4: "70% of the cards are the same" / "don't skip basics" ──
+
+  it("writer system prompt names the paragraph-deck failure mode and routes every point to a shape", () => {
+    const s = write.buildWritePrompt(writeCtx()).system;
+    expect(s).toMatch(/PARAGRAPH DECK/);
+    expect(s).toMatch(/SHOW, DON'T TELL/);
+    // every concrete-thing → type route the reader asked for
+    for (const needle of [`a number, a ratio, a duration, a count, a price → "stat"`, `→ "diagram"`, `→ "sequence"`, `→ "code"`, `→ "slider"`, `→ "reveal"`, `→ "open"`]) {
+      expect(s, needle).toContain(needle);
+    }
+    // worked examples move this model more than rules: weak card + the rewrite + why
+    expect((s.match(/^weak: /gm) ?? []).length).toBeGreaterThanOrEqual(3);
+    expect((s.match(/^strong: /gm) ?? []).length).toBeGreaterThanOrEqual(3);
+    expect((s.match(/^why: /gm) ?? []).length).toBeGreaterThanOrEqual(3);
+    expect(s).toContain('"type":"stat"');
+    expect(s).toContain('"type":"diagram"');
+    expect(s).toContain('"type":"reveal"');
+    // concept is demoted from default to last resort, and never lands naked
+    expect(s).toMatch(/LAST RESORT/);
+    expect(s).toMatch(/it MUST carry a "visual"/);
+    // no two prose cards in a row
+    expect(s).toMatch(/never write two prose cards in a row/i);
+    for (const t of PROSE_CARD_TYPES) expect(s).toContain(`"${t}"`);
+  });
+
+  it("every worked example in the prompts is a card that would actually validate", () => {
+    // an example that fails the validator teaches the model the wrong shape — worse than no example.
+    const s = write.buildWritePrompt(writeCtx()).system;
+    const snippets = [...s.matchAll(/^(?:strong|example): (\{.*\})$/gm)].map((m) => m[1]);
+    expect(snippets.length).toBeGreaterThanOrEqual(5);
+    for (const raw of snippets) {
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      const card = { id: crypto.randomUUID(), topicNodeId: "n1", detourId: null, ...parsed };
+      const r = CardSchema.safeParse(card);
+      expect(r.success, `${raw.slice(0, 80)} → ${r.success ? "" : JSON.stringify(r.error.issues)}`).toBe(true);
+    }
+    // the weak examples are the anti-pattern: headline + paragraph, every one of them
+    const weak = [...s.matchAll(/^weak: (\{.*\})$/gm)].map((m) => JSON.parse(m[1]) as { type: string });
+    expect(weak.length).toBeGreaterThanOrEqual(3);
+    for (const w of weak) expect(w.type).toBe("concept");
+  });
+
+  it("writer system prompt refuses to skip basics or assume knowledge", () => {
+    const s = write.buildWritePrompt(writeCtx()).system;
+    expect(s).toMatch(/don't skip the basics/i);
+    for (const phrase of ["as you know", "obviously", "simply", "of course"]) expect(s, phrase).toContain(`"${phrase}"`);
+    expect(s).toContain('"terms"');
+    expect(s).toMatch(/PREFER terms/);
+    expect(s).toMatch(/≤ 6 words/);
+    expect(s).toMatch(/FEWER WORDS PER CARD/);
+    expect(s).toMatch(/one real example, one real number, one real name/);
+  });
+
+  it("stat + open are taught as first-class writer types with examples", () => {
+    const s = write.buildWritePrompt(writeCtx()).system;
+    expect(s).toContain("### stat");
+    expect(s).toContain("### open");
+    expect(s).toMatch(/any time the point of a card is a quantity, it is a stat card/i);
+    expect(s).toMatch(/roughly one per topic/);
+    expect(s).toMatch(/for the grader only and NEVER on screen/); // the open card's rubric
+    expect(s).toContain('{"type":"stat","eyebrow":"the math nobody does"');
+    expect(s).toContain('{"type":"open","eyebrow":"say it back"');
+  });
+
+  it("write prompt's batch shape demands a visual card, caps prose, and places the open beat", () => {
+    const p = write.buildWritePrompt(writeCtx({ batchSize: 4 }));
+    expect(p.user).toMatch(/batch shape/);
+    expect(p.user).toMatch(/LEAD with the most concrete thing/);
+    expect(p.user).toMatch(/your first card is NOT a "concept"/);
+    for (const t of VISUAL_CARD_TYPES) expect(p.user, t).toContain(t);
+    expect(p.user).toMatch(/at most ONE "concept" card here/);
+    expect(p.user).toMatch(/never two prose cards/i);
+    expect(p.user).toMatch(/include ONE "open" card/);
+    expect(p.user).toMatch(/"terms"/);
+    // once an open card has just gone by, stop asking for another one
+    const after = write.buildWritePrompt(writeCtx({ recentTypes: ["stat", "open", "diagram"] }));
+    expect(after.user).not.toMatch(/include ONE "open" card/);
+    expect(after.user).toMatch(/already went by recently/);
+  });
+
+  it("write prompt carries recentTypes and the storyline so the feed stops repeating and stays on-story", () => {
+    const cold = write.buildWritePrompt(writeCtx());
+    expect(cold.user).toMatch(/card shapes just used: none yet/);
+    expect(cold.user).toMatch(/through-line: not set yet/);
+
+    const hot = write.buildWritePrompt(writeCtx({
+      recentTypes: ["concept", "hook", "concept", "recap"],
+      storyline: { spine: "a cache is a bet on repetition", covered: ["what a cache is"], next: "the stampede", updatedAtIdx: "a0" },
+    }));
+    expect(hot.user).toContain("concept → hook → concept → recap");
+    expect(hot.user).toMatch(/the last card was a "recap"/);
+    expect(hot.user).toMatch(/the last two were prose cards/);
+    expect(hot.user).toContain("a cache is a bet on repetition");
+    expect(hot.user).toContain("what a cache is");
+    expect(hot.user).toContain("heading toward: the stampede");
+    // the shapes it hasn't reached for get named
+    expect(hot.user).toMatch(/is missing from that list/);
+  });
+
+  it("plan prompt refuses two prose cards on the fast path and offers real shapes for firstCards", () => {
+    const s = plan.PLAN_SYSTEM;
+    expect(s).toMatch(/at most ONE of them may be a "concept"/);
+    expect(s).toMatch(/two concept cards in a row is the paragraph deck/);
+    expect(s).toContain("### stat");
+    expect(s).toContain("### diagram");
+    expect(s).toContain("### reveal");
+    expect(s).toMatch(/SHOW, DON'T TELL/);
+  });
+
+  it("evaluate prompt replies to what they wrote and rejects grader-speak at the schema", () => {
+    const p = evaluate.buildEvaluatePrompt(evaluateInput());
+    expect(p.system).toMatch(/this is NOT grading/i);
+    expect(p.system).toMatch(/start from what THEY wrote/);
+    expect(p.system).toContain("got_it");
+    expect(p.system).toContain("close");
+    expect(p.system).toContain("not_yet");
+    expect(p.user).toContain("WHAT THEY ACTUALLY WROTE");
+    expect(p.user).toContain("because every request becomes a miss");
+    expect(p.user).toContain("<<<ANSWER");
+
+    const S = evaluate.OpenEvaluationSchema;
+    const good = { verdict: "close", feedback: "you've got the 'all at once' part, which is the hard half. the piece missing: the db was only sized for misses.", missed: ["sizing"] };
+    expect(S.safeParse(good).success).toBe(true);
+    for (const bad of ["correct! nice one.", "that's incorrect.", "wrong answer — try again.", "good job, you got it.", "you're correct about the misses."]) {
+      expect(S.safeParse({ ...good, feedback: bad }).success, bad).toBe(false);
+    }
+    expect(S.safeParse({ verdict: "close", feedback: "x".repeat(321) }).success).toBe(false);
+    expect(S.parse({ verdict: "got_it", feedback: "yep — that's it." }).missed).toEqual([]);
+
+    const blank = evaluate.buildEvaluatePrompt(evaluateInput({ answer: "   " }));
+    expect(blank.user).toContain("(they left it blank)");
+  });
+
+  it("fallbackEvaluation gives them the answer instead of a grade when the model is unreachable", () => {
+    const f = evaluate.fallbackEvaluation("nothing is in memory, so every ask goes to the database at once.");
+    expect(evaluate.OpenEvaluationSchema.safeParse(f).success).toBe(true);
+    expect(f.feedback).toContain("every ask goes to the database at once.");
+    expect(f.missed).toEqual([]);
+    const long = evaluate.fallbackEvaluation("x".repeat(600));
+    expect(long.feedback.length).toBeLessThanOrEqual(320);
+    expect(evaluate.OpenEvaluationSchema.safeParse(long).success).toBe(true);
+  });
+
+  it("storyline prompt asks for a spine, landed beats and where it's heading — not a topic list", () => {
+    const p = storyline.buildStorylinePrompt(storylineInput());
+    expect(p.system).toMatch(/THROUGH-LINE/);
+    expect(p.system).toMatch(/the argument, not the subject/);
+    expect(p.system).toMatch(/never invent a beat that no card taught/);
+    expect(p.user).toContain("→ caching: the core idea"); // the cursor marks where the feed is
+    expect(p.user).toContain("  where caching breaks");
+    expect(p.user).toContain("a miss costs a whole db read");
+    expect(p.user).toContain("10x fewer db reads");
+    expect(storyline.StorylineOutSchema.safeParse({ spine: "s", covered: ["a"], next: "n" }).success).toBe(true);
+    expect("updatedAtIdx" in storyline.StorylineOutSchema.shape).toBe(false);
+  });
+
+  it("wrap prompt writes an ending in beats, not a recap of recaps", () => {
+    const p = wrap.buildWrapPrompt(wrapCtx());
+    expect(p.system).toContain("### wrap");
+    expect(p.system).toMatch(/each beat is a CLAIM, not a topic name/);
+    expect(p.system).toMatch(/never a percentage of anything finished/);
+    expect(p.system).toContain("openThread");
+    expect(p.user).toContain("a cache is a bet that you'll ask for the same thing twice");
+    expect(p.user).toContain("your site is one restart from a stampede");
+    expect(p.user).toContain('"topicNodeId": "system"');
+    const noStory = wrap.buildWrapPrompt(wrapCtx({ storyline: null }));
+    expect(noStory.user).toMatch(/no through-line recorded/);
   });
 
   it("dial prompt: direction + toast schema", () => {

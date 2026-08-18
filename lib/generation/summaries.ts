@@ -1,4 +1,4 @@
-import type { Card } from "@/lib/schemas/cards";
+import type { Card, CardType } from "@/lib/schemas/cards";
 import type { CardSummary } from "@/lib/llm-types";
 
 /**
@@ -26,6 +26,10 @@ export function cardGist(card: Card): string {
     case "reveal": return card.setup;
     case "checkpoint": return card.headline;
     case "recap": return card.metaphor ? `${card.headline} (${card.metaphor})` : card.headline;
+    case "stat": return `${card.value}${card.unit ?? ""} ${card.label}`;
+    case "open": return card.prompt;
+    case "crossroads": return card.headline;
+    case "wrap": return card.headline;
     case "detour_marker": return card.kind === "open" ? `detour: ${card.question ?? card.label}` : card.label;
     case "notice": return card.headline;
     case "clarify": return card.prompt;
@@ -40,10 +44,25 @@ export function cardSummary(card: Card): CardSummary {
   return s;
 }
 
+/**
+ * Cards that carry no teaching content: they never count toward continuity or
+ * the variety window, and the writer is never asked to vary against them.
+ * A crossroads sits BETWEEN two batches, so the variety rules look through it.
+ */
+export const NON_CONTENT_TYPES: ReadonlySet<CardType> = new Set<CardType>([
+  "notice", "fallback", "detour_marker", "clarify", "crossroads", "wrap",
+]);
+
+export const isContentCard = (c: Card): boolean => !NON_CONTENT_TYPES.has(c.type);
+
 /** Last `n` content cards (skips system/marker cards) as summaries, oldest first. */
 export function recentSummaries(cards: Card[], n = 6): CardSummary[] {
-  const content = cards.filter((c) => c.type !== "notice" && c.type !== "fallback" && c.type !== "detour_marker" && c.type !== "clarify");
-  return content.slice(-n).map(cardSummary);
+  return cards.filter(isContentCard).slice(-n).map(cardSummary);
+}
+
+/** The SHAPES of the last `n` content cards, oldest first — what the variety governor reads. */
+export function recentTypes(cards: Card[], n = 6): CardType[] {
+  return cards.filter(isContentCard).slice(-n).map((c) => c.type);
 }
 
 /** Every metaphor already used in the session (recap cards). */

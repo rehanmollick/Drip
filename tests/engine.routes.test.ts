@@ -27,11 +27,18 @@ import * as dialRoute from "@/app/api/sessions/[id]/dial/route";
 import * as askRoute from "@/app/api/sessions/[id]/ask/route";
 import * as retryRoute from "@/app/api/sessions/[id]/retry/route";
 import * as remixRoute from "@/app/api/sessions/[id]/remix/route";
+import * as chooseRoute from "@/app/api/sessions/[id]/choose/route";
 import * as interactRoute from "@/app/api/cards/[id]/interact/route";
 
 const okR = <T>(value: T): LlmResult<T> => ({ ok: true, value, meta: { model: "fake", promptVersion: "t", latencyMs: 1, inTokens: 1, outTokens: 1, attempts: 1 } });
 const concept = (i: string): Card => ({ id: uuid(), type: "concept", topicNodeId: "n1", detourId: null, headline: `concept ${i}`, body: "b" });
 const hook = (i: string): Card => ({ id: uuid(), type: "hook", topicNodeId: "n1", detourId: null, headline: `hook ${i}` });
+const stat = (i: string): Card => ({ id: uuid(), type: "stat", topicNodeId: "n1", detourId: null, value: "80%", label: `l${i}`, context: "c" });
+const code = (i: string): Card => ({ id: uuid(), type: "code", topicNodeId: "n1", detourId: null, lang: "ts", code: `const a${i} = 1;`, annotations: [] });
+const openCard = (i: string): Card => ({ id: uuid(), type: "open", topicNodeId: "n1", detourId: null, prompt: `say it back ${i}`, rubric: "r", modelAnswer: "the model answer.", difficulty: 2 });
+/** a batch the variety governor is happy with — the writer the new prompts ask for */
+const SHAPES = [stat, code, openCard, concept];
+let gradeOpen = false;
 let planOk = true;
 const llm: LlmApi = {
   async plan() {
@@ -43,11 +50,14 @@ const llm: LlmApi = {
       clarifiers: [], firstCards: [hook("1"), concept("2"), concept("3")],
     }));
   },
-  async writeBatch(ctx) { return okR(Array.from({ length: ctx.batchSize }, (_, i) => concept(`w${i}`))); },
+  async writeBatch(ctx) { return okR(Array.from({ length: ctx.batchSize }, (_, i) => SHAPES[i % SHAPES.length](`w${i}`))); },
   async triage() { return okR({ kind: "inline" as const, answer: "yep." }); },
   async writeDetour(ctx) { return okR(Array.from({ length: ctx.cardCount }, (_, i) => concept(`d${i}`))); },
   async dialToast() { return "say less."; },
-  async evaluateOpen() { return { ok: false as const, code: "api" as const, error: "n/a" }; },
+  async evaluateOpen(input) {
+    if (!gradeOpen) return { ok: false as const, code: "api" as const, error: "n/a" };
+    return okR({ verdict: "close" as const, feedback: `you said "${input.answer}" — close.`, missed: ["eviction"] });
+  },
   async updateStoryline() { return { ok: false as const, code: "api" as const, error: "n/a" }; },
   async writeWrap() { return { ok: false as const, code: "api" as const, error: "n/a" }; },
 };
@@ -102,9 +112,32 @@ describe("api routes", () => {
     expect(bad.env.error?.code).toBe("invalid_request");
 
     // generate (empty body tolerated)
-    const gen = await read<{ batch: { status: string }; cards: { id: string }[] }>(await generateRoute.POST(json("POST", `/api/sessions/${id}/generate`), ctx(id)));
+    const gen = await read<{ batch: { status: string }; cards: { id: string; type: string }[] }>(await generateRoute.POST(json("POST", `/api/sessions/${id}/generate`), ctx(id)));
     expect(gen.env.data.batch.status).toBe("done");
-    expect(gen.env.data.cards).toHaveLength(4);
+    expect(gen.env.data.cards).toHaveLength(5); // 4 written + the crossroads that closes the topic
+    expect(gen.env.data.cards.at(-1)!.type).toBe("crossroads");
+
+    // the reader picks a direction; generation is paused until they do
+    const paused = await read<{ batch: { reason?: string }; cards: unknown[] }>(await generateRoute.POST(json("POST", `/api/sessions/${id}/generate`), ctx(id)));
+    expect(paused.env.data.batch.reason).toBe("awaiting_choice");
+    expect(paused.env.data.cards).toEqual([]);
+    const forkId = gen.env.data.cards.at(-1)!.id;
+    const badChoice = await read(await chooseRoute.POST(json("POST", `/api/sessions/${id}/choose`, { cardId: forkId, choice: "nope" }), ctx(id)));
+    expect(badChoice.status).toBe(400);
+    const chose = await read<{ session: { id: string }; cards: { id: string }[] }>(await chooseRoute.POST(json("POST", `/api/sessions/${id}/choose`, { cardId: forkId, choice: "continue" }), ctx(id)));
+    expect(chose.env.error).toBeNull();
+    expect(chose.env.data.cards.length).toBeGreaterThan(0);
+
+    // an open card: what they typed comes back with a reply written against it
+    gradeOpen = true;
+    const openRow = (await read<{ cards: { id: string; type: string }[] }>(await cardsRoute.GET(json("GET", `/api/sessions/${id}/cards?limit=100`), ctx(id)))).env.data.cards.find((c) => c.type === "open")!;
+    const answered = await read<{ feedback: { verdict: string; feedback: string } | null; card: { interaction: { text?: string } | null } }>(
+      await interactRoute.POST(json("POST", `/api/cards/${openRow.id}/interact`, { text: "a cache is a bet on repetition" }), ctx(openRow.id)),
+    );
+    expect(answered.env.data.feedback?.verdict).toBe("close");
+    expect(answered.env.data.feedback?.feedback).toContain("a cache is a bet on repetition");
+    expect(answered.env.data.card.interaction?.text).toBe("a cache is a bet on repetition");
+    gradeOpen = false;
 
     // interact: dwell over 60s is rejected by the contract
     const cardId = p1.env.data.cards[0].id;

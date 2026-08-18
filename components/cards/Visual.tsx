@@ -57,12 +57,14 @@ export function Visual({
   }
 
   if (spec.kind === "stat") {
-    const fs = size === "lg" ? 64 : size === "sm" ? 40 : 54;
+    // a 12-char value at a fixed 64px runs off a 393px phone — size it to the width it has
+    const cap = size === "lg" ? 64 : size === "sm" ? 40 : 54;
+    const fs = Math.min(cap, Math.max(24, Math.floor(280 / Math.max(1, spec.value.length * 0.58))));
     return (
       <div className={className} style={wrap}>
         <span
           className="font-display"
-          style={{ fontSize: fs, lineHeight: 0.95, letterSpacing: "-0.03em", fontWeight: 700, color: "var(--accent)", fontVariantNumeric: "tabular-nums" }}
+          style={{ fontSize: fs, lineHeight: 0.95, letterSpacing: "-0.03em", fontWeight: 700, color: "var(--accent)", fontVariantNumeric: "tabular-nums", overflowWrap: "anywhere", maxWidth: "100%" }}
         >
           {spec.value}
         </span>

@@ -109,8 +109,8 @@ describe("misc engine helpers", () => {
   it("recomputeProgress derives the frontier from the remaining main-thread cards", () => {
     const outline = [node({ id: "n1", estCards: 3 }), node({ id: "n2", estCards: 4 })];
     const session = { outline, progress: { nodeIdx: 1, cardsInNode: 3, totalGenerated: 9, exhausted: false, extensions: 0, lastIdx: "zz" } } as unknown as Session;
-    const row = (idx: string, topicNodeId: string, detourId: string | null = null) =>
-      ({ idx, detourId, payload: { topicNodeId, type: "concept" } }) as unknown as CardRow;
+    const row = (idx: string, topicNodeId: string, detourId: string | null = null, type = "concept") =>
+      ({ idx, detourId, type, payload: { topicNodeId, type } }) as unknown as CardRow;
     // node n1 complete (3), n2 has 1 card, plus a detour card that must not count
     const p = recomputeProgress(session, [row("a0", "n1"), row("a1", "n1"), row("a2", "n1"), row("a3", "n2"), row("a3V", "n2", "d1")]);
     expect(p).toMatchObject({ nodeIdx: 1, cardsInNode: 1, exhausted: false, totalGenerated: 5, lastIdx: "a3V" });
@@ -120,5 +120,9 @@ describe("misc engine helpers", () => {
     expect(recomputeProgress(session, [])).toMatchObject({ nodeIdx: 0, cardsInNode: 0, totalGenerated: 0, lastIdx: null });
     // outline exhausted
     expect(recomputeProgress(session, [row("a0", "n2"), row("a1", "n2"), row("a2", "n2"), row("a3", "n2")])).toMatchObject({ nodeIdx: 2, exhausted: true });
+    // a trailing unanswered crossroads means the reader is still parked at the fork; it never counts toward a node
+    const parked = recomputeProgress(session, [row("a0", "n1"), row("a1", "n1"), row("a2", "n1"), row("a3", "n1", null, "crossroads")]);
+    expect(parked).toMatchObject({ awaitingChoice: true, nodeIdx: 1, cardsInNode: 0 });
+    expect(recomputeProgress(session, [row("a0", "n1"), row("a1", "n1")]).awaitingChoice).toBe(false);
   });
 });

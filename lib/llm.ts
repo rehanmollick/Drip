@@ -15,20 +15,31 @@ import { stripMarkupValue } from "@/lib/copy/sanitize";
 import { getStore } from "@/lib/db";
 import type { Store } from "@/lib/db/store";
 import type {
-  DetourContext, LlmApi, LlmFailureCode, LlmMeta, LlmResult, PlanInput, TriageInput, WriteContext,
+  DetourContext, EvaluateOpenInput, LlmApi, LlmFailureCode, LlmMeta, LlmResult, OpenEvaluation,
+  PlanInput, StorylineInput, TriageInput, WrapContext, WriteContext,
 } from "@/lib/llm-types";
 import { CardSchema, WRITER_CARD_TYPES, type Card, type CardType } from "@/lib/schemas/cards";
 import { PlanOutputSchema, TriageOutputSchema, type Persona, type PlanOutput, type TriageOutput } from "@/lib/schemas/plan";
-import { LLM_PURPOSES } from "@/lib/schemas/session";
+import { LLM_PURPOSES, type Storyline } from "@/lib/schemas/session";
 import * as mock from "./llm-mock";
 import { PROMPT_VERSION as DETOUR_PROMPT_VERSION, buildDetourPrompt } from "./prompts/detour";
 import { CANNED_TOASTS, DialToastSchema, PROMPT_VERSION as DIAL_PROMPT_VERSION, buildDialPrompt } from "./prompts/dial";
+import { OpenEvaluationSchema, PROMPT_VERSION as EVALUATE_PROMPT_VERSION, buildEvaluatePrompt } from "./prompts/evaluate";
 import { PROMPT_VERSION as PLAN_PROMPT_VERSION, buildPlanPrompt } from "./prompts/plan";
 import { loggedPromptVersion, type Prompt } from "./prompts/shared";
+import { PROMPT_VERSION as STORYLINE_PROMPT_VERSION, StorylineOutSchema, buildStorylinePrompt, type StorylineOut } from "./prompts/storyline";
 import { PROMPT_VERSION as TRIAGE_PROMPT_VERSION, buildTriagePrompt } from "./prompts/triage";
+import { PROMPT_VERSION as WRAP_PROMPT_VERSION, WrapOutSchema, buildWrapPrompt, type WrapOut } from "./prompts/wrap";
 import { PROMPT_VERSION as WRITE_PROMPT_VERSION, buildWritePrompt } from "./prompts/write";
 
 type LlmPurpose = (typeof LLM_PURPOSES)[number];
+
+/**
+ * topicNodeId for cards that belong to no outline node (the wrap card). Mirrors
+ * lib/generation/system-cards.ts SYSTEM_NODE — duplicated rather than imported so the
+ * one-file SDK layer never depends on the generation layer that depends on it.
+ */
+const SYSTEM_TOPIC_NODE = "system";
 
 // ── config ────────────────────────────────────────────────────────────────────
 
@@ -64,7 +75,7 @@ export const dailyCallCap = (): number => {
  * body wastes the call). Plans: one JSON object, ~2–3k tokens, no extended
  * thinking — the spec budgets 10–20s for planning.
  */
-const MAX_TOKENS = { plan: 8_000, triage: 600, toast: 200 } as const;
+const MAX_TOKENS = { plan: 8_000, triage: 600, toast: 200, evaluate: 500, storyline: 900 } as const;
 export function batchMaxTokens(cardCount: number): number {
   const n = Number.isFinite(cardCount) ? Math.max(1, Math.round(cardCount)) : 4;
   return Math.min(8_000, Math.max(3_000, 1_000 * n + 1_000));
@@ -75,7 +86,15 @@ export function batchMaxTokens(cardCount: number): number {
  * engine's takeover windows (planning watchdog / stale-batch takeover = 90s) so a stalled stream can
  * never let two owners generate the same frontier or a plan land after the session was declared dead.
  */
-export const DEADLINE_MS = { plan: 75_000, batch: 60_000, triage: 20_000, toast: 8_000 } as const;
+export const DEADLINE_MS = {
+  plan: 75_000, batch: 60_000, triage: 20_000, toast: 8_000,
+  /** The reader is staring at a text box waiting for a reply — this one is felt directly. */
+  evaluate: 20_000,
+  /** Housekeeping between topics; never blocks a card. */
+  storyline: 25_000,
+  /** One card, but it's the ending — worth the same room as a small batch. */
+  wrap: 40_000,
+} as const;
 /** Don't start a paid retry with less than this left — a truncated retry is a wasted call. */
 export const MIN_RETRY_MS = 8_000;
 const REQUEST_TIMEOUT_MS = 120_000; // SDK per-request TTFB guard; the deadline signal above is the real bound
@@ -778,11 +797,97 @@ async function dialToast(input: { sessionId: string; persona: Persona; direction
   }
 }
 
-/** TODO(open-answers): real implementations land with the open-card work; callers degrade gracefully. */
-const notImplemented = async () => ({ ok: false as const, code: "api" as const, error: "not implemented yet" });
-const evaluateOpen: LlmApi["evaluateOpen"] = notImplemented;
-const updateStoryline: LlmApi["updateStoryline"] = notImplemented;
-const writeWrap: LlmApi["writeWrap"] = notImplemented;
+/**
+ * Reply to a typed answer. Haiku, ~1s, cheap — the reader is watching a text box while
+ * this runs, so it gets the tightest deadline of anything that isn't a toast. The reply
+ * is validated against a schema that rejects grader-speak outright (see prompts/evaluate.ts),
+ * which means "correct!" costs a retry instead of reaching the screen.
+ */
+async function evaluateOpen(input: EvaluateOpenInput): Promise<LlmResult<OpenEvaluation>> {
+  return generate<OpenEvaluation>({
+    purpose: "chat",
+    sessionId: input.sessionId,
+    model: WRITE_MODEL(),
+    promptVersion: loggedPromptVersion(EVALUATE_PROMPT_VERSION),
+    prompt: buildEvaluatePrompt(input),
+    schema: OpenEvaluationSchema,
+    maxTokens: MAX_TOKENS.evaluate,
+    deadlineMs: DEADLINE_MS.evaluate,
+    checkBanned: true,
+    onScreenKeys: ["feedback"], // verdict is an enum; missed[] only ever feeds learner state
+    // `missed` is an internal list for the learner state — clamp it rather than spend a retry.
+    normalize: (parsed) => {
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return parsed;
+      const o = { ...(parsed as Record<string, unknown>) };
+      if (Array.isArray(o.missed)) o.missed = o.missed.slice(0, 4).map((m) => softClamp(m, 60));
+      return o;
+    },
+    mock: () => mock.mockEvaluateOpen(input),
+  });
+}
+
+/**
+ * Refresh the session's through-line. Cheap and small: it runs between topics, never in
+ * the path of a card. `updatedAtIdx` is the engine's bookkeeping, never the model's.
+ */
+async function updateStoryline(input: StorylineInput): Promise<LlmResult<Storyline>> {
+  const r = await generate<StorylineOut>({
+    purpose: "chat",
+    sessionId: input.sessionId,
+    model: WRITE_MODEL(),
+    promptVersion: loggedPromptVersion(STORYLINE_PROMPT_VERSION),
+    prompt: buildStorylinePrompt(input),
+    schema: StorylineOutSchema,
+    maxTokens: MAX_TOKENS.storyline,
+    deadlineMs: DEADLINE_MS.storyline,
+    checkBanned: true, // the spine + covered beats can surface in the feed's orientation strip
+    // every field here is a soft brief; a 12-char overshoot must not cost a second call.
+    normalize: (parsed) => {
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return parsed;
+      const o = { ...(parsed as Record<string, unknown>) };
+      o.spine = softClamp(o.spine, 280);
+      o.next = softClamp(o.next, 120);
+      if (Array.isArray(o.covered)) o.covered = o.covered.slice(-12).map((c) => softClamp(c, 80));
+      return o;
+    },
+    mock: () => mock.mockUpdateStoryline(input),
+  });
+  return r.ok
+    ? { ok: true, value: { ...r.value, updatedAtIdx: input.prev?.updatedAtIdx ?? null }, meta: r.meta }
+    : r;
+}
+
+/** The ending, when the reader asks for it: the whole thread in a few beats, in the persona's voice. */
+async function writeWrap(ctx: WrapContext): Promise<LlmResult<Card>> {
+  const r = await generate<WrapOut>({
+    purpose: "write",
+    sessionId: ctx.sessionId,
+    model: WRITE_MODEL(),
+    promptVersion: loggedPromptVersion(WRAP_PROMPT_VERSION),
+    prompt: buildWrapPrompt(ctx),
+    schema: WrapOutSchema,
+    maxTokens: batchMaxTokens(1),
+    deadlineMs: DEADLINE_MS.wrap,
+    checkBanned: true,
+    // the wrap card is never on a topic node and never inside a detour — set both here so a
+    // model that forgets them doesn't cost a retry on bookkeeping it can't know about.
+    normalize: (parsed) => {
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return parsed;
+      const o = { ...(parsed as Record<string, unknown>) };
+      const raw = o.card;
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) return o;
+      const card: Record<string, unknown> = { ...(raw as Record<string, unknown>), type: "wrap" };
+      if (typeof card.topicNodeId !== "string" || !card.topicNodeId) card.topicNodeId = SYSTEM_TOPIC_NODE;
+      const [normalized] = clampEyebrows(normalizeCards([card], null)) as unknown[];
+      return { ...o, card: normalized };
+    },
+    mock: async () => {
+      const m = await mock.mockWriteWrap(ctx);
+      return m.ok ? { ok: true, value: { card: m.value as WrapOut["card"] }, meta: m.meta } : m;
+    },
+  });
+  return r.ok ? { ok: true, value: r.value.card as Card, meta: r.meta } : r;
+}
 
 export const llm: LlmApi = { plan, writeBatch, triage, writeDetour, dialToast, evaluateOpen, updateStoryline, writeWrap };
 export { plan, writeBatch, triage, writeDetour, dialToast, evaluateOpen, updateStoryline, writeWrap };

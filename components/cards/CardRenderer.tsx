@@ -1,8 +1,9 @@
 "use client";
 import { Component, type ReactNode } from "react";
 import type {
-  BinaryCard, CheckpointCard, ClarifyCard, CodeCard, ConceptCard, DetourMarkerCard, DiagramCard, FallbackCard,
-  HookCard, NoticeCard, PredictCard, RecapCard, RevealCard, SequenceCard, SliderCard,
+  BinaryCard, CheckpointCard, ClarifyCard, CodeCard, ConceptCard, CrossroadsCard, DetourMarkerCard, DiagramCard,
+  FallbackCard, HookCard, NoticeCard, OpenCard, PredictCard, RecapCard, RevealCard, SequenceCard, SliderCard,
+  StatCard, WrapCard,
 } from "@/lib/schemas/cards";
 import type { CardViewProps } from "./types";
 import { HookView } from "./HookCard";
@@ -20,6 +21,10 @@ import { RecapView } from "./RecapCard";
 import { FallbackView } from "./FallbackCard";
 import { NoticeView } from "./NoticeCard";
 import { ClarifyView } from "./ClarifyCard";
+import { StatView } from "./StatCard";
+import { OpenView } from "./OpenCard";
+import { CrossroadsView } from "./CrossroadsCard";
+import { WrapView } from "./WrapCard";
 
 export { PredictRevealView };
 export type { CardViewProps, InteractResult, Slide } from "./types";
@@ -55,6 +60,10 @@ function CardSwitch(props: CardViewProps) {
     case "recap": return <RecapView {...(props as CardViewProps<RecapCard>)} />;
     case "notice": return <NoticeView {...(props as CardViewProps<NoticeCard>)} />;
     case "clarify": return <ClarifyView {...(props as CardViewProps<ClarifyCard>)} />;
+    case "stat": return <StatView {...(props as CardViewProps<StatCard>)} />;
+    case "open": return <OpenView {...(props as CardViewProps<OpenCard>)} />;
+    case "crossroads": return <CrossroadsView {...(props as CardViewProps<CrossroadsCard>)} />;
+    case "wrap": return <WrapView {...(props as CardViewProps<WrapCard>)} />;
     case "fallback":
     default:
       return <FallbackView {...(props as CardViewProps<FallbackCard>)} />;

@@ -14,17 +14,22 @@
  */
 import { BANNED_WORDS } from "@/lib/copy/banned";
 import type {
-  DetourContext, LlmFailureCode, LlmMeta, LlmResult, PlanInput, TriageInput, WriteContext,
+  DetourContext, EvaluateOpenInput, LlmFailureCode, LlmMeta, LlmResult, OpenEvaluation, PlanInput,
+  StorylineInput, TriageInput, WrapContext, WriteContext,
 } from "@/lib/llm-types";
-import type { Card, CardType, RecapCard } from "@/lib/schemas/cards";
+import type { Card, CardType, GlossTerm, RecapCard } from "@/lib/schemas/cards";
 import type { OutlineNode, Persona, PlanOutput, TriageOutput } from "@/lib/schemas/plan";
+import type { Storyline } from "@/lib/schemas/session";
 import type { Theme } from "@/lib/schemas/theme";
 import type { IconName } from "@/lib/schemas/visual";
 import { SAMPLE_THEME_FIELD_NOTES, SAMPLE_THEME_TERMINAL_NOIR } from "@/lib/theme/defaults";
 import { PROMPT_VERSION as DETOUR_PROMPT_VERSION } from "@/lib/prompts/detour";
 import { CANNED_TOASTS, PROMPT_VERSION as DIAL_PROMPT_VERSION } from "@/lib/prompts/dial";
+import { PROMPT_VERSION as EVALUATE_PROMPT_VERSION } from "@/lib/prompts/evaluate";
 import { PROMPT_VERSION as PLAN_PROMPT_VERSION } from "@/lib/prompts/plan";
+import { PROMPT_VERSION as STORYLINE_PROMPT_VERSION } from "@/lib/prompts/storyline";
 import { PROMPT_VERSION as TRIAGE_PROMPT_VERSION } from "@/lib/prompts/triage";
+import { PROMPT_VERSION as WRAP_PROMPT_VERSION } from "@/lib/prompts/wrap";
 import { PROMPT_VERSION as WRITE_PROMPT_VERSION } from "@/lib/prompts/write";
 import { difficultyFor, hashStr } from "@/lib/prompts/shared";
 
@@ -67,7 +72,7 @@ export function subjectOf(text: string): string {
 }
 
 export type MockFailure = Extract<LlmFailureCode, "validation" | "budget"> | null;
-export type MockScope = "plan" | "write" | "triage" | "detour";
+export type MockScope = "plan" | "write" | "triage" | "detour" | "evaluate" | "storyline" | "wrap";
 
 const MARKER_RE = /\[\[(FAIL|BUDGET)(?::([a-z]+))?\]\]/g;
 
@@ -190,10 +195,25 @@ function base(c: Ctx, type: CardType, i: number, eyebrow?: string) {
   };
 }
 
+/**
+ * Inline glossary entries. Real batches only gloss some cards, so the mock does too —
+ * the renderer's "underline + tap" path and the "no terms at all" path both get exercised.
+ */
+function termsFor(subject: string, h: number): GlossTerm[] | undefined {
+  if (h % 3 === 2) return undefined;
+  const pool: GlossTerm[] = [
+    { term: "ttl", gloss: "how long a stored answer is allowed to live before it expires" },
+    { term: "miss", gloss: `when ${subject} doesn't have the answer and something slower has to` },
+    { term: "stampede", gloss: "every request missing at the same moment and landing on the slow thing" },
+  ];
+  return h % 3 === 0 ? [pool[0]] : [pool[1], pool[2]];
+}
+
 function makeCard(type: CardType, c: Ctx, i: number): Card {
   const s = c.subject;
   const h = hashStr(`${c.seed}|${type}|${i}`);
   const diff = Math.max(1, Math.min(5, c.difficulty));
+  const terms = termsFor(s, h);
   switch (type) {
     case "hook":
       return {
@@ -210,6 +230,7 @@ function makeCard(type: CardType, c: Ctx, i: number): Card {
         headline: clampStr(`${s}: the one idea`, 64),
         body: clampStr(`${s} works because it makes a bet on repetition: the thing you asked for last time is probably the thing you'll ask for next. everything else in ${c.nodeTitle} is detail on top of that bet.`, 320),
         visual: { kind: "stat", value: clampStr(`${(h % 90) + 10}%`, 12), label: "of asks repeat within a minute" },
+        ...(terms ? { terms } : {}),
       };
     case "code":
       return {
@@ -311,6 +332,30 @@ function makeCard(type: CardType, c: Ctx, i: number): Card {
         setup: clampStr(`the hardest part of ${s} isn't storing the answer…`, 140),
         payoff: clampStr(`it's knowing when the stored answer is a lie. invalidation is the whole game.`, 240),
         visual: { kind: "icon", icon: "clock" },
+        ...(terms ? { terms } : {}),
+      };
+    case "stat": {
+      const pct = (h % 40) + 58;              // 58–97
+      return {
+        ...base(c, "stat", i, "the number"),
+        type: "stat",
+        value: clampStr(`${Math.max(2, Math.round(100 / Math.max(1, 100 - pct)))}x`, 12),
+        label: clampStr(`fewer reads reaching the slow thing`, 48),
+        context: clampStr(`going from 90% to ${pct}% hit rate isn't a few percent better. it's whole multiples fewer reads hitting disk.`, 160),
+        compare: { value: clampStr(`${100 - pct}%`, 12), label: clampStr(`what it looks like on paper`, 40) },
+        ...(terms ? { terms } : {}),
+      };
+    }
+    case "open":
+      return {
+        ...base(c, "open", i, "say it back"),
+        type: "open",
+        prompt: clampStr(`in your own words — why does an empty ${s} hurt the slow thing?`, 160),
+        placeholder: clampStr(`however you'd say it`, 48),
+        rubric: clampStr(`every ask becomes a miss; all the misses land at once; the slow thing was only ever sized for the misses`, 240),
+        modelAnswer: clampStr(`nothing is held in memory, so every single ask goes straight to the slow thing at the same moment — and it was never sized for all of them at once.`, 280),
+        difficulty: diff,
+        ...(terms ? { terms } : {}),
       };
     case "checkpoint":
       return {
@@ -342,9 +387,19 @@ function makeCard(type: CardType, c: Ctx, i: number): Card {
   }
 }
 
-/** Type cycle: every window of 4 contains ≥1 code/diagram and ≥1 interactive. */
+/**
+ * Type cycle. Length is a multiple of 3 with a structural card (code/diagram) at every index
+ * ≡ 0 mod 3 and an interactive at every index ≡ 1 mod 3, so ANY window of 4 — at any offset,
+ * including the wrap-around — carries at least one of each. Prose cards (concept) never sit
+ * next to each other, which is the whole point of the v2 writer rules.
+ */
 const CYCLE: readonly CardType[] = [
-  "code", "binary", "hook", "diagram", "predict", "concept", "code", "sequence", "reveal", "diagram", "slider", "concept",
+  "diagram", "binary", "stat",
+  "code", "open", "concept",
+  "diagram", "predict", "reveal",
+  "code", "sequence", "stat",
+  "diagram", "slider", "hook",
+  "code", "binary", "concept",
 ];
 
 function typesFor(allowed: readonly CardType[], n: number, offset: number): CardType[] {
@@ -387,7 +442,12 @@ export async function mockPlan(input: PlanInput): Promise<LlmResult<PlanOutput>>
     : [];
 
   const cctx: Ctx = { subject, nodeId: "n1", nodeTitle: outline[0].title, detourId: null, difficulty: 3, seed: `${seed}|first`, usedMetaphors: [] };
-  const firstCards: Card[] = [makeCard("hook", cctx, 0), makeCard("concept", cctx, 1), { ...makeCard("concept", cctx, 2), headline: clampStr(`why ${subject} feels like magic`, 64) } as Card];
+  // hook → the concrete thing → one idea. never two prose cards in a row, not even on the fast path.
+  const firstCards: Card[] = [
+    makeCard("hook", cctx, 0),
+    makeCard("stat", cctx, 1),
+    { ...makeCard("concept", cctx, 2), headline: clampStr(`why ${subject} feels like magic`, 64) } as Card,
+  ];
 
   const value: PlanOutput = {
     title: clampStr(`${subject}, scrolled in`, 60),
@@ -429,17 +489,18 @@ export async function mockWriteBatch(ctx: WriteContext): Promise<LlmResult<Card[
         ...makeCard(or("hook", "concept"), c, 0),
         ...(has("hook") ? { headline: clampStr(`wanna go one layer deeper into ${nodeTitle}? keep scrolling`, 90), sub: undefined, eyebrow: "adjacent waters" } : {}),
       } as Card;
-      cards = [hook, makeCard("concept", c, 1)];
+      cards = [hook, makeCard(or("stat", "concept"), c, 1)];
       break;
     }
     case "recap":
       cards = [makeCard(or("recap", "concept"), c, 0)];
       break;
     case "scaffold":
-      cards = [{ ...makeCard("concept", c, 0), eyebrow: "same idea, gentler" } as Card];
+      // the first pass was words and the words didn't land — re-angle as a shape when we can.
+      cards = [{ ...makeCard(or("diagram", "concept"), c, 0), eyebrow: "same idea, gentler" } as Card];
       break;
     case "resurface": {
-      const bets = (["binary", "predict", "sequence"] as const).filter(has);
+      const bets = (["binary", "predict", "sequence", "open"] as const).filter(has);
       const pool: CardType[] = bets.length ? [...bets] : (["reveal", "concept"] as CardType[]).filter(has);
       const list = pool.length ? pool : [allowed[0]];
       const missed = ctx.missedConcepts ?? [];
@@ -509,4 +570,100 @@ export async function mockDialToast(input: { persona: Persona; direction: "simpl
     ? CANNED_TOASTS.simpler
     : tic ? clampStr(`bet. going a layer deeper — ${tic.replace(/[.'"]+$/, "")}.`, 90) : CANNED_TOASTS.deeper;
   return { ok: true, value, meta: meta(DIAL_PROMPT_VERSION, 300, value.length) };
+}
+
+// ── open answers, through-line, ending ────────────────────────────────────────
+
+/** Words in the answer that also appear in the rubric — the crude stand-in for "did they say it". */
+export function overlapWords(answer: string, rubric: string): string[] {
+  const norm = (t: string) => t.toLowerCase().replace(/[^a-z0-9\s'-]/g, " ").split(/\s+/).filter((w) => w.length >= 4 && !STOP.has(w));
+  const want = new Set(norm(rubric));
+  const out: string[] = [];
+  for (const w of norm(answer)) if (want.has(w) && !out.includes(w)) out.push(w);
+  return out;
+}
+
+/**
+ * Deterministic grader. Verdict comes from how much of the rubric's vocabulary the answer
+ * actually reuses, so e2e can drive all three verdicts by typing different answers — a good
+ * answer (rubric words), a partial one, and "idk".
+ */
+export async function mockEvaluateOpen(input: EvaluateOpenInput): Promise<LlmResult<OpenEvaluation>> {
+  await sleep(MOCK_LATENCY_MS);
+  const fail = mockFailureFor("evaluate", input.answer, input.prompt);
+  if (fail) return failure(fail, EVALUATE_PROMPT_VERSION, `{"verdict":"maybe"}`);
+
+  const answer = input.answer.trim();
+  const hits = overlapWords(answer, `${input.rubric} ${input.modelAnswer}`);
+  const empty = answer.length < 4 || /^(idk|dunno|no idea|\?+)$/i.test(answer);
+  const verdict: OpenEvaluation["verdict"] = empty ? "not_yet" : hits.length >= 3 ? "got_it" : hits.length >= 1 ? "close" : "not_yet";
+
+  // quote the most distinctive thing they said, not the first thing — "database" beats "every".
+  const quoted = [...hits].sort((a, b) => b.length - a.length)[0] ?? subjectOf(answer);
+  const missed = empty || verdict === "got_it" ? [] : [clampStr(input.rubric.split(/;|\./)[verdict === "close" ? 1 : 0]?.trim() || input.rubric, 60)].filter(Boolean);
+
+  const feedback = empty
+    ? clampStr(`no shame — this one's slippery. the short version: ${input.modelAnswer}`, 320)
+    : verdict === "got_it"
+      ? clampStr(`yep — the "${quoted}" part is the whole thing. that's the piece most people leave out, and you led with it.`, 320)
+      : verdict === "close"
+        ? clampStr(`you've got "${quoted}", which is the hard half. the bit still missing: ${missed[0] ?? input.rubric}`, 320)
+        : clampStr(`you're circling it. the thing to hang onto: ${input.modelAnswer}`, 320);
+
+  const value: OpenEvaluation = { verdict, feedback, missed };
+  return { ok: true, value, meta: meta(EVALUATE_PROMPT_VERSION, input.corpusSlice.length + 800, JSON.stringify(value).length) };
+}
+
+export async function mockUpdateStoryline(input: StorylineInput): Promise<LlmResult<Storyline>> {
+  await sleep(MOCK_LATENCY_MS);
+  const fail = mockFailureFor("storyline", input.title, input.corpusSlice);
+  if (fail) return failure(fail, STORYLINE_PROMPT_VERSION, `{"spine":123}`);
+
+  const subject = subjectOf(input.title || input.corpusSlice);
+  const node = input.outline[input.nodeIdx];
+  const nextNode = input.outline[input.nodeIdx + 1];
+  const landed = input.recent.map((r) => clampStr(r.gist, 80));
+  const covered = [...(input.prev?.covered ?? []), ...landed].filter((b, i, all) => all.indexOf(b) === i).slice(-12);
+
+  const value: Storyline = {
+    spine: clampStr(input.prev?.spine ?? `${subject} is a bet on repetition, and every hard part of it is what happens when the bet is wrong.`, 280),
+    covered,
+    next: clampStr(nextNode ? `next: ${nextNode.title}` : node ? `finishing ${node.title}` : `wherever you want to take it`, 120),
+    updatedAtIdx: input.prev?.updatedAtIdx ?? null,
+  };
+  return { ok: true, value, meta: meta(STORYLINE_PROMPT_VERSION, input.corpusSlice.length + 600, JSON.stringify(value).length) };
+}
+
+export async function mockWriteWrap(ctx: WrapContext): Promise<LlmResult<Card>> {
+  await sleep(MOCK_LATENCY_MS);
+  const fail = mockFailureFor("wrap", ctx.storyline?.spine, ctx.outline.map((n) => n.title).join(" "));
+  if (fail) return failure(fail, WRAP_PROMPT_VERSION, `{"card":{"type":"wrap"}}`);
+
+  const subject = subjectOf(ctx.storyline?.spine ?? ctx.outline[0]?.title ?? "this");
+  const seed = `wrap|${ctx.sessionId}|${ctx.covered.length}`;
+  const fromStoryline = (ctx.storyline?.covered ?? []).map((b) => clampStr(b, 120));
+  const fromCards = ctx.covered.map((c) => clampStr(c.gist, 120));
+  const beats = [...fromStoryline, ...fromCards]
+    .filter((b, i, all) => b.length > 0 && all.indexOf(b) === i)
+    .slice(0, 5);
+  while (beats.length < 3) {
+    beats.push(clampStr([
+      `${subject} is a bet that you'll ask for the same thing twice.`,
+      `a miss costs you the whole slow read, and misses arrive in crowds.`,
+      `every knob you touched was really about when to stop trusting the stored answer.`,
+    ][beats.length], 120));
+  }
+
+  const card: Card = {
+    id: deterministicUuid(seed),
+    type: "wrap",
+    topicNodeId: "system",
+    detourId: null,
+    eyebrow: "that's the thread",
+    headline: clampStr(`you can argue about ${subject} now. genuinely.`, 80),
+    beats,
+    stat: { value: String(Math.min(99, Math.max(1, ctx.covered.length))), label: clampStr("things that stuck", 40) },
+    openThread: clampStr(`we never touched what happens when two writers race for the same key. that one's a whole evening.`, 140),
+  };
+  return { ok: true, value: card, meta: meta(WRAP_PROMPT_VERSION, 1_200, JSON.stringify(card).length) };
 }

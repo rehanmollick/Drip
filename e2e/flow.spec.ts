@@ -1,5 +1,47 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import { createSession, waitForCards, slides, goToSlide } from "./helpers";
+
+const realCards = (page: Page) =>
+  page.locator('section.card[data-slide-kind="card"], section.card[data-slide-kind="predict_reveal"]').count();
+
+const activeIndex = (page: Page) =>
+  page.evaluate(() => {
+    const feed = document.querySelector(".feed") as HTMLElement;
+    const cards = [...document.querySelectorAll("section.card")] as HTMLElement[];
+    return cards.findIndex((c) => Math.abs(c.offsetTop - feed.scrollTop) < 40);
+  });
+
+/**
+ * The feed asks at every topic boundary instead of running on forever (a `crossroads` card, with
+ * generation parked behind it). Take the "keep going" fork so the runway keeps filling.
+ * Returns true if a fork was answered.
+ */
+async function keepGoingIfForked(page: Page): Promise<boolean> {
+  const forks = page.locator('section.card[data-card-type="crossroads"]');
+  for (let i = 0; i < (await forks.count()); i++) {
+    const card = forks.nth(i);
+    const idx = await card.evaluate((el) => [...document.querySelectorAll("section.card")].indexOf(el));
+    await goToSlide(page, idx);
+    const go = card.locator('[data-choice="continue"]');
+    if ((await go.count()) && (await go.isEnabled())) {
+      await go.click();
+      await page.waitForTimeout(700);
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Scroll forward (answering forks) until there are at least `target` real cards. */
+async function scrollOn(page: Page, target: number, steps = 26) {
+  for (let i = 1; i <= steps; i++) {
+    if ((await realCards(page)) >= target) return;
+    const total = await slides(page).count();
+    await goToSlide(page, Math.min(i, total - 1));
+    await page.waitForTimeout(250);
+    await keepGoingIfForked(page);
+  }
+}
 
 test.describe("session flow (mock LLM, local store)", () => {
   test("create → one wait → first cards → runway grows → interactions record", async ({ page }) => {
@@ -19,10 +61,7 @@ test.describe("session flow (mock LLM, local store)", () => {
     expect(themed).not.toBe("");
 
     // scroll forward → runway generation kicks in, never a dead end
-    for (let i = 1; i < 10; i++) {
-      await goToSlide(page, i);
-      await page.waitForTimeout(250);
-    }
+    await scrollOn(page, 12);
     await waitForCards(page, 12, 40_000);
 
     // no card overflows the viewport, no horizontal scroll
@@ -78,14 +117,17 @@ test.describe("session flow (mock LLM, local store)", () => {
 
     // detour
     const before = await slides(page).count();
+    const from = await activeIndex(page);
     await page.getByRole("button", { name: "ask anything" }).click();
     await page.getByRole("dialog").locator("textarea").fill("why does this even matter, how would i explain it to a friend?");
     await page.getByRole("dialog").getByRole("button", { name: /send|ask/i }).click();
     await expect.poll(async () => page.locator('section.card[data-card-type="detour_marker"]').count(), { timeout: 20_000 }).toBeGreaterThanOrEqual(2);
     expect(await slides(page).count()).toBeGreaterThan(before);
-    // detour opens right after the current (2nd) slide
+    // the detour opens on the slide right after the one they asked from, wherever that sits
     const types = await page.locator("section.card").evaluateAll((els) => els.map((e) => e.getAttribute("data-card-type")));
-    expect(types[2]).toBe("detour_marker");
+    const marker = types.indexOf("detour_marker");
+    expect(marker).toBeGreaterThan(from);
+    expect(marker).toBeLessThanOrEqual(from + 2); // a predict's reveal slide may sit between
   });
 
   test("chill mode session has zero interactive cards", async ({ page }) => {
@@ -100,11 +142,11 @@ test.describe("session flow (mock LLM, local store)", () => {
     await dialog.getByRole("button", { name: /drip it/i }).click();
     await page.waitForURL(/\/s\//);
     await waitForCards(page, 3);
-    for (let i = 1; i < 12; i++) { await goToSlide(page, i); await page.waitForTimeout(200); }
+    await scrollOn(page, 12);
     await waitForCards(page, 12, 40_000);
     const id = page.url().split("/s/")[1];
     const body = await (await page.request.get(`/api/sessions/${id}/cards?limit=100`)).json();
-    const interactive = body.data.cards.filter((c: { type: string }) => ["binary", "predict", "sequence", "slider"].includes(c.type));
+    const interactive = body.data.cards.filter((c: { type: string }) => ["binary", "predict", "sequence", "slider", "open"].includes(c.type));
     expect(interactive).toEqual([]);
   });
 

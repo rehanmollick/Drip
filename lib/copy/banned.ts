@@ -20,6 +20,7 @@ export const NON_COPY_KEYS: ReadonlySet<string> = new Set([
   "code",       // code cards: raw source (spec §0.1 "in code these words are fine")
   "from", "to", // diagram edges reference node ids
   "idx",
+  "rubric",     // `open` cards: the grader's checklist, never rendered ("a good test of X" is fine there)
 ]);
 
 const re = new RegExp(`\\b(${BANNED_WORDS.join("|")})(s|es)?\\b`, "i");

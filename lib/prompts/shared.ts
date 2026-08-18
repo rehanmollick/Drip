@@ -7,6 +7,7 @@ import {
 } from "@/lib/schemas/cards";
 import type { LearnerState } from "@/lib/schemas/learner";
 import type { Persona } from "@/lib/schemas/plan";
+import type { Storyline } from "@/lib/schemas/session";
 import type { Theme } from "@/lib/schemas/theme";
 import { VisualSpec } from "@/lib/schemas/visual";
 
@@ -25,7 +26,7 @@ export type Prompt = { system: string; user: string };
  * (it hashes the assembled shared blocks + generated card schemas), so a logged
  * prompt version like "write.v2+shared.v1.9f3a1c2b" pins the exact prompt bytes.
  */
-export const SHARED_VERSION = 2;
+export const SHARED_VERSION = 3;
 
 /** FNV-1a 32-bit — stable, dependency-free string hash. */
 export function hashStr(s: string): number {
@@ -69,11 +70,69 @@ export const WRITER_RULES =
      diagram node "sub" ≤ 40 → "in memory, not on disk"
      diagram edge "label" ≤ 20 → "on miss" / "flushes"
      concept "body" ≤ 320 → about 55 words, three or four sentences. write it, then cut a sentence.
-   the rest: eyebrow 28 · hook headline 90 / sub 120 · concept headline 64 · binary prompt 140 / each option 40 / revealCopy 240 · predict prompt 140 / option 40 / revealHeadline 64 / revealBody 240 · sequence prompt 120 / item label 40 / revealCopy 240 · slider prompt 120 / label 40 / outputLabel 40 / insight 200 · reveal setup 140 / payoff 240 · diagram title 48 / tapNote 160 · code title 48 / code 1200 / annotation note 160 · checkpoint headline 80 / sub 160 · recap headline 64 / each beat 120.
+   the rest: eyebrow 28 · hook headline 90 / sub 120 · concept headline 64 · binary prompt 140 / each option 40 / revealCopy 240 · predict prompt 140 / option 40 / revealHeadline 64 / revealBody 240 · sequence prompt 120 / item label 40 / revealCopy 240 · slider prompt 120 / label 40 / outputLabel 40 / insight 200 · reveal setup 140 / payoff 240 · diagram title 48 / tapNote 160 · code title 48 / code 1200 / annotation note 160 · checkpoint headline 80 / sub 160 · recap headline 64 / each beat 120 · stat value 12 / label 48 / context 160 · open prompt 160 / rubric 240 / modelAnswer 280 · terms: at most 3, term 32 / gloss 140.
 5. never emit HTML, markdown, code fences, or any markup inside strings. plain text only (code cards hold raw code in the "code" field, that's it).
 6. never reference card numbers or positions ("3/47", "card 2", "next slide"). never say "module", "unit", "section 3".
 7. never grade: no "correct", "incorrect", "wrong", "right answer" in revealCopy/revealBody/insight. teach the payoff instead.
-8. every card gets a fresh uuid v4 in "id".`;
+8. every card gets a fresh uuid v4 in "id".
+9. never write two prose cards in a row. a prose card is a "concept" or a "recap" — headline plus a block of text. two of them back to back is a wall, and a wall is where people leave.
+10. never write "as you know", "obviously", "simply", "of course", "everyone knows", "needless to say". they teach the reader that they're the only one who doesn't get it.`;
+
+// ── show, don't tell ──────────────────────────────────────────────────────────
+
+/**
+ * The single biggest quality lever, from real reader feedback: "70% of the cards
+ * are literally the same, just a title screen + a verbose paragraph." Naming the
+ * failure mode and routing each point to a concrete card type is what fixes it —
+ * examples move this model far more than rules, so both are here.
+ */
+export const SHOW_DONT_TELL =
+  `SHOW, DON'T TELL — the thing that decides whether this feed is good.
+
+the failure mode has a name: THE PARAGRAPH DECK. headline, paragraph. headline, paragraph. every card the same shape, every card a small wall of text. it is what a tired writer produces and it is exactly where people close the app. if two of your cards could swap headlines and still make sense, you wrote a paragraph deck. start over.
+
+before you write a card, find the most CONCRETE thing you have about that point, and let it choose the type:
+- a number, a ratio, a duration, a count, a price → "stat". the number IS the card.
+- parts wired together, a mechanism, a path a request takes → "diagram". you give structure, the app draws it.
+- things that happen in an order → "sequence". they drag it into order and feel the order.
+- real code, a command, a config, a query → "code". annotate the one line that matters.
+- a relationship you only understand by moving it → "slider". they drag, the number moves.
+- a twist, a myth, a "you'd think X but" → "reveal". setup, then payoff on tap.
+- a claim people get wrong → "binary" or "predict". the wrong tap teaches too.
+- a point they should be able to say back in their own words → "open".
+- a milestone worth flexing → "checkpoint".
+ONLY when none of those fit is the point a "concept" — and then it is ≤ 55 words and it carries a "visual".
+
+worked examples (weak card on the left, what to write instead on the right):
+
+weak: {"type":"concept","headline":"cache hit rates matter","body":"the hit rate of a cache determines how much load reaches the database. a higher hit rate means fewer reads hit the underlying store, which reduces latency and cost. going from a 90% hit rate to a 99% hit rate is a significant improvement in the number of requests that must be served from disk."}
+strong: {"type":"stat","eyebrow":"the math nobody does","value":"10x","label":"fewer db reads","context":"90% → 99% hit rate isn't 9% better. it's ten times fewer reads reaching disk.","compare":{"value":"9%","label":"what it looks like"}}
+why: the whole point was a quantity. a quantity gets to be huge on screen, not buried in the fourth sentence.
+
+weak: {"type":"concept","headline":"how a cache-aside read works","body":"when a request arrives, the application first checks the cache. if the value is present, it is returned. if it is not present, the application reads from the database, writes the value into the cache, and then returns it to the caller."}
+strong: {"type":"diagram","variant":"flow","title":"a miss, start to finish","nodes":[{"id":"a","label":"request"},{"id":"b","label":"cache","sub":"in memory","emphasis":true},{"id":"c","label":"database","sub":"on disk"}],"edges":[{"from":"a","to":"b","label":"ask"},{"from":"b","to":"c","label":"on miss"},{"from":"c","to":"b","label":"write back"}],"tapNotes":{"b":"the write-back happens before the answer goes out, so the next ask is a hit."}}
+why: it was a mechanism the whole time. a mechanism is a shape, and a shape is a picture.
+
+weak: {"type":"concept","headline":"cache invalidation is hard","body":"one of the difficult parts of caching is knowing when the stored value no longer matches the source of truth. this is commonly described as one of the hardest problems in computer science."}
+strong: {"type":"reveal","eyebrow":"the footgun","setup":"the hard part of a cache isn't storing the answer…","payoff":"it's knowing the moment your stored answer became a lie. everything else is plumbing.","terms":[{"term":"invalidation","gloss":"throwing out a cached answer once it stops matching the real thing"}]}
+why: it was a twist. a twist gets a beat of tension and a tap, not a summary.`;
+
+// ── don't skip basics, don't assume ───────────────────────────────────────────
+
+/**
+ * The other half of the same feedback: "better explanations but not more text —
+ * quality > quantity, and don't skip over basics or assume stuff." `terms` is the
+ * mechanism that lets a card be beginner-safe without spending screen words.
+ */
+export const NO_ASSUMING =
+  `don't skip the basics. don't assume.
+- your reader is smart, curious, and has NOT read the source. everything they know about this, they know because a card told them.
+- the FIRST time you use a word a curious outsider wouldn't have, do one of two things: gloss it inline in ≤ 6 words ("a ttl — how long before it expires — of 60s"), or add it to that card's "terms" array: {"term":"ttl","gloss":"how long a cached answer is allowed to live"}. the app underlines the word wherever it appears in the card and a tap shows the gloss. PREFER terms — it costs zero words on screen, which is the whole budget problem.
+- terms is for words you actually used on that card, at most 3, and only the first time. don't gloss "database".
+- say what a thing is FOR before you say how it works. purpose, then mechanism.
+- concrete beats abstract every single time: one real example, one real number, one real name — never one more adjective.
+- quality over quantity means FEWER WORDS PER CARD and MORE CARDS THAT EACH DO ONE THING. if a card is doing two things, it is two cards.
+- if you catch yourself writing a sentence that only restates the headline, delete it. that sentence is why the last version felt like reading the same card forever.`;
 
 // ── json-schema generation ────────────────────────────────────────────────────
 
@@ -127,19 +186,25 @@ const CARD_ZOD: Record<CardType, z.ZodType> = {
 
 /** Craft notes per type — what makes each card GOOD, beyond what the schema enforces. */
 export const CARD_NOTES: Record<CardType, string> = {
-  stat: `ONE number, rendered huge. "value" is the number as it should read ("80%", "3ms", "1.2M"); "label" says what it is; "context" is the single line that makes it mean something ("that's 10x fewer db reads, not 10% fewer"). optional "compare" gives the number something to sit next to. use this instead of a paragraph whenever the point IS a quantity.`,
-  open: `they answer in their own words. "prompt" asks something a person can actually say out loud in a sentence ("in your own words: why does the cache restart hurt?"). "rubric" is for the grader only and never shown — list what a good answer contains. "modelAnswer" is what they see if they'd rather not type. keep it to one honest question, not an interrogation.`,
+  stat: `ONE number, rendered huge — the fastest card in the deck to read, so reach for it often. "value" is the number exactly as it should read ("80%", "3ms", "1.2M", "$0.02"); "label" says what the number IS (≤ 48); "context" is the single line that makes it land (≤ 160) — "that's 10x fewer db reads, not 10% fewer", never a restatement of the label. optional "compare" gives it something to sit beside ({"value":"9%","label":"what it looks like"}). RULE: any time the point of a card is a quantity, it is a stat card, not a paragraph containing a number. optional "terms" for one word in the label/context a newcomer wouldn't have.
+example: {"type":"stat","eyebrow":"the math nobody does","value":"10x","label":"fewer db reads","context":"90% → 99% hit rate isn't 9% better. it's ten times fewer reads reaching disk.","compare":{"value":"9%","label":"what it looks like"}}`,
+  open: `they type an answer in their own words, and the reply is written against what THEY said. this is the "explain it back" beat and it is the one people actually remember — aim for roughly one per topic, placed after the idea has landed (never as the first card on a new idea).
+"prompt" (≤ 160) is one honest question a person could answer out loud in a sentence: "in your own words — why does an empty cache hurt the database?". not two questions. not "list the three…".
+"placeholder" (≤ 48) is the greyed hint in the box ("say it however you'd say it").
+"rubric" (≤ 240) is for the grader only and NEVER on screen: the 2–3 things a good answer contains, written as a checklist fragment.
+"modelAnswer" (≤ 280) is what they can reveal if they'd rather not type — a real answer in your voice, not a rubric restated.
+example: {"type":"open","eyebrow":"say it back","prompt":"in your own words — why does an empty cache hurt the database?","placeholder":"however you'd say it","rubric":"every request becomes a miss; all misses land on the db at once; the db was never sized for that","modelAnswer":"nothing is in memory, so every single ask goes to the database at the same moment — and it was only ever sized for the misses.","difficulty":2}`,
   crossroads: `never write this — the app inserts it at topic boundaries.`,
-  wrap: `never write this unless asked for a wrap — the whole thread in 3–5 beats, each ≤ 120 chars, the way you'd summarise it to a friend who walked in late. "openThread" is the one thing still unexplored, phrased as an invitation.`,
+  wrap: `the ending, only when asked for: the whole thread in 3–5 beats, each ≤ 120 chars, the way you'd catch up a friend who walked in late. beats are in order and each one is a claim, not a topic name ("a cache is a bet on repetition" — not "we covered caching"). optional "stat" is a flex, never progress. "openThread" (≤ 140) is the one thing still unexplored, phrased as an invitation to come back.`,
   hook: `one bold claim or question in huge type (headline ≤ 90 chars). optional sub. sets up the next 2–3 cards. no explanation here — tension only.`,
-  concept: `ONE idea. body ≤ 320 chars (~55 words). headline is the idea in ≤ 64 chars. optional visual: {kind:"stat",value,label} for a number that lands, {kind:"icon",icon} from the icon list, {kind:"ascii",lines} for a tiny text sketch, {kind:"spark",values} for a trend.`,
+  concept: `the LAST RESORT type, not the default. use it only when the point is not a number (stat), a mechanism (diagram), an order (sequence), code (code), a felt relationship (slider), a twist (reveal) or a claim (binary/predict). when it survives that test: ONE idea, headline ≤ 64, body ≤ 320 (~55 words — write it, then cut a sentence), and it MUST carry a "visual": {kind:"stat",value,label} for a number that lands, {kind:"icon",icon} from the icon list, {kind:"ascii",lines} for a tiny text sketch, {kind:"spark",values} for a trend. add "terms" for any word in it a curious outsider wouldn't have.`,
   code: `real, runnable-looking code, ≤ ~14 short lines, ≤ 1200 chars, "lang" is a highlighter id (ts, js, python, bash, sql, go, rust, json...). annotations point at 1-based lines and say what that line is doing and why it matters. tapping a line reveals its note.`,
   diagram: `structure only; the app draws it. 2–8 nodes with short labels (≤ 24 chars), edges reference node ids. pick the variant that fits the shape: flow (pipeline), boxes (parts), timeline (order in time), compare (A vs B), cycle (loop), layers (stack). set emphasis:true on the node that matters and put a tapNote on it.`,
   binary: `a two-way bet. prompt reads like a hot take ("hot take: killing the cache takes the site down. real or nah?"). options are two short labels (≤ 40 chars). revealCopy is the payoff — teaches after ANY tap. difficulty 1–5.`,
   predict: `a "what happens next?" scenario. 2–4 short options, one correctIndex. revealHeadline + revealBody are shown on the NEXT screen, so they must stand alone. difficulty 1–5.`,
   sequence: `3–6 items listed in the CORRECT order (the app shuffles them). prompt names the process. revealCopy explains why the order matters. difficulty 1–5.`,
   slider: `one input drives one output live. label/min/max/step/defaultValue/unit for the input; expression is a formula in x using only numbers, x, + - * / ^ %, parentheses, sqrt log ln exp abs min max pow floor ceil round sin cos. outputLabel/outputUnit/outputFormat for the result. insight is one line that reframes what they just felt.`,
-  reveal: `tap-to-flip. setup is one line of tension (≤ 140), payoff is hidden until tap (≤ 240). a twist, a number, a myth busted.`,
+  reveal: `tap-to-flip. setup is one line of tension (≤ 140), payoff is hidden until tap (≤ 240). a twist, a number, a myth busted. the setup must not give the payoff away — "the hard part of a cache isn't storing the answer…" then the tap. optional "terms" for a word the payoff leans on.`,
   checkpoint: `a milestone flex in the subject's world: headline like "you now know more about X than most Y" (≤ 80). optional sub teases what's next. optional stat is a flex ("7", "in a row"), never progress or percent. optional visual.`,
   recap: `headline + exactly 3 beats (each ≤ 120 chars) that re-explain ONE idea through a NEW metaphor; put the metaphor phrase in "metaphor" (≤ 80). never reuse a metaphor from the used list.`,
   detour_marker: `internal: opens/closes a question detour. label ≤ 60.`,
@@ -226,7 +291,7 @@ export function difficultyDirective(state: LearnerState): string {
     return `difficulty directive: they're cruising (>90% recently). write interactives at difficulty ${diff} and add curveballs: plausible-wrong options, "which is the LIE" formats, edge cases the source actually covers.`;
   }
   if (delta < 0) {
-    return `difficulty directive: they're missing (<65% recently). write interactives at difficulty ${diff}, keep options clearly distinct, and land the idea in a concept card BEFORE any bet on it.`;
+    return `difficulty directive: they're missing (<65% recently). write interactives at difficulty ${diff}, keep options clearly distinct, and LAND the idea before any bet on it — a diagram or a stat lands it better than another paragraph, and put the words they're missing in "terms".`;
   }
   return `difficulty directive: on target. write interactives at difficulty ${diff}.`;
 }
@@ -299,13 +364,48 @@ export function bullets(items: readonly string[]): string {
   return items.length ? items.map((s) => `- ${s}`).join("\n") : "- (none)";
 }
 
+// ── variety + through-line ────────────────────────────────────────────────────
+
+/**
+ * What the last few cards WERE, as shapes. The writer reaching for `concept`
+ * every time is the #1 complaint; the fix is telling it what it just used and
+ * that repeating a shape is not allowed.
+ */
+export function recentTypesBlock(types: readonly CardType[] | undefined): string {
+  if (!types || !types.length) return `card shapes just used: none yet — this is the opening. lead with the most concrete thing in the source.`;
+  const last = types.slice(-8);
+  const prose = last.slice(-2).every((t) => t === "concept" || t === "recap");
+  return [
+    `card shapes just used (oldest → newest): ${last.join(" → ")}.`,
+    `pick DIFFERENT shapes. the last card was a "${last[last.length - 1]}" — your first card is not that.`,
+    prose ? `warning: the last two were prose cards. the next card must NOT be a "concept" or a "recap". show it instead: stat, diagram, sequence, code, slider, reveal.` : null,
+    `if "stat", "diagram", "code" or "slider" is missing from that list, that is the shape you are reaching for now.`,
+  ].filter(Boolean).join("\n");
+}
+
+/**
+ * The session's through-line. "last 6 cards" keeps local continuity but loses the
+ * plot 40 slides deep; the spine is what stops the feed drifting into a different
+ * subject and answers "am I still on the same thing?".
+ */
+export function storylineBlock(s: Storyline | null | undefined): string {
+  if (!s) return `through-line: not set yet — stay on the node brief and the source.`;
+  return [
+    `the through-line of this whole session (STAY ON IT — every card belongs to this story):`,
+    `spine: ${s.spine}`,
+    `already landed:\n${bullets(s.covered)}`,
+    `heading toward: ${s.next}`,
+    `do not re-land something in "already landed". do not wander off the spine; if the source pulls somewhere else, connect it back in the copy.`,
+  ].join("\n");
+}
+
 // ── versioning ────────────────────────────────────────────────────────────────
 
 const ALL_CARD_TYPES = Object.keys(CARD_ZOD) as CardType[];
 
 /** 8-hex fingerprint of every shared prompt block + generated card schema (see SHARED_VERSION). */
 export const SHARED_FINGERPRINT = hashStr(
-  [JSON_ONLY, PRIME_DIRECTIVE, WRITER_RULES, BASE_CARD_FIELDS, cardSchemaBlock(ALL_CARD_TYPES)].join("\n"),
+  [JSON_ONLY, PRIME_DIRECTIVE, WRITER_RULES, SHOW_DONT_TELL, NO_ASSUMING, BASE_CARD_FIELDS, cardSchemaBlock(ALL_CARD_TYPES)].join("\n"),
 ).toString(16).padStart(8, "0");
 
 /**
