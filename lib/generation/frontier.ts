@@ -1,9 +1,7 @@
 import type { FrontierPublic } from "@/lib/api/contract";
 import type { OutlineNode } from "@/lib/schemas/plan";
+import { WRITER_CARD_TYPES } from "@/lib/schemas/cards";
 import type { CardRow, Session } from "@/lib/schemas/session";
-import { nowIso } from "@/lib/id";
-import { DEEPER_CARDS, DEEPER_CARDS_DEEP, countsTowardNode, sameUtcDay } from "./engine";
-import { isBudgetNotice } from "./system-cards";
 
 /**
  * Where generation actually is — counted, never guessed.
@@ -13,34 +11,44 @@ import { isBudgetNotice } from "./system-cards";
  * undershoots. Everything here is counted from rows that EXIST, so the only way to be wrong is for
  * the feed itself to be wrong.
  *
+ * This file also owns the primitives the counting is defined in (`COUNTS_TOWARD_NODE`,
+ * `DEEPER_CARDS`) rather than borrowing them from the engine: the engine imports them from here and
+ * never the other way round, so "what counts as progress" has exactly one home and the two files
+ * cannot drift into a cycle.
+ *
  * Pure on purpose: one session object plus its card rows in, the wire shape out. The store lives on
  * the other side of `frontierOf` in the engine.
  */
 
-export type NodeCensus = {
-  /** outline node id → main-thread teaching cards that exist for it (every node, zeros included). */
-  written: Record<string, number>;
-  /** teaching cards that belong to no outline node: teasers, the adjacent/near-miss stretch past the end. */
-  beyond: number;
-};
+/** Extra cards granted by "one more layer here" at a crossroads (4 on the deep preset). */
+export const DEEPER_CARDS = 3;
+export const DEEPER_CARDS_DEEP = 4;
+
+/** Types that count toward a node's card budget. Recaps, crossroads, wraps and every system card do not. */
+export const COUNTS_TOWARD_NODE: ReadonlySet<string> = new Set(WRITER_CARD_TYPES.filter((t) => t !== "recap"));
+// the payload is the source of truth for a row's shape (the `type` column mirrors it)
+export const countsTowardNode = (c: CardRow) => !c.detourId && COUNTS_TOWARD_NODE.has(c.payload.type);
 
 /**
- * How many cards a node actually got. Detour rows are somebody's question, not the thread, and the
- * non-teaching types (recap, crossroads, wrap, notice, clarify, fallback, detour markers) are
+ * How many cards each node actually got. Detour rows are somebody's question, not the thread, and
+ * the non-teaching types (recap, crossroads, wrap, notice, clarify, fallback, detour markers) are
  * scaffolding around the thread — none of them are progress through the outline, so none of them
  * count. Same predicate the engine budgets nodes with, so a census can never disagree with the
  * writer about where it is.
+ *
+ * Only nodes that HAVE cards appear: a missing node means zero, which every reader of this already
+ * assumes. A 24-node outline mostly hasn't been written yet, and shipping twenty zeros on every
+ * session response is twenty keys of nothing on the hottest path there is.
  */
-export function nodeCensus(cards: CardRow[], outline: OutlineNode[]): NodeCensus {
-  const written: Record<string, number> = Object.fromEntries(outline.map((n) => [n.id, 0]));
+export function nodeCensus(cards: CardRow[], outline: OutlineNode[]): Record<string, number> {
+  const written: Record<string, number> = {};
   const ids = new Set(outline.map((n) => n.id));
-  let beyond = 0;
   for (const c of cards) {
     if (!countsTowardNode(c)) continue;
-    if (ids.has(c.payload.topicNodeId)) written[c.payload.topicNodeId] += 1;
-    else beyond += 1;
+    const id = c.payload.topicNodeId;
+    if (ids.has(id)) written[id] = (written[id] ?? 0) + 1;
   }
-  return { written, beyond };
+  return written;
 }
 
 /**
@@ -82,13 +90,6 @@ export function gateOf(session: Pick<Session, "progress">, cards: CardRow[]): Fr
   return cards.some((c) => c.payload.type === "crossroads" && c.interaction?.choice === undefined) ? "crossroads" : null;
 }
 
-/** Stopped by something scrolling can't clear: today's spend cap, or a session that died planning. */
-function isHalted(session: Pick<Session, "status">, cards: CardRow[], now: string): boolean {
-  if (session.status === "error") return true;
-  const last = cards[cards.length - 1];
-  return !!last && isBudgetNotice(last.payload) && sameUtcDay(last.createdAt, now);
-}
-
 /**
  * The wire shape. `live` comes from the engine — only it can see whether a batch is in flight — and
  * everything else is counted here.
@@ -97,18 +98,14 @@ export function frontierPublic(
   session: Session,
   cards: CardRow[],
   live: FrontierPublic["live"] = null,
-  now: string = nowIso(),
 ): FrontierPublic {
-  const census = nodeCensus(cards, session.outline);
   return {
-    written: census.written,
-    beyond: census.beyond,
+    written: nodeCensus(cards, session.outline),
     nodeIdx: session.progress.nodeIdx,
     deeper: deeperGrants(cards, session.settings.depthPreset),
     closed: closedNodes(cards),
     gate: gateOf(session, cards),
     live,
     epoch: session.progress.epoch,
-    halted: isHalted(session, cards, now),
   };
 }

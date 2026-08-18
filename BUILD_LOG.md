@@ -100,3 +100,44 @@ needs a routing line that does not mention numbers.
 One thing that did NOT go wrong, and was worth checking: "caching vocabulary from the prompt's gold
 examples: none". All three gold examples in `SHOW_DONT_TELL` are caching, and none of it leaked into
 a literature session.
+
+## v3 — the same three batches, after the prompt pass
+
+`write.v5+shared.v4.3148e0a3`, same subjects, same model, same day.
+
+| | before (`write.v4+shared.v3`) | after |
+|---|---|---|
+| technical | passed | `stat → diagram` · 2/2 carry a shape |
+| science | passed | `reveal → slider → diagram → open` · 2/4 |
+| **humanities** | **`reveal → open` · 0/2 · 2 of 4 cards dropped · FAILED** | **`spot → open` · 1/2 · nothing dropped** |
+
+All three: 0% headline-plus-paragraph, variety clean, **one attempt each** — no retries burned on
+cap overshoot, where the baseline lost half a batch.
+
+The humanities fix is the one that mattered, and it landed exactly where the diagnosis pointed. The
+writer now reaches for `spot` on text: three real sentences from *Emma*, and you hunt for the one
+where the narrator's voice defects to the character.
+
+> ✗ "It was a wretched business, indeed!" — *'wretched' — that word choice, that exclamation. hers.
+> the narrator lent her the sentence without endorsing it.*
+>
+> reveal: *the grammar never left third person past tense. the diction defected to her, and you were
+> never told it switched hands. that is the whole trick.*
+
+Two things worth naming beyond the shape count. The other two sentences carry notes explaining why
+they are NOT the tell ("flat report. anyone standing in the room could have written it") — a wrong
+tap teaches, which is the rule the schema could never enforce. And `anchor` came back populated
+(`free-indirect-tells`, `the-trick-explained`): before this pass NO prompt had ever mentioned the
+field, so every anchor in production was a copy-derived guess and callbacks were joining on guesses.
+
+Also fixed this cycle, from a 24-slide read-through rather than a test: every batch was ending
+`checkpoint → crossroads`. `completes` fires at every node boundary and a planner whose estCards sits
+near BATCH_SIZE makes that EVERY batch — four flexes in 24 slides, ~17% of the feed being cards about
+the feed. The crossroads already names what just finished, so the checkpoint was the second voice
+saying it. A flex now waits 12 rows for its turn.
+
+Known and not fixed: `buildWriteSystem` is byte-stable across mode/recent/batchSize but NOT across
+`allowedTypes`, which the variety governor narrows per batch — so a session ping-pongs between up to
+four ~10k-token system prompts and misses the prompt cache on each flip. Pre-existing, and a
+deliberate trade: a narrowed schema means the writer *cannot* emit a concept, where a prompt-level
+ban is only a nudge that costs a retry when ignored.

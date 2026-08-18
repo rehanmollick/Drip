@@ -70,21 +70,19 @@ describe("old rows survive the frontier + persona additions", () => {
   it("a fully counted frontier round-trips, and a bare one fills itself in", () => {
     const counted = FrontierPublicSchema.parse({
       written: { n1: 5, n2: 2 },
-      beyond: 0,
       nodeIdx: 1,
       deeper: { n1: 3 },
       closed: ["n1"],
       gate: "crossroads",
       live: { nodeIdx: 1, startedAt: "2026-08-16T11:00:00.000Z" },
       epoch: 2,
-      halted: false,
     });
     expect(counted.closed).toEqual(["n1"]);
     expect(counted.gate).toBe("crossroads");
     expect(counted.live?.nodeIdx).toBe(1);
 
     expect(FrontierPublicSchema.parse({})).toEqual({
-      written: {}, beyond: 0, nodeIdx: 0, deeper: {}, closed: [], gate: null, live: null, epoch: 0, halted: false,
+      written: {}, nodeIdx: 0, deeper: {}, closed: [], gate: null, live: null, epoch: 0,
     });
     expect(FrontierPublicSchema.safeParse({ gate: "wrap" }).success).toBe(true);
     expect(FrontierPublicSchema.safeParse({ gate: "later" }).success).toBe(false);

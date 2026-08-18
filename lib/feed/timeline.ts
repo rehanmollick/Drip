@@ -28,7 +28,7 @@ export type SegmentState = "done" | "current" | "ahead";
  * including the /dev fixtures. Absent means nobody counted, and the bar says nothing it can't back up.
  */
 export type FrontierLike = {
-  /** outline node id → main-thread cards that EXIST for it. */
+  /** outline node id → main-thread cards that EXIST for it. only written nodes appear; a missing node is zero. */
   written?: Record<string, number>;
   /** node id → extra cards a "one more layer here" tap bought there. */
   deeper?: Record<string, number>;

@@ -164,7 +164,7 @@ describe("updateStoryline", () => {
     expect(r.value.covered).toContain("a miss costs a whole db read"); // carried forward
     expect(r.value.covered).toContain("10x fewer db reads");           // just landed
     expect(r.value.next).toContain("where caching breaks");
-    expect(store.calls[0].promptVersion).toMatch(/^storyline\.v1\+shared/);
+    expect(store.calls[0].promptVersion).toMatch(/^storyline\.v2\+shared/);
   });
 
   it("the model never sets updatedAtIdx — the engine's bookkeeping is carried through untouched", async () => {

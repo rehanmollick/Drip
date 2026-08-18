@@ -9,6 +9,7 @@ import {
   describeViolations, enforceVariety, isProseHeavy, narrowAllowed, proseHeavyRatio, varietyDirectives,
 } from "@/lib/generation/variety";
 import { buildCrossroadsCard, buildWrapCard, clampText, crossroadsHeadline } from "@/lib/generation/crossroads";
+import { checkpointEarned } from "@/lib/generation/engine";
 import { advanceStoryline, initialStoryline, mergeStoryline, reanchorDirective } from "@/lib/generation/storyline";
 
 // ── card builders ───────────────────────────────────────────────────────────
@@ -282,5 +283,31 @@ describe("crossroads copy is feed-native", () => {
       const copy = c as CrossroadsCard;
       if (copy.type === "crossroads") expect(copy.headline).toBe(copy.headline.toLowerCase());
     }
+  });
+});
+
+describe("the flex has to be rare to read as a flex", () => {
+  const row = (idx: string, type: string) => ({
+    id: uuid(), sessionId: "s", idx, detourId: null, viewedAt: null, interaction: null,
+    payload: { id: uuid(), type, topicNodeId: "n1", detourId: null, headline: "h", ...(type === "concept" ? { body: "b" } : {}) },
+  }) as never;
+
+  it("does not congratulate twice inside twelve rows", () => {
+    // a node boundary fires at every batch when the planner's estCards sits near BATCH_SIZE, so
+    // without this gate a real walk came back checkpoint -> crossroads four times in 24 slides.
+    const justFlexed = [row("a0", "checkpoint"), ...Array.from({ length: 6 }, (_, i) => row(`a${i + 1}`, "concept"))];
+    expect(checkpointEarned(justFlexed)).toBe(false);
+
+    // …and once it is genuinely behind them, the next milestone lands
+    const longAgo = [row("a0", "checkpoint"), ...Array.from({ length: 14 }, (_, i) => row(`b${i}`, "concept"))];
+    expect(checkpointEarned(longAgo)).toBe(true);
+
+    // an empty deck has nothing to have congratulated
+    expect(checkpointEarned([])).toBe(true);
+  });
+
+  it("reads the deck in idx order, not the order the rows arrived in", () => {
+    const shuffled = [row("b9", "concept"), row("a0", "checkpoint"), row("b1", "concept")];
+    expect(checkpointEarned(shuffled)).toBe(false); // the checkpoint is inside the last 12 either way
   });
 });

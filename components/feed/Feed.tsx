@@ -7,7 +7,7 @@ import type { InteractResult, Slide } from "@/components/cards/types";
 import { ThemeRoot } from "@/components/theme/ThemeRoot";
 import { api, ApiClientError } from "@/lib/api/client";
 import type { z } from "zod";
-import type { AskData, InteractBody, InteractData, OpenFeedback, SessionPublic } from "@/lib/api/contract";
+import type { AskData, FrontierPublic, InteractBody, InteractData, OpenFeedback, SessionPublic } from "@/lib/api/contract";
 import type { ChooseData as ChooseDataSchema, DialData as DialDataSchema, GetSessionData as GetSessionDataSchema, RetrySessionData as RetrySessionDataSchema } from "@/lib/api/contract";
 import { ticks } from "@/lib/audio/ticks";
 import { DwellClock } from "@/lib/dwell";
@@ -15,9 +15,9 @@ import { sessionMap } from "@/lib/feed/map";
 import type { PseudoKind } from "@/lib/feed/notices";
 import { Outbox } from "@/lib/feed/outbox";
 import { buildSlides, isPseudoKey, nextPin, runwayAhead, type Pin } from "@/lib/feed/placeholder";
-import { streakBefore } from "@/lib/feed/progress";
+import { calledIt, streakBefore } from "@/lib/feed/progress";
 import { dropUnviewedAfter, isRowSlide, isTodayUtc, ordinalOf, toSlides } from "@/lib/feed/slides";
-import { timelineModel } from "@/lib/feed/timeline";
+import { timelineModel, type FrontierLike } from "@/lib/feed/timeline";
 import type { Card } from "@/lib/schemas/cards";
 import type { CardRow } from "@/lib/schemas/session";
 import { SHELL_THEME } from "@/lib/theme/defaults";
@@ -43,7 +43,18 @@ const POSITION_THROTTLE_MS = 1_000;
 const PLANNING_POLL_MS = 1_500;
 const REPLAN_POLL_MS = 1_000;  // D3: after the last clarifier answer, watch the session at 1s
 const REPLAN_MAX_WAIT_MS = 8_000;
-const FRONTIER_POLL_MS = 4_000;   // while a batch is being written, re-read where the writer is
+
+/**
+ * The fresher of two counts of the same feed. Both are taken against a runway epoch, and a dial or
+ * a re-plan bumps that epoch precisely because it deleted rows the older count still believes in —
+ * so the newer epoch wins outright, and an equal one goes to the generate response, which was
+ * counted after the session was read, never before.
+ */
+function fresherCount(fromSession: FrontierPublic | null, fromGenerate: FrontierPublic | null): FrontierPublic | null {
+  if (!fromSession) return fromGenerate;
+  if (!fromGenerate) return fromSession;
+  return fromGenerate.epoch >= fromSession.epoch ? fromGenerate : fromSession;
+}
 
 export type FeedProps = {
   session: SessionPublic;
@@ -68,12 +79,13 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
   const replanningRef = useRef(replanning);
   replanningRef.current = replanning;
 
-  // the timeline's ghost band and its one pulsing nib are drawn from the server's frontier, and a
-  // frontier read once at page load is a snapshot pretending to be live. While a batch is actually
-  // in flight we re-read it on a short clock, and stop the moment nothing is being written.
-  const [generating, setGenerating] = useState(false);
-
-  // ── session (polls while planning / re-planning) ────────────────────────
+  // ── session ─────────────────────────────────────────────────────────────
+  // Two polls, both bounded, both for a state change only the SERVER can announce: it is still
+  // planning, or it is re-planning behind our backs. Everything else the feed needs from the
+  // session arrives on requests it is already making — every generate response carries the
+  // frontier, every dial/choose response carries the session — so there is nothing here on a clock
+  // for the timeline. A frontier poll costs a full card scan plus two session reads per tick, per
+  // reader, forever, to learn what the next POST would have said anyway.
   const sessionQuery = useQuery({
     queryKey: ["session", sessionId],
     queryFn: async () => (await api.get<GetSessionData>(`/api/sessions/${sessionId}`)).session,
@@ -84,7 +96,6 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
       const d = q.state.data;
       if (d?.status === "planning") return PLANNING_POLL_MS;
       if (replanningRef.current || d?.progress?.pendingReplan) return REPLAN_POLL_MS;
-      if (generating || d?.frontier?.live) return FRONTIER_POLL_MS;
       return false;
     },
     staleTime: 10_000,
@@ -108,8 +119,7 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
     beforeGenerate: () => syncBeforeGenerate.current(),
     onRunwayFull: () => landViewedUpToHere.current(),
   });
-  const { cards, mergeIn, patchCard, setCards, fill, online, setWantMore, pump, refetchAll } = feed;
-  useEffect(() => setGenerating(fill === "pending"), [fill]);
+  const { cards, mergeIn, patchCard, setCards, fill, frontier: counted, terminal, online, setWantMore, pump, refetchAll } = feed;
   const cardsRef = useRef(cards);
   cardsRef.current = cards;
 
@@ -223,10 +233,13 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
     if (awaitingChoice) return null;   // the crossroads IS the end of the deck until they pick
     if (head === "planning") return null; // one placeholder at a time — never two waits in a row
     if (runway > 0) return null;
+    // the thread was wrapped on request: nothing is catching up, and a tail promising otherwise
+    // would undo the ending the reader just asked for
+    if (terminal === "wrapped") return null;
     if (!online) return "offline";
     if (budgetCapped) return null;
     return "catching_up"; // a generate is pending / scheduled — never an error string
-  }, [active, staticMode, replanning, awaitingChoice, head, runway, online, budgetCapped]);
+  }, [active, staticMode, replanning, awaitingChoice, head, runway, terminal, online, budgetCapped]);
 
   const slides: Slide[] = useMemo(() => buildSlides({ head, rowSlides, tail, pin }), [head, rowSlides, tail, pin]);
   slidesRef.current = slides;
@@ -822,9 +835,32 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
   const anchorRowId = useRef<string | null>(null);
   if (activeRowId) anchorRowId.current = activeRowId;
   const anchor = anchorRowId.current;
-  // what the server counted. Absent (an older session row, a response that didn't count) means
-  // nobody counted, and the bar falls back to saying only what the local rows can prove.
-  const frontier = session.frontier ?? undefined;
+
+  // what the server counted, from whichever of its two mouths spoke last: the session (first paint,
+  // a dial, a choose) or the generate that just answered. Absent (an older session row, a response
+  // that didn't count) means nobody counted, and the bar falls back to saying only what the local
+  // rows can prove.
+  const census = useMemo(() => fresherCount(session.frontier ?? null, counted), [session.frontier, counted]);
+  // …and the cached session carries it too, so anything else reading ['session', id] — a remount,
+  // the map sheet — gets the count the last batch reported instead of the one the page shipped with
+  useEffect(() => {
+    if (!counted) return;
+    qc.setQueryData<SessionPublic>(["session", sessionId], (s) => (s && (s.frontier?.epoch ?? -1) <= counted.epoch ? { ...s, frontier: counted } : s));
+  }, [counted, qc, sessionId]);
+
+  // The nib answers one question — "is anything actually coming?" — and this device knows the
+  // answer first: `fill` flips the moment the POST leaves, a round trip before the server could
+  // tell us. …but only while the reader is pressed against the written edge. A top-up that fires
+  // with runway to spare is housekeeping, and pulsing the top of the screen for it is noise.
+  const barLive = fill === "pending";
+  const pressure = runway <= RUNWAY_TARGET_LOW;
+  // (with nobody's count to hang it on, the pulse stays off: a bar drawing a live edge it cannot
+  // place would be inventing the one thing this whole surface exists to stop guessing about)
+  const frontier = useMemo((): FrontierLike | undefined => {
+    if (!census || !barLive || !pressure) return census ?? undefined;
+    return { ...census, live: census.live ?? { nodeIdx: census.nodeIdx } };
+  }, [census, barLive, pressure]);
+
   const timeline = useMemo(() => timelineModel(cards, session.outline, anchor, frontier), [cards, session.outline, anchor, frontier]);
   const mapTopics = useMemo(() => (mapOpen ? sessionMap(cards, session.outline, anchor, frontier) : []), [mapOpen, cards, session.outline, anchor, frontier]);
 
@@ -896,6 +932,7 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
           const near = Math.abs(i - activeIndex) <= WINDOW;
           const row = isRowSlide(slide) ? rowsById.get(slide.rowId) : undefined;
           const streak = slide.kind === "card" && slide.card.type === "checkpoint" ? streakBefore(cards, slide.rowId) : undefined;
+          const called = slide.kind === "predict_reveal" ? calledIt(cards, slide.rowId) : undefined;
           return (
             <FeedSlide
               key={slide.key}
@@ -906,6 +943,7 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
               active={i === activeIndex}
               interaction={row?.interaction ?? null}
               streak={streak}
+              called={called}
               handlers={near ? handlersFor(slide) : undefined}
               overlay={nudgeSwipe && slide.key === activeKey ? <SwipeNudge /> : undefined}
             />

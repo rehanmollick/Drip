@@ -29,8 +29,13 @@ export type LlmResult<T> =
   | { ok: true; value: T; meta: LlmMeta }
   | { ok: false; code: LlmFailureCode; error: string; raw?: string; meta?: Partial<LlmMeta> };
 
-/** Compact summary of a recent card, for continuity + zero repetition. */
-export type CardSummary = { type: CardType; gist: string; metaphor?: string };
+/**
+ * Compact summary of a recent card, for continuity + zero repetition. `anchor` and `terms` ride
+ * along because the writer needs both and neither is recoverable from a gist: the anchor is how a
+ * later card comes back to this idea instead of re-teaching it, and the terms are what has already
+ * been glossed on screen.
+ */
+export type CardSummary = { type: CardType; gist: string; metaphor?: string; anchor?: string; terms?: string[] };
 
 export type PlanInput = {
   sessionId: string;
@@ -55,6 +60,12 @@ export type WriteContext = {
   storyline?: Storyline | null;
   /** Types used by the last few cards, so the writer stops reaching for `concept` every time. */
   recentTypes?: CardType[];
+  /**
+   * Every word glossed so far this session (lib/generation/summaries.ts `glossedTerms`). Optional:
+   * without it the writer falls back to the terms on `recent`, which is the same idea over a
+   * shorter window.
+   */
+  glossedTerms?: string[];
   sessionId: string;
   mode: WriteMode;
   persona: Persona;
@@ -111,6 +122,8 @@ export type EvaluateOpenInput = {
 
 export type StorylineInput = {
   sessionId: string;
+  /** The session's voice. The through-line can end up on screen, so it is written in it. */
+  persona?: Persona;
   prev: Storyline | null;
   title: string;
   outline: OutlineNode[];

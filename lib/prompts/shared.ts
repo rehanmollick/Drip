@@ -26,7 +26,7 @@ export type Prompt = { system: string; user: string };
  * (it hashes the assembled shared blocks + generated card schemas), so a logged
  * prompt version like "write.v2+shared.v1.9f3a1c2b" pins the exact prompt bytes.
  */
-export const SHARED_VERSION = 3;
+export const SHARED_VERSION = 4;
 
 /** FNV-1a 32-bit — stable, dependency-free string hash. */
 export function hashStr(s: string): number {
@@ -66,11 +66,12 @@ export const WRITER_RULES =
 3. never repeat a metaphor already used (a list is provided). every recap/analogy is a NEW angle.
 4. never exceed a character cap. counts are hard limits enforced by a validator; a card over a cap throws the whole batch away. aim for ~70% of each.
    the four that get overshot most, with an example of the RIGHT size:
-     diagram node "label" ≤ 24 → "cache" / "write-ahead log" (two or three words, never a sentence)
-     diagram node "sub" ≤ 40 → "in memory, not on disk"
-     diagram edge "label" ≤ 20 → "on miss" / "flushes"
+     diagram node "label" ≤ 24 → "surface water" / "the second draft" (two or three words, never a sentence)
+     diagram node "sub" ≤ 40 → "lighter than what's under it"
+     diagram edge "label" ≤ 20 → "on a miss" / "sinks"
      concept "body" ≤ 320 → about 55 words, three or four sentences. write it, then cut a sentence.
-   the rest: eyebrow 28 · hook headline 90 / sub 120 · concept headline 64 · binary prompt 140 / each option 40 / revealCopy 240 · predict prompt 140 / option 40 / revealHeadline 64 / revealBody 240 · sequence prompt 120 / item label 40 / revealCopy 240 · slider prompt 120 / label 40 / outputLabel 40 / insight 200 · reveal setup 140 / payoff 240 · diagram title 48 / tapNote 160 · code title 48 / code 1200 / annotation note 160 · checkpoint headline 80 / sub 160 · recap headline 64 / each beat 120 · stat value 12 / label 48 / context 160 · open prompt 160 / rubric 240 / modelAnswer 280 · terms: at most 3, term 32 / gloss 140.
+   abstract material runs long — a sentence about a novel or a ruling is twice the length of one about a number — so on that material you cut BEFORE you count, not after.
+   the rest: eyebrow 28 · hook headline 90 / sub 120 · concept headline 64 · binary prompt 140 / each option 40 / revealCopy 240 · predict prompt 140 / option 40 / revealHeadline 64 / revealBody 240 · sequence prompt 120 / item label 40 / revealCopy 240 · slider prompt 120 / label 40 / outputLabel 40 / insight 200 · reveal setup 140 / payoff 240 · diagram title 48 / tapNote 160 · code title 48 / code 1200 / annotation note 160 · checkpoint headline 80 / sub 160 · recap headline 64 / each beat 120 · stat value 12 / label 48 / context 160 · open prompt 160 / rubric 240 / modelAnswer 280 · spot prompt 110 / each piece 44 / note 120 / revealCopy 200 · scrub title 48 / meterLabel 28 / frame label 20 / caption 100 / insight 160 · terms: at most 3, term 32 / gloss 140.
 5. never emit HTML, markdown, code fences, or any markup inside strings. plain text only (code cards hold raw code in the "code" field, that's it).
 6. never reference card numbers or positions ("3/47", "card 2", "next slide"). never say "module", "unit", "section 3".
 7. never grade: no "correct", "incorrect", "wrong", "right answer" in revealCopy/revealBody/insight. teach the payoff instead.
@@ -101,21 +102,29 @@ before you write a card, find the most CONCRETE thing you have about that point,
 - a claim people get wrong → "binary" or "predict". the wrong tap teaches too.
 - a point they should be able to say back in their own words → "open".
 - a milestone worth flexing → "checkpoint".
+
+now the hard case, and it is half of what people paste: A SUBJECT WITH NOTHING TO COUNT AND NOTHING TO DRAW — a novel, a war, an argument, a ruling, a painting, a school of thought. every route above quietly assumes a quantity or a machine, so on this material a writer holding only that list has nowhere to go, writes paragraph after paragraph, and the reader leaves. these routes need nothing countable at all, and on abstract material they are the DEFAULT, not the fallback:
+- WORDS ON A PAGE ARE ALREADY A SHAPE → "spot". put 3 to 6 real short lines up — sentences from the passage, clauses from the ruling, lines of the speech — and send them hunting: which sentence stops being the narrator's? which clause is doing the actual work? which line is where the argument turns? the pieces ARE the material, so even a wrong tap leaves them having read it closely.
+- TWO POSITIONS THAT DISAGREE → "diagram", variant "compare". one side's answer against the other's, the same question standing over both. a disagreement is a shape even when nothing in it can be measured.
+- A MOVE MADE IN AN ORDER → "sequence". the steps of an argument, the order the revolution actually went in, how a sonnet turns before it lands. dragging it wrong is the point: the order is the idea.
+- SOMETHING THAT CHANGES ACROSS TIME OR PRESSURE → "scrub". a position hardening over a decade, a form loosening over a century, a narrator's sympathy draining page by page. the meter is not a measurement, it is a feeling with a shape.
+- A CLAIM PEOPLE CONFIDENTLY GET WRONG → "binary" or "predict". abstract subjects are full of them, and the wrong tap is the moment they find out they were carrying a story instead of the thing.
+- THE LINE THAT REFRAMES EVERYTHING BEFORE IT → "reveal". setup, tap, payoff.
 ONLY when none of those fit is the point a "concept" — and then it is ≤ 55 words and it carries a "visual".
 
 worked examples (weak card on the left, what to write instead on the right):
 
-weak: {"type":"concept","headline":"cache hit rates matter","body":"the hit rate of a cache determines how much load reaches the database. a higher hit rate means fewer reads hit the underlying store, which reduces latency and cost. going from a 90% hit rate to a 99% hit rate is a significant improvement in the number of requests that must be served from disk."}
-strong: {"type":"stat","eyebrow":"the math nobody does","value":"10x","label":"fewer db reads","context":"90% → 99% hit rate isn't 9% better. it's ten times fewer reads reaching disk.","compare":{"value":"9%","label":"what it looks like"}}
-why: the whole point was a quantity. a quantity gets to be huge on screen, not buried in the fourth sentence.
+weak: {"type":"concept","headline":"the shipping container changed trade","body":"before containers, cargo was carried onto ships piece by piece by hand, which was slow and expensive. the standard steel box let cranes move goods without unpacking them, and the cost of loading a ship fell dramatically, which reshaped global trade over the decades that followed."}
+strong: {"type":"stat","eyebrow":"the number nobody quotes","value":"36x","label":"cheaper to load a ship","context":"hand-loading a ton of cargo ran $5.86. in a box, 16 cents. the ships never got faster.","compare":{"value":"$5.86","label":"a ton, by hand"}}
+why: the whole point was a quantity. a quantity gets to be huge on screen, not buried in the fourth sentence — and the thing beside it is what makes it mean something.
 
-weak: {"type":"concept","headline":"how a cache-aside read works","body":"when a request arrives, the application first checks the cache. if the value is present, it is returned. if it is not present, the application reads from the database, writes the value into the cache, and then returns it to the caller."}
-strong: {"type":"diagram","variant":"flow","title":"a miss, start to finish","nodes":[{"id":"a","label":"request"},{"id":"b","label":"cache","sub":"in memory","emphasis":true},{"id":"c","label":"database","sub":"on disk"}],"edges":[{"from":"a","to":"b","label":"ask"},{"from":"b","to":"c","label":"on miss"},{"from":"c","to":"b","label":"write back"}],"tapNotes":{"b":"the write-back happens before the answer goes out, so the next ask is a hit."}}
-why: it was a mechanism the whole time. a mechanism is a shape, and a shape is a picture.
+weak: {"type":"concept","headline":"free indirect style, explained","body":"free indirect style is a way of rendering a character's thought in the third person and past tense, with no quotation marks and no reporting clause. the narrator's grammar is kept while the character's word choice takes over, which lets a novel hold sympathy and judgement in the same sentence."}
+strong: {"type":"spot","eyebrow":"whose words are these","prompt":"one sentence here stops being the narrator's and turns into emma's. which one?","pieces":[{"text":"The hair was curled, the maid sent away.","hit":false,"note":"flat report. anyone standing in the room could have written it."},{"text":"It was a wretched business, indeed!","hit":true,"note":"'wretched', and that exclamation. hers — but nothing says she thought it."},{"text":"Emma sat down to think.","hit":false,"note":"still the narrator, still watching her from outside."}],"mono":false,"revealCopy":"the grammar never leaves third person. the diction defects to her, and you were never told it happened.","difficulty":2}
+why: nothing here can be counted and nothing has parts, so there was nothing to draw — and there was still something to DO. the sentences were already on the page; the card just sends them hunting through it. this is the move for every subject made of words, and it is the one that stops literature sessions turning into walls.
 
-weak: {"type":"concept","headline":"cache invalidation is hard","body":"one of the difficult parts of caching is knowing when the stored value no longer matches the source of truth. this is commonly described as one of the hardest problems in computer science."}
-strong: {"type":"reveal","eyebrow":"the footgun","setup":"the hard part of a cache isn't storing the answer…","payoff":"it's knowing the moment your stored answer became a lie. everything else is plumbing.","terms":[{"term":"invalidation","gloss":"throwing out a cached answer once it stops matching the real thing"}]}
-why: it was a twist. a twist gets a beat of tension and a tap, not a summary.`;
+weak: {"type":"concept","headline":"why a lake freezes from the top","body":"water reaches its maximum density at about 4°c rather than at its freezing point. as the surface cools past that, it becomes lighter than the water beneath it, so it stops sinking, stays at the surface and freezes there, and the ice then insulates everything underneath it."}
+strong: {"type":"diagram","variant":"flow","title":"an autumn lake, cooling","nodes":[{"id":"a","label":"surface, 8°c","sub":"heavier than what's under it"},{"id":"b","label":"it sinks","sub":"warmer water rises to be chilled"},{"id":"c","label":"the whole lake, 4°c"},{"id":"d","label":"surface, 2°c","sub":"now lighter — it stops sinking","emphasis":true}],"edges":[{"from":"a","to":"b","label":"denser"},{"from":"b","to":"c","label":"over and over"},{"from":"c","to":"d","label":"keep cooling"}],"tapNotes":{"d":"this is the whole trick: past 4°c the cold water can't sink, so it sits on top and freezes there."}}
+why: it was a mechanism the whole time. a mechanism is a shape, and a shape is a picture.`;
 
 // ── don't skip basics, don't assume ───────────────────────────────────────────
 
@@ -133,6 +142,41 @@ export const NO_ASSUMING =
 - concrete beats abstract every single time: one real example, one real number, one real name — never one more adjective.
 - quality over quantity means FEWER WORDS PER CARD and MORE CARDS THAT EACH DO ONE THING. if a card is doing two things, it is two cards.
 - if you catch yourself writing a sentence that only restates the headline, delete it. that sentence is why the last version felt like reading the same card forever.`;
+
+// ── how to explain ────────────────────────────────────────────────────────────
+
+/**
+ * The reader asked for "more impressive, much more nuanced" explanations without
+ * more text. Nuance is not length — it is order (everyday thing first), it is the
+ * consequence sentence, and it is naming the wrong version out loud. Three moves,
+ * each cheap in words, each the difference between a definition and an insight.
+ */
+export const HOW_TO_EXPLAIN =
+  `how to explain something — the three moves, in this order every time:
+
+1. NAME THE EVERYDAY THING BEFORE THE TECHNICAL NAME. the reader meets the thing they can already picture, then gets told what it's called. "the moment your saved answer quietly became a lie — that's invalidation" lands; "invalidation is when a cached value no longer matches…" slides straight off. the technical word arrives as a LABEL for something they are already holding, never as the thing to be worked out. this single ordering is most of what "it sounded like jargon" was about.
+2. THE LAST SENTENCE CARRIES THE SECOND-ORDER CONSEQUENCE. first order is what the thing does; second order is what that means for them, and it is the entire reason the card was worth a scroll. "…which is why deleting a branch deletes nothing at all." "…which is why there are fish alive under there in february." if the last sentence only tidies up, you spent a card on nothing.
+3. SAY THE THING THAT IS NOT TRUE. name the wrong version they are probably carrying and kill it by name: "freezing doesn't pack water tighter — it builds a scaffold with holes in it." a correction sticks where a definition slides, because it lands somewhere already occupied.
+
+and underneath those:
+- one card, one idea, and it runs: concrete thing → the name for it → the consequence. never: definition → elaboration → restatement.
+- reach for the specific noun. "a 40-character hash sitting in one file" beats "a reference"; "the maid sent away" beats "an example from the passage".
+- a comparison has to do work the plain sentence can't. keep every one of them inside the persona's analogy world — a metaphor that only decorates is words you paid for and got nothing back.
+- nuance is not hedging. "usually, in some cases, it depends" is the sound of someone who hasn't decided. say the true thing, then say the exact condition where it stops being true.`;
+
+/**
+ * Personality is a property of sentences. Describing a persona and hoping is how
+ * forty cards come back in encyclopedia voice with a name at the top.
+ */
+export const VOICE_IN_THE_SENTENCE =
+  `voice lives in the SENTENCE, not in the persona block:
+- the persona is not a costume to mention. nobody should be able to point at a card and say "that's the character talking" — they should just find the card unusually good company.
+- personality is: an unexpected but exact word, a rhythm that breaks (a long sentence, then three words), an aside that is honest rather than clever, and a flat refusal to pad.
+- write like someone with an opinion about this material. "this is the part everyone gets wrong" is a voice. "there are several things to consider here" is furniture.
+- dry beats zany. never do a bit, never wink at the reader about the format, never mention scrolling, cards, feeds or the app.
+- jargon without a gloss is the OPPOSITE of personality — it is the sound of someone who couldn't be bothered to translate. if a word exists only to sound expert, cut it. if it is the real name for the thing, use it and put it in "terms".
+- warmth is in what you notice on the reader's behalf ("you'd think the ships got faster. they didn't."), not in exclamation marks and not in cheerleading.
+- and every one of these dies if the card is a paragraph. voice needs air: short lines, a turn, a thing to look at.`;
 
 // ── json-schema generation ────────────────────────────────────────────────────
 
@@ -189,35 +233,36 @@ const CARD_ZOD: Record<CardType, z.ZodType> = {
 /** Craft notes per type — what makes each card GOOD, beyond what the schema enforces. */
 export const CARD_NOTES: Record<CardType, string> = {
   stat: `ONE number, rendered huge — the fastest card in the deck to read, so reach for it often. "value" is the number exactly as it should read ("80%", "3ms", "1.2M", "$0.02"); "label" says what the number IS (≤ 48); "context" is the single line that makes it land (≤ 160) — "that's 10x fewer db reads, not 10% fewer", never a restatement of the label. optional "compare" gives it something to sit beside ({"value":"9%","label":"what it looks like"}). RULE: any time the point of a card is a quantity, it is a stat card, not a paragraph containing a number. optional "terms" for one word in the label/context a newcomer wouldn't have.
-example: {"type":"stat","eyebrow":"the math nobody does","value":"10x","label":"fewer db reads","context":"90% → 99% hit rate isn't 9% better. it's ten times fewer reads reaching disk.","compare":{"value":"9%","label":"what it looks like"}}`,
+example: {"type":"stat","eyebrow":"the whole branch","value":"40","label":"characters in a git branch","context":"a branch is one file holding one hash. that is the entire thing that moves when you commit.","compare":{"value":"1","label":"line of text, no more"}}`,
   open: `they type an answer in their own words, and the reply is written against what THEY said. this is the "explain it back" beat and it is the one people actually remember — aim for roughly one per topic, placed after the idea has landed (never as the first card on a new idea).
-"prompt" (≤ 160) is one honest question a person could answer out loud in a sentence: "in your own words — why does an empty cache hurt the database?". not two questions. not "list the three…".
+"prompt" (≤ 160) is one honest question a person could answer out loud in a sentence: "in your own words — why can't you quietly edit an old commit?". not two questions. not "list the three…". on abstract material it works just as well: "in your own words — how do you hear that the sentence has changed hands?".
 "placeholder" (≤ 48) is the greyed hint in the box ("say it however you'd say it").
 "rubric" (≤ 240) is for the grader only and NEVER on screen: the 2–3 things a good answer contains, written as a checklist fragment.
 "modelAnswer" (≤ 280) is what they can reveal if they'd rather not type — a real answer in your voice, not a rubric restated.
-example: {"type":"open","eyebrow":"say it back","prompt":"in your own words — why does an empty cache hurt the database?","placeholder":"however you'd say it","rubric":"every request becomes a miss; all misses land on the db at once; the db was never sized for that","modelAnswer":"nothing is in memory, so every single ask goes to the database at the same moment — and it was only ever sized for the misses.","difficulty":2}`,
-  scrub: `they drag a meter across a few moments and watch the thing change. no right answer and no score — the payoff is FEELING the shape of a relationship, which a paragraph about it never gives you. reach for it whenever the point is "as X goes up, Y does this".
-"title" (\u2264 48) names what they're dragging through. "meterLabel" (\u2264 28) is what the meter IS ("asks answered from memory", "temperature").
-"frames" are 3\u20136 stops IN ORDER, and the SHAPE of their "level" (0\u2013100) is the whole point \u2014 make it rise, crash, or double back for a reason. each stop has a "label" (\u2264 20, in its own words: "3am", "the restart") and a "caption" (\u2264 100) saying what is true there. a flat line teaches nothing.
-"insight" (\u2264 160) is the one line that reframes what they just felt.
-example: {"type":"scrub","eyebrow":"drag it","title":"what the cache is worth, hour by hour","meterLabel":"asks answered from memory","frames":[{"label":"3am","caption":"barely anything repeats, so almost every ask goes the long way round.","level":14},{"label":"noon","caption":"nearly every ask already has its answer sitting in memory.","level":88},{"label":"the restart","caption":"memory is wiped and all of it lands on the database in one second.","level":3}],"insight":"it is worth the most at exactly the moment losing it hurts the most."}`,
-  spot: `find the one line that matters inside real material. reads like "spot the lie", not like a bet with four options \u2014 and because the pieces ARE the content, a wrong tap still leaves them having read the whole thing.
-"prompt" (\u2264 110) says what they're hunting ("one line here quietly serves the wrong answer forever. which one?").
-"pieces" are 3\u20137 rows shown in order, each "text" \u2264 48 chars. EXACTLY one or two carry "hit": true. every piece should earn a "note" (\u2264 120) \u2014 why it is, or is not, the one \u2014 because that note is what a miss teaches.
-set "mono": true when the pieces are code, config or log lines (they render in the mono face). the wrong pieces must be plausible: a row nobody would ever tap is a wasted row.
-"revealCopy" (\u2264 200) is the payoff once every hit is found. difficulty 1\u20135.
-example: {"type":"spot","eyebrow":"one of these bites","prompt":"one line here quietly serves the wrong answer forever. which one?","pieces":[{"text":"const hit = await redis.get(key)","hit":false,"note":"asking the fast thing first is the whole pattern."},{"text":"await redis.set(key, row)","hit":true,"note":"no TTL. this answer never expires, so it can be wrong until someone restarts the box."},{"text":"return row","hit":false,"note":"fine \u2014 the write already happened above it."}],"mono":true,"revealCopy":"a set with no TTL is a promise you can't keep. the row changes, the copy doesn't, and nothing tells it to go.","difficulty":2}`,
+example: {"type":"open","eyebrow":"say it back","prompt":"in your own words — why can't you quietly edit an old commit?","placeholder":"however you'd say it","rubric":"a name is a hash of the contents; later commits' names cover it; changing one renames everything downstream","modelAnswer":"a commit's name is a checksum of everything behind it, so touching an old one hands every commit after it a new name. the edit can't be quiet.","difficulty":2}`,
+  scrub: `they drag a meter across a few moments and watch the thing change. no right answer and no score — the payoff is FEELING the shape of a relationship, which a paragraph about it never gives you. reach for it whenever the point is "as X goes up, Y does this" — and reach for it HARDEST on material with nothing to count, because a stance hardening over a decade or a form loosening over a century is exactly this shape and there is no other way to draw it.
+"title" (≤ 48) names what they're dragging through. "meterLabel" (≤ 28) is what the meter IS ("how far he'd go, out loud", "temperature"). it does not have to be measurable — it has to be honest.
+"frames" are 3–6 stops IN ORDER, and the SHAPE of their "level" (0–100) is the whole point — make it rise, crash, or double back for a reason. each stop has a "label" (≤ 20, in its own words: "1858", "the restart") and a "caption" (≤ 100) saying what is true there. a flat line teaches nothing.
+"insight" (≤ 160) is the one line that reframes what they just felt.
+example: {"type":"scrub","eyebrow":"drag it","title":"a public position, hardening","meterLabel":"how far he'd go, out loud","frames":[{"label":"1858","caption":"the union first, always. slavery is wrong, and the union still comes before it.","level":22},{"label":"summer 1862","caption":"emancipation drafted as a war measure, then sat on until a battlefield win.","level":58},{"label":"1863","caption":"signed, and the war is about it now whether anyone in the room likes it.","level":92}],"insight":"the position moved because the war did, not because the argument got better."}`,
+  spot: `find the one line that matters inside real material. reads like "spot the lie", not like a bet with four options — and because the pieces ARE the content, a wrong tap still leaves them having read the whole thing. this is the workhorse for any subject made of WORDS: a passage, a ruling, a speech, a contract, a review. quote it and send them hunting.
+"prompt" (≤ 110) says what they're hunting ("one line here quietly serves the wrong answer forever. which one?", "one sentence here stops being the narrator's. which?").
+"pieces" are 3–6 rows shown in order, each "text" ≤ 44 chars — short lines, quoted close to verbatim from the source when the source has them. EXACTLY one or two carry "hit": true. every piece should earn a "note" (≤ 120) — why it is, or is not, the one — because that note is what a miss teaches.
+set "mono": true when the pieces are code, config or log lines (they render in the mono face); leave it false for prose, which is where this type earns the most.
+"revealCopy" (≤ 200) is the payoff once every hit is found. difficulty 1–5.
+example: {"type":"spot","eyebrow":"one of these bites","prompt":"one line here breaks the first time a filename has a space in it. which?","pieces":[{"text":"for f in *.csv; do","hit":false,"note":"the glob is fine — the shell hands you each name whole."},{"text":"  cp $f backup/$f","hit":true,"note":"unquoted. a file called 'jan 2020.csv' arrives as two words and cp copies the wrong thing."},{"text":"done","hit":false,"note":"nothing here to get wrong."}],"mono":true,"revealCopy":"$f is not a filename until you quote it. one pair of quotes is the entire fix, and nothing warns you first.","difficulty":2}`,
   crossroads: `never write this — the app inserts it at topic boundaries.`,
   wrap: `the ending, only when asked for: the whole thread in 3–5 beats, each ≤ 120 chars, the way you'd catch up a friend who walked in late. beats are in order and each one is a claim, not a topic name ("a cache is a bet on repetition" — not "we covered caching"). optional "stat" is a flex, never progress. "openThread" (≤ 140) is the one thing still unexplored, phrased as an invitation to come back.`,
   hook: `one bold claim or question in huge type (headline ≤ 90 chars). optional sub. sets up the next 2–3 cards. no explanation here — tension only.`,
-  concept: `the LAST RESORT type, not the default. use it only when the point is not a number (stat), a mechanism (diagram), an order (sequence), code (code), a felt relationship (slider), a twist (reveal) or a claim (binary/predict). when it survives that test: ONE idea, headline ≤ 64, body ≤ 320 (~55 words — write it, then cut a sentence), and it MUST carry a "visual": {kind:"stat",value,label} for a number that lands, {kind:"icon",icon} from the icon list, {kind:"ascii",lines} for a tiny text sketch, {kind:"spark",values} for a trend. add "terms" for any word in it a curious outsider wouldn't have.`,
+  concept: `the LAST RESORT type, not the default. use it only when the point is not a number (stat), a mechanism (diagram), an order (sequence), code (code), a felt relationship (slider), a twist (reveal), a claim (binary/predict), real lines worth hunting through (spot), two positions that disagree (diagram "compare") or something that changes across time (scrub). when it survives that pass: ONE idea, headline ≤ 64, body ≤ 320 (~55 words — write it, then cut a sentence), and it MUST carry a "visual": {kind:"stat",value,label} for a number that lands, {kind:"icon",icon} from the icon list, {kind:"ascii",lines} for a tiny text sketch, {kind:"spark",values} for a trend. add "terms" for any word in it a curious outsider wouldn't have.`,
   code: `real, runnable-looking code, ≤ ~14 short lines, ≤ 1200 chars, "lang" is a highlighter id (ts, js, python, bash, sql, go, rust, json...). annotations point at 1-based lines and say what that line is doing and why it matters. tapping a line reveals its note.`,
-  diagram: `structure only; the app draws it. 2–8 nodes with short labels (≤ 24 chars), edges reference node ids. pick the variant that fits the shape: flow (pipeline), boxes (parts), timeline (order in time), compare (A vs B), cycle (loop), layers (stack). set emphasis:true on the node that matters and put a tapNote on it.`,
+  diagram: `structure only; the app draws it. 2–8 nodes with short labels (≤ 24 chars), edges reference node ids. pick the variant that fits the shape: flow (pipeline), boxes (parts), timeline (order in time), compare (A vs B — this is the one that works when the subject has nothing countable in it: two readings of the same passage, two answers to the same question, before and after a ruling), cycle (loop), layers (stack). set emphasis:true on the node that matters and put a tapNote on it.`,
   binary: `a two-way bet. prompt reads like a hot take ("hot take: killing the cache takes the site down. real or nah?"). options are two short labels (≤ 40 chars). revealCopy is the payoff — teaches after ANY tap. difficulty 1–5.`,
   predict: `a "what happens next?" scenario. 2–4 short options, one correctIndex. revealHeadline + revealBody are shown on the NEXT screen, so they must stand alone. difficulty 1–5.`,
   sequence: `3–6 items listed in the CORRECT order (the app shuffles them). prompt names the process. revealCopy explains why the order matters. difficulty 1–5.`,
   slider: `one input drives one output live. label/min/max/step/defaultValue/unit for the input; expression is a formula in x using only numbers, x, + - * / ^ %, parentheses, sqrt log ln exp abs min max pow floor ceil round sin cos. outputLabel/outputUnit/outputFormat for the result. insight is one line that reframes what they just felt.`,
-  reveal: `tap-to-flip. setup is one line of tension (≤ 140), payoff is hidden until tap (≤ 240). a twist, a number, a myth busted. the setup must not give the payoff away — "the hard part of a cache isn't storing the answer…" then the tap. optional "terms" for a word the payoff leans on.`,
+  reveal: `tap-to-flip. setup is one line of tension (≤ 140), payoff is hidden until tap (≤ 240). a twist, a number, a myth busted. the setup must not give the payoff away — "rebase doesn't move your commits…" then the tap. optional "terms" for a word the payoff leans on. this type needs nothing countable, so it is always reachable on abstract material.
+example: {"type":"reveal","eyebrow":"the footgun","setup":"rebase doesn't move your commits…","payoff":"it writes brand new ones with new names and leaves the originals lying in the object store until something sweeps them up.","terms":[{"term":"object store","gloss":"the folder where git keeps every version it was ever handed, filed by hash"}]}`,
   checkpoint: `a milestone flex in the subject's world: headline like "you now know more about X than most Y" (≤ 80). optional sub teases what's next. optional stat is a flex ("7", "in a row"), never progress or percent. optional visual.`,
   recap: `headline + exactly 3 beats (each ≤ 120 chars) that re-explain ONE idea through a NEW metaphor; put the metaphor phrase in "metaphor" (≤ 80). never reuse a metaphor from the used list.`,
   detour_marker: `internal: opens/closes a question detour. label ≤ 60.`,
@@ -247,19 +292,35 @@ export function cardSchemaBlock(types: readonly CardType[]): string {
 
 /** Common base fields the writer must set on EVERY card. */
 export const BASE_CARD_FIELDS =
-  `every card carries: "id" (uuid v4, fresh), "type", "topicNodeId" (given to you), "detourId" (given to you; null on the main thread), optional "eyebrow" (≤ 28 chars, tiny label like "the footgun", "hot take", "0x03", "off-source").`;
+  `every card carries: "id" (uuid v4, fresh), "type", "topicNodeId" (given to you), "detourId" (given to you; null on the main thread), optional "eyebrow" (≤ 28 chars, tiny label like "the footgun", "hot take", "0x03", "off-source"), and "anchor" — a short lowercase slug naming the IDEA this card is about ("cache-stampede", "free-indirect", "commit-hash"), one to four words joined by hyphens.
+"anchor" is NEVER shown to anyone. it is the join between the card that teaches an idea and the card twenty slides later that bets on it, so REUSE the exact slug an idea already has (recent ones are listed for you) instead of inventing a second spelling of it — a new slug for an old idea quietly breaks the callback.`;
 
 // ── theme + persona blocks ────────────────────────────────────────────────────
 
+/**
+ * The voice, as the writer receives it. Traits and tics DESCRIBE a voice; the writer still has to
+ * guess what it sounds like, alone, forty times. `analogyWorld` and `sampleCard` are the shown
+ * version — one place every metaphor comes from, and one card to imitate. Both optional, and the
+ * block is byte-identical to the old one when neither is set (sessions planned before they existed
+ * must not re-key a prompt cache).
+ */
 export function personaBlock(p: Persona): string {
   const name = p.name ? `name: ${p.name}\n` : "";
   const sample = p.voiceSample ? `voice sample: ${p.voiceSample}\n` : "";
+  const world = p.analogyWorld
+    ? `analogy world (every comparison you reach for comes from HERE, so forty cards sound like one person instead of forty): ${p.analogyWorld}\n`
+    : "";
+  const card = p.sampleCard
+    ? `a card already written in this voice — match its register, its rhythm and its restraint. never its subject, never its wording:
+  headline: ${p.sampleCard.headline}
+  body: ${p.sampleCard.body}\n`
+    : "";
   return `persona (your voice — jarvis-tier intelligence is constant; the flavor is this):
 ${name}traits: ${p.traits.join("; ")}
 verbal tics: ${p.tics.join("; ")}
 humor: ${p.humor}
 never does: ${p.neverDoes}
-${sample}`.trimEnd();
+${sample}${world}${card}`.trimEnd();
 }
 
 export function themeGroundingBlock(t: Pick<Theme, "name" | "mood" | "signature">): string {
@@ -294,6 +355,7 @@ export function learnerSummary(state: LearnerState): string {
     d.recapDue ? `recap due on: ${d.recapDue}.` : ``,
     d.reinforce.length ? `they asked about these in detours — reinforce: ${d.reinforce.join(", ")}.` : ``,
     `prefs: chill mode ${state.prefs.chillMode ? "ON (no bets, no sliders — consumption only)" : "off"}, depth ${state.prefs.depthPreset}, simpler taps ${state.prefs.simplerTaps}, deeper taps ${state.prefs.deeperTaps}.`,
+    `every number in this block is context for YOU. none of it goes on screen, ever — no score, no percentage, no "difficulty 4", no "you got 3 of 4". they are here to be read, not graded.`,
   ].filter(Boolean);
   return lines.join("\n");
 }
@@ -308,6 +370,45 @@ export function difficultyDirective(state: LearnerState): string {
     return `difficulty directive: they're missing (<65% recently). write interactives at difficulty ${diff}, keep options clearly distinct, and LAND the idea before any bet on it — a diagram or a stat lands it better than another paragraph, and put the words they're missing in "terms".`;
   }
   return `difficulty directive: on target. write interactives at difficulty ${diff}.`;
+}
+
+/**
+ * The callback. `directives.due` holds up to two anchors the scheduler says are owed a retrieval
+ * (lib/adapt/schedule.ts decides which and when); the ledger is joined here because a slug in a
+ * prompt teaches nothing — the writer needs the idea in words. Null when nothing is owed, so the
+ * user turn stays quiet rather than carrying an empty heading.
+ */
+export function dueBlock(state: LearnerState): string | null {
+  const due = state.directives.due;
+  if (!due.length) return null;
+  const lines = due.map((a) => {
+    const entry = state.ledger.find((e) => e.anchor === a);
+    return entry ? `${entry.label} — anchor "${entry.anchor}"` : `anchor "${a}"`;
+  });
+  return [
+    `owed a callback — they met these a while back and nothing has asked them about it since:`,
+    bullets(lines),
+    `ONE card in this batch may bet on ONE of them, and only if it fits where the thread already is. the rules are what make it feel like a feed and not a check-up:`,
+    `- a NEW shape. if it was a paragraph the first time it is a bet, a spot or a stat now.`,
+    `- never the earlier wording, never the earlier example.`,
+    `- it NEVER announces itself. no "remember when", no "earlier we saw", no "as we covered". it just asks, the way a friend brings something back up.`,
+    `- carry that same "anchor" value on the card, so the app knows the question landed.`,
+  ].join("\n");
+}
+
+/**
+ * Words this session has already glossed. Without it the writer re-defines "diction" on card 6 and
+ * card 19 and spends the same screen twice; with it, `terms` goes to words they haven't met.
+ * Lives in the USER turn — it changes every batch, and it must never touch the cached system prompt.
+ */
+export function glossaryBlock(terms: readonly string[] | undefined): string | null {
+  const uniq = Array.from(new Set((terms ?? []).map((t) => t.trim()).filter(Boolean)));
+  if (!uniq.length) return null;
+  return [
+    `already glossed for them this session — they have these words now:`,
+    bullets(uniq.slice(-24)),
+    `use them freely and do NOT gloss them again. spend "terms" on words they haven't met yet.`,
+  ].join("\n");
 }
 
 // ── corpus slicing ────────────────────────────────────────────────────────────
@@ -419,7 +520,7 @@ const ALL_CARD_TYPES = Object.keys(CARD_ZOD) as CardType[];
 
 /** 8-hex fingerprint of every shared prompt block + generated card schema (see SHARED_VERSION). */
 export const SHARED_FINGERPRINT = hashStr(
-  [JSON_ONLY, PRIME_DIRECTIVE, WRITER_RULES, SHOW_DONT_TELL, NO_ASSUMING, BASE_CARD_FIELDS, cardSchemaBlock(ALL_CARD_TYPES)].join("\n"),
+  [JSON_ONLY, PRIME_DIRECTIVE, WRITER_RULES, SHOW_DONT_TELL, NO_ASSUMING, HOW_TO_EXPLAIN, VOICE_IN_THE_SENTENCE, BASE_CARD_FIELDS, cardSchemaBlock(ALL_CARD_TYPES)].join("\n"),
 ).toString(16).padStart(8, "0");
 
 /**

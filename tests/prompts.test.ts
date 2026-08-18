@@ -219,8 +219,115 @@ describe("prompt files", () => {
     expect(s).toMatch(/any time the point of a card is a quantity, it is a stat card/i);
     expect(s).toMatch(/roughly one per topic/);
     expect(s).toMatch(/for the grader only and NEVER on screen/); // the open card's rubric
-    expect(s).toContain('{"type":"stat","eyebrow":"the math nobody does"');
-    expect(s).toContain('{"type":"open","eyebrow":"say it back"');
+    // pinned by SHAPE, not by wording: the examples are prose and get rewritten, but every card
+    // type that claims to be first-class has to ship a worked example of itself.
+    expect(s).toMatch(/^example: \{"type":"stat"/m);
+    expect(s).toMatch(/^example: \{"type":"open"/m);
+    expect(s).toMatch(/^example: \{"type":"spot"/m);
+    expect(s).toMatch(/^example: \{"type":"scrub"/m);
+    expect(s).toMatch(/^example: \{"type":"reveal"/m);
+  });
+
+  // ── the v3 finding: abstract subjects had no visual route, so they got paragraphs ──
+
+  it("routes abstract subjects — the ones with nothing to count and nothing to draw — to real shapes", () => {
+    const s = write.buildWritePrompt(writeCtx()).system;
+    expect(s).toMatch(/NOTHING TO COUNT AND NOTHING TO DRAW/);
+    // the five routes that presuppose no quantity and no mechanism
+    expect(s).toMatch(/WORDS ON A PAGE ARE ALREADY A SHAPE → "spot"/);
+    expect(s).toMatch(/TWO POSITIONS THAT DISAGREE → "diagram", variant "compare"/);
+    expect(s).toMatch(/A MOVE MADE IN AN ORDER → "sequence"/);
+    expect(s).toMatch(/SOMETHING THAT CHANGES ACROSS TIME OR PRESSURE → "scrub"/);
+    expect(s).toMatch(/A CLAIM PEOPLE CONFIDENTLY GET WRONG → "binary" or "predict"/);
+    // and they are the default there, not a consolation prize
+    expect(s).toMatch(/on abstract material they are the DEFAULT, not the fallback/);
+    // the two types that carry abstract material say so in their own craft notes
+    expect(s).toMatch(/workhorse for any subject made of WORDS/);
+    expect(s).toMatch(/reach for it HARDEST on material with nothing to count/);
+  });
+
+  it("the gold examples come from different worlds, and one of them has nothing countable in it", () => {
+    const s = write.buildWritePrompt(writeCtx()).system;
+    const gold = s.slice(s.indexOf("worked examples (weak card"), s.indexOf("don't skip the basics"));
+    // a fermentation session used to be shown three caching cards as the definition of quality
+    expect(gold).not.toMatch(/cache|caching/i);
+    const strong = [...gold.matchAll(/^strong: \{"type":"(\w+)"/gm)].map((m) => m[1]);
+    expect(strong.length).toBeGreaterThanOrEqual(3);
+    expect(new Set(strong).size).toBe(strong.length); // three shapes, not three of the same
+    // the humanities pair is the one the live baseline said was missing
+    expect(gold).toContain('"type":"spot"');
+    expect(gold).toMatch(/nothing here can be counted and nothing has parts/);
+  });
+
+  it("teaches how to explain, not just what shape to use", () => {
+    const s = write.buildWritePrompt(writeCtx()).system;
+    expect(s).toMatch(/NAME THE EVERYDAY THING BEFORE THE TECHNICAL NAME/);
+    expect(s).toMatch(/THE LAST SENTENCE CARRIES THE SECOND-ORDER CONSEQUENCE/);
+    expect(s).toMatch(/SAY THE THING THAT IS NOT TRUE/);
+    expect(s).toMatch(/nuance is not hedging/);
+    // personality is a property of sentences, not of a blurb above them
+    expect(s).toMatch(/voice lives in the SENTENCE/);
+    expect(s).toMatch(/never do a bit/);
+    expect(s).toMatch(/jargon without a gloss is the OPPOSITE of personality/);
+    // the planner writes the first three cards, so it gets the same craft
+    expect(plan.PLAN_SYSTEM).toMatch(/NAME THE EVERYDAY THING BEFORE THE TECHNICAL NAME/);
+    expect(plan.PLAN_SYSTEM).toMatch(/voice lives in the SENTENCE/);
+  });
+
+  it("teaches the anchor as a join, and hands back the slugs already in play", () => {
+    const s = write.buildWritePrompt(writeCtx()).system;
+    expect(s).toContain('"anchor"');
+    expect(s).toMatch(/NEVER shown to anyone/);
+    expect(s).toMatch(/REUSE the exact slug/);
+
+    const p = write.buildWritePrompt(writeCtx({
+      recent: [{ type: "concept", gist: "the diction defects to her", anchor: "free-indirect" }],
+    }));
+    expect(p.user).toContain("[anchor: free-indirect]");
+    expect(p.user).toMatch(/slugs already in play: free-indirect/);
+    // nothing to reuse yet → no dangling heading
+    expect(write.buildWritePrompt(writeCtx()).user).not.toMatch(/slugs already in play/);
+  });
+
+  it("asks for a callback on a due anchor as a bet, never as a reminder", () => {
+    const state = defaultLearnerState();
+    const quiet = write.buildWritePrompt(writeCtx());
+    expect(quiet.user).not.toMatch(/owed a callback/);
+
+    const p = write.buildWritePrompt(writeCtx({
+      learnerState: {
+        ...state,
+        ledger: [{ anchor: "free-indirect", label: "the sentence changes hands", taught: 1, hits: 0, misses: 0, lastSeenAt: 0 }],
+        directives: { ...state.directives, due: ["free-indirect"] },
+      },
+    }));
+    expect(p.user).toMatch(/owed a callback/);
+    expect(p.user).toContain("the sentence changes hands");
+    expect(p.user).toContain('anchor "free-indirect"');
+    expect(p.user).toMatch(/a NEW shape/);
+    expect(p.user).toMatch(/NEVER announces itself/);
+    expect(p.user).toMatch(/no "remember when"/);
+  });
+
+  it("carries the glossary ledger in the user turn so a word is never glossed twice", () => {
+    expect(write.buildWritePrompt(writeCtx()).user).not.toMatch(/already glossed/);
+    const fromRecent = write.buildWritePrompt(writeCtx({
+      recent: [{ type: "concept", gist: "whose words are these", terms: ["diction", "deixis"] }],
+    }));
+    expect(fromRecent.user).toMatch(/already glossed for them this session/);
+    expect(fromRecent.user).toContain("deixis");
+    // the whole-session ledger wins over the six-card window when the caller has it
+    const full = write.buildWritePrompt(writeCtx({ glossedTerms: ["ttl", "eviction"] }));
+    expect(full.user).toContain("eviction");
+    expect(full.user).toMatch(/do NOT gloss them again/);
+    // it lives in the user turn: the system prompt must stay byte-stable across batches
+    expect(full.system).toBe(write.buildWritePrompt(writeCtx()).system);
+  });
+
+  it("tells the writer the learner numbers are context and never copy", () => {
+    const p = write.buildWritePrompt(writeCtx());
+    expect(p.user).toMatch(/every number in this block is context for YOU/);
+    expect(p.user).toMatch(/none of it goes on screen/);
   });
 
   it("write prompt's batch shape demands a visual card, caps prose, and places the open beat", () => {
@@ -229,6 +336,12 @@ describe("prompt files", () => {
     expect(p.user).toMatch(/LEAD with the most concrete thing/);
     expect(p.user).toMatch(/your first card is NOT a "concept"/);
     for (const t of VISUAL_CARD_TYPES) expect(p.user, t).toContain(t);
+    // the abstract routes have to be in the USER turn too — that is the instruction that governs
+    // this batch, and it is where the humanities batch had nowhere to go
+    expect(p.user).toMatch(/real lines worth hunting through → "spot"/);
+    expect(p.user).toMatch(/something that shifts over time → "scrub"/);
+    expect(p.user).toMatch(/"there was nothing to draw" is never the reason/);
+    expect(p.user).toMatch(/count the longest string on each card against its cap/);
     expect(p.user).toMatch(/at most ONE "concept" card here/);
     expect(p.user).toMatch(/never two prose cards/i);
     expect(p.user).toMatch(/include ONE "open" card/);
@@ -256,6 +369,37 @@ describe("prompt files", () => {
     expect(hot.user).toContain("heading toward: the stampede");
     // the shapes it hasn't reached for get named
     expect(hot.user).toMatch(/is missing from that list/);
+  });
+
+  it("plan prompt makes the planner DEMONSTRATE the voice, not describe it", () => {
+    const s = plan.PLAN_SYSTEM;
+    expect(s).toMatch(/DEMONSTRATE the voice, do not describe it/);
+    expect(s).toContain("analogyWorld");
+    expect(s).toMatch(/it must NOT be the subject's own world/);
+    expect(s).toContain("sampleCard");
+    expect(s).toMatch(/write ONE COMPLETE concept card, in this voice, about THIS subject/);
+    expect(s).toMatch(/do not write ABOUT the voice here\. write the card\./);
+    // the caps have to be stated or an overlong demonstration costs a whole planning call
+    expect(s).toContain("persona.analogyWorld 60");
+    expect(s).toContain("persona.sampleCard.headline 64 / body 320");
+    expect(plan.buildPlanPrompt(planInput()).user).toMatch(/a sampleCard actually written in that voice/);
+  });
+
+  it("personaBlock shows the voice when the planner filled it in, and is byte-identical when it didn't", () => {
+    const plain = shared.personaBlock(PERSONA);
+    expect(plain).toBe(shared.personaBlock({ ...PERSONA }));
+    expect(plain).not.toMatch(/analogy world/);
+    expect(plain).not.toMatch(/already written in this voice/);
+
+    const shown = shared.personaBlock({
+      ...PERSONA,
+      analogyWorld: "a restaurant kitchen at 8pm",
+      sampleCard: { headline: "the queue is the kitchen", body: "orders don't slow down because the kitchen is busy. they pile up." },
+    });
+    expect(shown.startsWith(plain)).toBe(true); // additive: the old block is still the head of it
+    expect(shown).toContain("a restaurant kitchen at 8pm");
+    expect(shown).toContain("the queue is the kitchen");
+    expect(shown).toMatch(/never its subject, never its wording/);
   });
 
   it("plan prompt refuses two prose cards on the fast path and offers real shapes for firstCards", () => {
@@ -311,6 +455,11 @@ describe("prompt files", () => {
     expect(p.user).toContain("  where caching breaks");
     expect(p.user).toContain("a miss costs a whole db read");
     expect(p.user).toContain("10x fewer db reads");
+    // the through-line can end up on screen, so it is written in the session's voice when there is one
+    expect(p.user).not.toContain("verbal tics");
+    const voiced = storyline.buildStorylinePrompt(storylineInput({ persona: PERSONA }));
+    expect(voiced.user).toContain("verbal tics");
+    expect(voiced.system).toBe(p.system); // persona rides in the user turn — the system stays cacheable
     expect(storyline.StorylineOutSchema.safeParse({ spine: "s", covered: ["a"], next: "n" }).success).toBe(true);
     expect("updatedAtIdx" in storyline.StorylineOutSchema.shape).toBe(false);
   });

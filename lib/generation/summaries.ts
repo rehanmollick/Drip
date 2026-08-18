@@ -41,6 +41,12 @@ export function cardGist(card: Card): string {
 export function cardSummary(card: Card): CardSummary {
   const s: CardSummary = { type: card.type, gist: trim(cardGist(card)) };
   if (card.type === "recap" && card.metaphor) s.metaphor = card.metaphor;
+  // the anchor is how the writer reuses an idea's slug instead of coining a second one, and the
+  // glossed terms are what it must not spend screen defining twice. neither survives a gist.
+  const anchor = (card as { anchor?: string }).anchor;
+  if (anchor) s.anchor = anchor;
+  const terms = (card as { terms?: { term: string }[] }).terms;
+  if (terms?.length) s.terms = terms.map((t) => t.term);
   return s;
 }
 
@@ -63,6 +69,20 @@ export function recentSummaries(cards: Card[], n = 6): CardSummary[] {
 /** The SHAPES of the last `n` content cards, oldest first — what the variety governor reads. */
 export function recentTypes(cards: Card[], n = 6): CardType[] {
   return cards.filter(isContentCard).slice(-n).map((c) => c.type);
+}
+
+/**
+ * Every word the session has already glossed, oldest first. The writer gets this so `terms` goes to
+ * words the reader hasn't met — re-defining "diction" on card 6 and again on card 19 spends the
+ * same screen twice and reads as a feed that isn't paying attention.
+ */
+export function glossedTerms(cards: Card[]): string[] {
+  const out = new Set<string>();
+  for (const c of cards) {
+    const terms = (c as { terms?: { term: string }[] }).terms;
+    for (const t of terms ?? []) if (t.term.trim()) out.add(t.term.trim());
+  }
+  return Array.from(out);
 }
 
 /** Every metaphor already used in the session (recap cards). */

@@ -15,8 +15,8 @@ import { CardSchema } from "@/lib/schemas/cards";
  * can derive any of this from the outline — the server has to say it out loud.
  */
 export const FrontierPublicSchema = z.object({
-  written: z.record(z.string(), z.number().int()).default({}),  // outline node id → main-thread cards that EXIST for it
-  beyond: z.number().int().default(0),                          // cards written past the end of the outline
+  /** outline node id → main-thread cards that EXIST for it. only written nodes appear; a missing node is zero. */
+  written: z.record(z.string(), z.number().int()).default({}),
   nodeIdx: z.number().int().default(0),                         // outline index the writer is working in
   deeper: z.record(z.string(), z.number().int()).default({}),   // node id → extra cards "one more layer here" bought there
   /** node ids the writer has finished. a node closes when it carries a crossroads row, whatever estCards guessed. */
@@ -26,7 +26,6 @@ export const FrontierPublicSchema = z.object({
   /** a batch is in flight RIGHT NOW — the difference between "nothing is coming" and "wait a beat". */
   live: z.object({ nodeIdx: z.number().int(), startedAt: z.string() }).nullable().default(null),
   epoch: z.number().int().default(0),                           // runway epoch this was counted against; older = stale
-  halted: z.boolean().default(false),                           // stopped for something scrolling can't clear (spend cap, dead session)
 });
 export type FrontierPublic = z.infer<typeof FrontierPublicSchema>;
 

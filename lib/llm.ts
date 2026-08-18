@@ -254,6 +254,10 @@ const PLAN_CLAMPS: Array<[path: string[], max: number]> = [
   [["title"], 60],
   [["theme", "name"], 40], [["theme", "mood"], 120], [["theme", "signature"], 160],
   [["persona", "name"], 24], [["persona", "humor"], 60], [["persona", "neverDoes"], 80], [["persona", "voiceSample"], 160],
+  // the demonstration fields: an overlong sampleCard is the planner writing well and running on,
+  // which is worth a soft clamp rather than a full Sonnet retry.
+  [["persona", "analogyWorld"], 60],
+  [["persona", "sampleCard", "headline"], 64], [["persona", "sampleCard", "body"], 320],
 ];
 
 /**

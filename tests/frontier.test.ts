@@ -5,8 +5,8 @@ import path from "path";
 
 import { createLocalStore } from "@/lib/db/local";
 import type { Store } from "@/lib/db/store";
-import { COUNTS_TOWARD_NODE, STALE_BATCH_MS, frontierKeyFor, frontierOf, setEngineDepsForTests } from "@/lib/generation/engine";
-import { closedNodes, deeperGrants, frontierPublic, gateOf, nodeCensus } from "@/lib/generation/frontier";
+import { STALE_BATCH_MS, frontierKeyFor, frontierOf, setEngineDepsForTests } from "@/lib/generation/engine";
+import { COUNTS_TOWARD_NODE, closedNodes, deeperGrants, frontierPublic, gateOf, nodeCensus } from "@/lib/generation/frontier";
 import { WRITER_CARD_TYPES } from "@/lib/schemas/cards";
 import { defaultLearnerState } from "@/lib/schemas/learner";
 import type { OutlineNode } from "@/lib/schemas/plan";
@@ -84,12 +84,12 @@ describe("the census counts cards that exist, not cards that were promised", () 
       row("open", "n2"),
       row("wrap", "system"),
     ];
-    expect(nodeCensus(cards, OUTLINE)).toEqual({ written: { n1: 3, n2: 2, n3: 0 }, beyond: 0 });
+    expect(nodeCensus(cards, OUTLINE)).toEqual({ n1: 3, n2: 2 });
   });
 
-  it("cards that belong to no node land in `beyond`", () => {
+  it("a node nobody has written yet is absent, not a zero — the client reads a missing node as none", () => {
     const cards = [row("concept", "n1"), row("hook", "adjacent"), row("concept", "resurface"), row("concept", "teaser")];
-    expect(nodeCensus(cards, OUTLINE)).toEqual({ written: { n1: 1, n2: 0, n3: 0 }, beyond: 3 });
+    expect(nodeCensus(cards, OUTLINE)).toEqual({ n1: 1 });
   });
 
   it("the census set is exactly the writer's types minus recap — the same predicate the engine budgets nodes with", () => {
@@ -147,15 +147,13 @@ describe("the wire shape", () => {
     ];
     const f = frontierPublic(s, cards, { nodeIdx: 1, startedAt: "2026-08-16T11:00:00.000Z" });
     expect(f).toEqual({
-      written: { n1: 2, n2: 1, n3: 0 },
-      beyond: 0,
+      written: { n1: 2, n2: 1 },
       nodeIdx: 1,
       deeper: { n1: 3 },
       closed: ["n1", "n2"],
       gate: "crossroads",
       live: { nodeIdx: 1, startedAt: "2026-08-16T11:00:00.000Z" },
       epoch: 3,
-      halted: false,
     });
   });
 
@@ -163,18 +161,6 @@ describe("the wire shape", () => {
     const cards = [row("crossroads", "n1", { choice: "deeper" }), row("crossroads", "n2", { choice: "continue" })];
     expect(deeperGrants(cards, "standard")).toEqual({ n1: 3 });
     expect(deeperGrants(cards, "deep")).toEqual({ n1: 4 });
-  });
-
-  it("halted is only for what scrolling can't clear", () => {
-    const now = "2026-08-16T23:00:00.000Z";
-    const budget = row("notice", "system", { kind: "budget", createdAt: "2026-08-16T09:00:00.000Z" });
-    expect(frontierPublic(session(), [row("concept", "n1"), budget], null, now).halted).toBe(true);
-    // yesterday's wall came down at midnight
-    expect(frontierPublic(session(), [row("concept", "n1"), row("notice", "system", { kind: "budget", createdAt: "2026-08-15T09:00:00.000Z" })], null, now).halted).toBe(false);
-    // a notice the feed already scrolled past is not a wall
-    expect(frontierPublic(session(), [budget, row("concept", "n1")], null, now).halted).toBe(false);
-    expect(frontierPublic(session({ status: "error", error: "planning took too long" }), [], null, now).halted).toBe(true);
-    expect(frontierPublic(session(), [row("concept", "n1")], null, now).halted).toBe(false);
   });
 });
 
@@ -210,9 +196,8 @@ describe("frontierOf: the engine's own answer", () => {
 
     const f = await frontierOf(s.id);
     expect(f?.live).toEqual({ nodeIdx: 0, startedAt: b.createdAt });
-    expect(f?.written).toEqual({ n1: 2, n2: 0, n3: 0 });
+    expect(f?.written).toEqual({ n1: 2 });
     expect(f?.gate).toBeNull();
-    expect(f?.halted).toBe(false);
 
     // a batch that finished is not thinking
     await store.updateBatch(b.id, { status: "done", cardIds: [] });
@@ -253,7 +238,7 @@ describe("frontierOf: the engine's own answer", () => {
     const env = (await res.json()) as { data: { session: { cardCount: number; frontier: { written: Record<string, number>; nodeIdx: number } } }; error: unknown };
     expect(env.error).toBeNull();
     expect(env.data.session.cardCount).toBe(3);
-    expect(env.data.session.frontier.written).toEqual({ n1: 2, n2: 1, n3: 0 });
+    expect(env.data.session.frontier.written).toEqual({ n1: 2, n2: 1 });
     expect(scans, "the frontier must ride along with the card count, not scan the feed again").toBe(1);
   });
 });

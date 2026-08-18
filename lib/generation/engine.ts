@@ -1,6 +1,6 @@
 import { CARD_SCHEMA_VERSION, CHILL_EXCLUDED_TYPES, CardSchema, WRITER_CARD_TYPES, type Card, type CardType, type ClarifyCard, type OpenCard } from "@/lib/schemas/cards";
 import { ProgressSchema, type Batch, type CardRow, type Detour, type Interaction, type Session } from "@/lib/schemas/session";
-import { SessionSettingsSchema, defaultLearnerState, type LearnerState } from "@/lib/schemas/learner";
+import { LEDGER_CAP, SessionSettingsSchema, defaultLearnerState, type LearnerState, type LedgerEntry } from "@/lib/schemas/learner";
 import type { OutlineNode, Persona, PlanOutput } from "@/lib/schemas/plan";
 import type { CreateSessionBody, FrontierPublic, GenerateData, AskData, InteractBody, DialData, ChooseBody, OpenFeedback } from "@/lib/api/contract";
 import type { DetourContext, LlmApi, LlmResult, WriteContext, WriteMode } from "@/lib/llm-types";
@@ -14,10 +14,14 @@ import {
   addReinforce, applyDial, applyInteraction, clearRecap, clearScaffold, learnerStateHash, missedConcepts,
   noteMissedConcepts, withPrefs,
 } from "@/lib/adapt/learner";
+import { anchorOf, conceptOf } from "@/lib/adapt/anchors";
+import { anchorMemories, dueAnchors, pullForward, spacingCredit, IMMEDIATE_CREDIT, type AnchorMemory } from "@/lib/adapt/schedule";
 import { sliceFor } from "./corpus";
-import { recentSummaries, recentTypes, usedMetaphors } from "./summaries";
+import { orderForLearning } from "./pedagogy";
+import { corpusTerms, describeQuality, qualityDirectives, scoreBatch } from "./quality";
+import { glossedTerms, recentSummaries, recentTypes, usedMetaphors } from "./summaries";
 import { budgetNotice, fallbackCard, isBudgetNotice, isFallback, SYSTEM_NODE } from "./system-cards";
-import { frontierPublic } from "./frontier";
+import { DEEPER_CARDS, DEEPER_CARDS_DEEP, countsTowardNode, frontierPublic } from "./frontier";
 import { buildCrossroadsCard, buildWrapCard } from "./crossroads";
 import { advanceStoryline, initialStoryline, mergeStoryline, reanchorDirective } from "./storyline";
 import { describeViolations, enforceVariety, narrowAllowed, varietyDirectives } from "./variety";
@@ -61,9 +65,6 @@ export const BATCH_HEARTBEAT_MS = 20_000;
 export const MAX_UNVIEWED_RUNWAY = 16;
 /** How long dial() waits for the persona toast before answering with the canned line (the runway drop must not wait). */
 export const DIAL_TOAST_WAIT_MS = 2_500;
-/** Extra cards granted by "one more layer here" at a crossroads (4 on the deep preset). */
-export const DEEPER_CARDS = 3;
-export const DEEPER_CARDS_DEEP = 4;
 const POLL_MS = 400;
 const CORPUS_SLICE_CHARS = 6000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -223,6 +224,9 @@ function baseContext(session: Session, all: CardRow[], node: OutlineNode | null)
     recentTypes: recentTypes(payloads, 6),
     storyline: session.storyline,
     usedMetaphors: usedMetaphors(payloads),
+    // the whole session's glossary, not the last-6 window: a word explained on slide 4 must not be
+    // handed over again on slide 40, and the recent window cannot see that far back
+    glossedTerms: glossedTerms(payloads),
     allowedTypes: allowedTypes(session),
     detourId: null,
     extraDirectives: directiveLines(session.learnerState),
@@ -264,16 +268,77 @@ async function insertAfter(store: Store, sessionId: string, floorIdx: string | n
 const insertAfterLast = (store: Store, sessionId: string, cards: Card[], batchId: string | null) => insertAfter(store, sessionId, null, cards, batchId);
 
 /** idx of the furthest viewed row (the user's frontier), or null when nothing was viewed. */
-function lastViewedIdx(cards: CardRow[]): string | null {
+function lastViewedIdx(cards: readonly CardRow[]): string | null {
   let m: string | null = null;
   for (const c of cards) if (c.viewedAt && (m === null || c.idx > m)) m = c.idx;
   return m;
 }
 
-/** Types that count toward a node's card budget. Recaps, crossroads, wraps and every system card do not. */
-export const COUNTS_TOWARD_NODE: ReadonlySet<string> = new Set(WRITER_CARD_TYPES.filter((t) => t !== "recap"));
-// the payload is the source of truth for a row's shape (the `type` column mirrors it)
-export const countsTowardNode = (c: CardRow) => !c.detourId && COUNTS_TOWARD_NODE.has(c.payload.type);
+/**
+ * The reader's frontier as an ORDINAL, in the frame lib/adapt/schedule.ts numbers memories in.
+ *
+ * `anchorMemories` walks the FULL sorted row list — detour rows, notices, crossroads and all — and
+ * hands each row its position. So the reader's position has to be counted over exactly those rows
+ * too. Counting content rows only would place the reader further back than they are, and
+ * suppressor 1 ("never ask about something they haven't read yet") would refuse every callback on
+ * a feed that has taken a couple of detours. -1 means nothing has been viewed.
+ */
+function viewedOrdinalOf(cards: readonly CardRow[]): number {
+  const floor = lastViewedIdx(cards);
+  if (floor === null) return -1;
+  let n = 0;
+  for (const c of cards) if (c.idx <= floor) n++;
+  return n - 1;
+}
+
+/**
+ * A ctx-only view of the learner state carrying the callback the schedule picked. The writer reads
+ * it as `directives.due` joined to the ledger (lib/prompts/shared.ts `dueBlock`), so the label
+ * rides along in case the reader met the idea before the ledger did.
+ *
+ * Nothing here is persisted, and nothing here is hashed: `learnerStateHash` deliberately excludes
+ * `due` and `ledger`, so a callback can never re-key the frontier and make us pay twice for the
+ * same runway slot. The schedule is the only authority on what is owed — a raw pull-forward queue
+ * is replaced by its answer, empty included, because the queue has no gate on what has been read.
+ */
+function withDue(state: LearnerState, due: readonly AnchorMemory[]): LearnerState {
+  const ledger = [...state.ledger];
+  for (const m of due) {
+    if (!ledger.some((e) => e.anchor === m.anchor)) ledger.push({ anchor: m.anchor, label: m.label, taught: 1, hits: 0, misses: 0, lastSeenAt: 0 });
+  }
+  return {
+    ...state,
+    ledger: ledger.slice(-LEDGER_CAP),
+    directives: { ...state.directives, due: due.map((m) => m.anchor) },
+  };
+}
+
+/**
+ * The ledger of ideas the reader has actually met, written from interact() rather than from the
+ * pure reducer because it needs one thing the reducer never sees: WHERE the card sits in the feed.
+ * `delayed` is the whole point — an answer twenty rows after the idea was taught is a retrieval,
+ * an answer on the card right below it is a pop check — and only the delayed kind clears the
+ * callback queue, because only the delayed kind is the thing the queue asked for.
+ *
+ * Keyed on the card's own anchor. Folding sloppy slugs together (lib/adapt/anchors.ts
+ * `mergeAnchor`) is the schedule's job, and the schedule reads the rows, not this.
+ */
+function noteLedger(state: LearnerState, card: Card, ev: { hit: boolean | null; delayed: boolean; repeatVisit: boolean }): LearnerState {
+  const anchor = anchorOf(card);
+  const prev = state.ledger.find((e) => e.anchor === anchor);
+  const entry: LedgerEntry = {
+    anchor,
+    label: prev?.label ?? conceptOf(card),
+    // a hide/resume split or a scroll-back revisit is the same card, not a second telling
+    taught: (prev?.taught ?? 0) + (ev.hit === null && !ev.repeatVisit ? 1 : 0),
+    hits: (prev?.hits ?? 0) + (ev.hit === true ? 1 : 0),
+    misses: (prev?.misses ?? 0) + (ev.hit === false ? 1 : 0),
+    lastSeenAt: Date.now(),
+  };
+  const ledger = [...state.ledger.filter((e) => e.anchor !== anchor), entry].slice(-LEDGER_CAP);
+  const due = ev.delayed ? state.directives.due.filter((a) => a !== anchor) : state.directives.due;
+  return { ...state, ledger, directives: { ...state.directives, due } };
+}
 
 /** Main-thread cards already written for a node. */
 export function cardsInNodeCount(cards: CardRow[], nodeId: string): number {
@@ -540,17 +605,20 @@ export function replanPending(session: Session, now = Date.now()): boolean {
 /**
  * Where the writer stands, for the client (spec: the bar that explains itself).
  *
- * One session read, one single-key batch lookup on the frontier we would generate next, and a card
- * scan only when the caller hasn't already done one — a bar that says where it is must not cost a
- * second pass over the feed. `live` is non-null ONLY for a pending batch whose owner is still
+ * One single-key batch lookup on the frontier we would generate next, plus a session read and a
+ * card scan only when the caller hasn't already done them — a bar that says where it is must not
+ * cost a second pass over the feed. Route handlers hold both already: pass them and this costs one
+ * indexed row. `live` is non-null ONLY for a pending batch whose owner is still
  * heartbeating: a stale pending batch is not thinking, it is dead, and pulsing for it would be a
  * lie. Failure is data here too — a frontier we couldn't count is null, never an exception thrown
  * across a response that otherwise worked.
  */
-export async function frontierOf(sessionId: string, cards?: CardRow[]): Promise<FrontierPublic | null> {
+export async function frontierOf(sessionId: string, cards?: CardRow[], loaded?: Session): Promise<FrontierPublic | null> {
   try {
     const { store } = await deps();
-    const session = await store.getSession(sessionId);
+    // a caller-supplied session must be the one it is about to answer WITH — anything counted
+    // against a session read before the write it is reporting on would ship a stale progress
+    const session = loaded ?? (await store.getSession(sessionId));
     if (!session) return null;
     const all = cards ?? (await store.listAllCards(sessionId));
     const batch = await store.getBatch(sessionId, frontierKeyFor(session, all[all.length - 1]?.idx ?? null));
@@ -744,17 +812,73 @@ type Built = {
 const varietyPressure = new Map<string, number>();
 
 /**
+ * The jargon governor's memory (lib/generation/quality.ts), in the same register as
+ * `varietyPressure`: in-memory, best-effort, and it only ever sharpens the NEXT batch's directives.
+ * QUALITY NEVER DROPS A CARD — `enforceVariety` stays the only governor allowed to drop one — so
+ * losing this map costs a slightly blunter prompt and nothing else.
+ */
+const qualityPressure = new Map<string, { pressure: number; unintroduced: string[] }>();
+
+/**
+ * Batch bookkeeping for the retrieval schedule: how many batches this process has written for a
+ * session, and which one last carried an out-of-node callback (lib/adapt/schedule.ts suppressor 2 —
+ * one topic-hop at a time, never two batches running). Best-effort like the maps above; losing it
+ * re-allows one callback a batch early, never a wrong one.
+ */
+const callbackTicks = new Map<string, { batch: number; lastCrossNode: number | null }>();
+
+/**
  * Compose one batch: optional scaffold re-angle + the main write, and — when the
  * batch closes the topic — one deterministic `crossroads` card as its last row.
  * The boundary must never wait on a model, so that card is assembled locally.
  * (Recaps are inserted by interact(), never here.)
  */
+/**
+ * How many rows must pass before another flex lands.
+ *
+ * `completes` fires at every node boundary, and a planner whose estCards sits anywhere near
+ * BATCH_SIZE makes that EVERY batch. A real read-through of 24 slides came back
+ * checkpoint → crossroads four separate times — roughly a sixth of the feed was cards ABOUT the
+ * feed, congratulating you and then stopping you. That is the rhythm of a course.
+ *
+ * The crossroads already marks the boundary and names what just finished, so the checkpoint is the
+ * second voice saying it. A flex only reads as a flex when it is rare, so it has to wait its turn.
+ */
+const CHECKPOINT_MIN_GAP = 12;
+
+/** True when the reader has not been congratulated in the last CHECKPOINT_MIN_GAP rows. */
+export function checkpointEarned(all: readonly CardRow[]): boolean {
+  const recent = [...all].sort((a, b) => (a.idx < b.idx ? -1 : a.idx > b.idx ? 1 : 0)).slice(-CHECKPOINT_MIN_GAP);
+  return !recent.some((r) => (r.payload as Card).type === "checkpoint");
+}
+
 async function buildBatch(llm: LlmApi, session: Session, all: CardRow[]): Promise<Built> {
   const node = currentNode(session);
-  const base = baseContext(session, all, node);
   const d = session.learnerState.directives;
   const cards: Card[] = [];
   const topic = node?.id ?? SYSTEM_NODE;
+
+  // ── the callback: at most ONE idea brought back, and only one they have actually read ──
+  const ticks = callbackTicks.get(session.id) ?? { batch: 0, lastCrossNode: null };
+  const batchIndex = ticks.batch + 1;
+  const due = dueAnchors({
+    memories: anchorMemories(all),
+    viewedOrdinal: viewedOrdinalOf(all),
+    nodeId: topic,
+    pace: d.pace,
+    chillMode: session.settings.chillMode,
+    pulled: d.due,
+    batchIndex,
+    lastCrossNodeBatch: ticks.lastCrossNode,
+    // one, not two: the writer is being nudged, and a batch that carries two callbacks is a check-up
+    limit: 1,
+  });
+  callbackTicks.set(session.id, {
+    batch: batchIndex,
+    lastCrossNode: due.some((m) => m.nodeId !== topic) ? batchIndex : ticks.lastCrossNode,
+  });
+
+  const base = { ...baseContext(session, all, node), learnerState: withDue(session.learnerState, due) };
   const st: { outcome: Built["outcome"]; error?: string } = { outcome: "ok" };
   let consumedScaffold = false;
 
@@ -781,7 +905,10 @@ async function buildBatch(llm: LlmApi, session: Session, all: CardRow[]): Promis
   /** "one more layer here" at a crossroads grants this many extra cards on the current thread. */
   const deeperOwed = session.progress.deeperCards ?? 0;
   const misses = missedConcepts(session.learnerState, 4);
-  const useResurface = !node && misses.length > 0 && session.progress.extensions % 2 === 0;
+  // the schedule carries the ordinary callbacks now, one idea per batch, woven into the thread the
+  // reader is already on. Resurface is what is left over: the outline is done and there is more owed
+  // than a batch can carry, so the whole batch goes back for it.
+  const useResurface = !node && misses.length > 0;
   const batchSize = deeperOwed > 0
     ? Math.max(2, Math.min(6, deeperOwed))
     : node ? BATCH_SIZE : useResurface ? BATCH_SIZE : 2;
@@ -789,6 +916,7 @@ async function buildBatch(llm: LlmApi, session: Session, all: CardRow[]): Promis
   // the variety governor decides what this batch is allowed to look like BEFORE the call
   const seen = base.recentTypes ?? [];
   const pressure = varietyPressure.get(session.id) ?? 0;
+  const jargon = qualityPressure.get(session.id) ?? { pressure: 0, unintroduced: [] };
   const variety = varietyDirectives({ recentTypes: seen, batchSize, allowedTypes: base.allowedTypes, pressure });
   const allowed = narrowAllowed(base.allowedTypes, variety.forbidden);
   const cameBackFromDetour = all.length > 0 && all[all.length - 1].detourId !== null;
@@ -798,6 +926,8 @@ async function buildBatch(llm: LlmApi, session: Session, all: CardRow[]): Promis
     ...(cameBackFromDetour ? [reanchorDirective(session.storyline, node?.title ?? null)] : []),
     ...(deeperOwed > 0 ? [`they tapped "one more layer" on ${node?.title ?? "what just went by"} — go UNDER what is already on screen: the mechanism, the edge case, the part that surprises. never restate a card they have already seen.`] : []),
     ...variety.lines,
+    // the jargon governor, measured on the LAST batch: it names words, it never took a card away
+    ...qualityDirectives({ unintroduced: jargon.unintroduced, pressure: jargon.pressure }),
   ];
 
   let main: Card[] | null = null;
@@ -805,7 +935,9 @@ async function buildBatch(llm: LlmApi, session: Session, all: CardRow[]): Promis
   if (node) {
     const completes = deeperOwed > 0 || session.progress.cardsInNode + batchSize >= node.estCards;
     const extra = [...shared];
-    if (completes && deeperOwed === 0) extra.push("this batch completes the current idea — end it with a checkpoint card (flex copy, no scores)");
+    if (completes && deeperOwed === 0 && checkpointEarned(all)) {
+      extra.push("this batch completes the current idea — end it with a checkpoint card (flex copy, no scores)");
+    }
     main = await write({ ...base, allowedTypes: allowed, mode: "normal", batchSize, extraDirectives: extra });
   } else {
     const mode: WriteMode = useResurface ? "resurface" : "adjacent";
@@ -828,15 +960,30 @@ async function buildBatch(llm: LlmApi, session: Session, all: CardRow[]): Promis
 
   let kept: Card[] = [];
   if (main?.length) {
-    // the governor again, this time on what actually came back: drop the repeats, keep the batch
     const history = [...seen, ...cards.map((c) => c.type)];
-    const v = enforceVariety(history, main);
+    // concrete before abstract, within one idea (lib/generation/pedagogy.ts). It is a permutation and
+    // nothing else, and it reverts itself if the reorder would cost the batch a card — which is why
+    // it runs immediately before the governor and is handed the same history the governor reads.
+    const ordered = orderForLearning(main, history);
+    // the governor again, this time on what actually came back: drop the repeats, keep the batch
+    const v = enforceVariety(history, ordered);
     kept = v.kept;
     if (v.violations.length) {
-      console.warn(`[engine] variety: kept ${v.kept.length}/${main.length} cards (${describeViolations(v.violations)}) session=${session.id}`);
+      console.warn(`[engine] variety: kept ${v.kept.length}/${ordered.length} cards (${describeViolations(v.violations)}) session=${session.id}`);
       varietyPressure.set(session.id, Math.min(3, pressure + 1));
     } else {
       varietyPressure.delete(session.id);
+    }
+    // measurement only, and only on what survived: the words this batch put on screen that the
+    // reader was never handed. It changes the NEXT batch's directives and never this one's cards.
+    // The dictionary is the slice the writer was actually looking at, so a word counts as domain
+    // vocabulary only if the material in front of it leaned on it.
+    const q = scoreBatch({ batch: kept, terms: corpusTerms(base.corpusSlice), introduced: glossedTerms(all.map((r) => r.payload)) });
+    if (q.heavy) {
+      console.warn(`[engine] quality: ${describeQuality(q)} session=${session.id}`);
+      qualityPressure.set(session.id, { pressure: Math.min(3, jargon.pressure + 1), unintroduced: q.unintroduced });
+    } else {
+      qualityPressure.delete(session.id);
     }
     cards.push(...adopt(kept, mainTopic, null));
   } else if (st.outcome === "budget") {
@@ -1000,6 +1147,8 @@ function refreshStorylineSoon(llm: LlmApi, store: Store, sessionId: string, node
     const node = session.outline[nodeIdx] ?? null;
     const r = await llm.updateStoryline({
       sessionId,
+      // the spine can end up on screen, so it is written in the session's voice like everything else
+      persona: session.persona ?? PLACEHOLDER_PERSONA,
       prev: session.storyline,
       title: session.title,
       outline: session.outline,
@@ -1077,6 +1226,10 @@ async function evaluateOpenAnswer(llm: LlmApi, store: Store, sessionId: string, 
  * so nothing is double-counted or overwritten. `recapDue` is claimed and cleared
  * in that same write — this function is the only consumer — and the recap card
  * (if any) is written and spliced afterwards, ahead of the user, never behind.
+ *
+ * The same write also records the idea in the learner's ledger, and whether the answer was a
+ * spaced retrieval or a pop check on the card above: that is what tells the callback queue its
+ * job is done (lib/adapt/schedule.ts).
  */
 export async function interact(cardId: string, body: InteractBody): Promise<InteractResult> {
   const { llm, store } = await deps();
@@ -1134,11 +1287,48 @@ export async function interact(cardId: string, body: InteractBody): Promise<Inte
       // "close" is still a hit — the ledger stays, but the writer learns what wobbled
       state = noteMissedConcepts(state, card.payload.topicNodeId, open.feedback.missed);
     }
+
+    /**
+     * Was this a retrieval or a pop check on the card above? The pure reducer can't tell — it sees
+     * one card and no feed — so the row's position is measured here, in the same frame
+     * lib/adapt/schedule.ts numbers memories in. Only scored answers pay for the scan; a plain
+     * view has nothing to measure.
+     */
+    let delayed = false;
+    if (scored) {
+      const rows = await store.listAllCards(sessionId);
+      const at = Math.max(rows.findIndex((r) => r.id === cardId), viewedOrdinalOf(rows));
+      const met = anchorMemories(rows.filter((r) => r.idx < card.idx)).find(
+        (m) => m.nodeId === card.payload.topicNodeId && m.anchor === anchorOf(card.payload),
+      );
+      delayed = met ? spacingCredit(Math.max(0, at - met.lastTouchedAt)) > IMMEDIATE_CREDIT : false;
+    }
+    state = noteLedger(state, card.payload, {
+      hit: scored ? merged.correct === true : null,
+      delayed,
+      repeatVisit: prev?.dwellMs !== undefined,
+    });
+
     // claim the recap trigger in the same write: one trigger → at most one recap, whoever else is generating
     let recap: { concept: string; viaMiss: boolean } | null = null;
     if (state.directives.recapDue) {
-      recap = { concept: state.directives.recapDue, viaMiss: scored && merged.correct === false };
-      state = clearRecap(state, card.payload.topicNodeId);
+      const viaMiss = scored && merged.correct === false;
+      /**
+       * A >25s dwell on one teaching card still means stuck — lib/dwell.ts pauses on
+       * visibilitychange and caps a single dwell at 60s, so what arrives here is active foreground
+       * reading (dripSpec §271) — but it no longer buys a whole recap card. A recap re-explains;
+       * the schedule brings the same idea back a few cards later in a shape that ASKS, which is the
+       * thing that actually sticks. So a dwell trigger becomes a pull-forward and the miss streak
+       * it never owned is left alone.
+       */
+      const viaDwell = !viaMiss && body.scrollBack !== true && state.directives.recapDue !== session.learnerState.directives.recapDue;
+      if (viaDwell) {
+        state = clearRecap(state);
+        state = { ...state, directives: { ...state.directives, due: pullForward(state.directives.due, anchorOf(card.payload)) } };
+      } else {
+        recap = { concept: state.directives.recapDue, viaMiss };
+        state = clearRecap(state, card.payload.topicNodeId);
+      }
     }
     const s2 = await store.updateSession(sessionId, { learnerState: state });
     return { kind: "content", card: updated, session: s2, recap };
@@ -1168,28 +1358,24 @@ export async function interact(cardId: string, body: InteractBody): Promise<Inte
         const [payload] = await highlightCards(adopt(w.value.slice(0, 1), card.payload.topicNodeId, card.detourId));
         // a miss is reported while the user is ON the card → right after it. dwell / scroll-back are reported when
         // they have already moved on → after the next card in this thread, so the recap is ahead of them, never behind.
-        const nextInThread = ahead.find((x) => x.detourId === card.detourId) ?? null;
+        const after = all.filter((x) => x.idx > card.idx);
+        const nextInThread = after.find((x) => x.detourId === card.detourId) ?? null;
         let anchor = r.recap.viaMiss || !nextInThread ? card : nextInThread;
-        let anchorPos = anchor === card ? -1 : ahead.findIndex((x) => x.id === anchor.id);
         // NOTHING IS EVER INSERTED ABOVE THE READER. Interactions are reported from an outbox, so by
         // the time a dwell lands they may be several cards further on; anchoring to the card that
         // triggered it would drop the recap behind them, where it silently shifts their slot and is
         // never seen. The furthest viewed row is the floor.
         const floor = lastViewedIdx(all);
         if (floor !== null && anchor.idx <= floor) {
-          const past = ahead.findIndex((x) => x.idx > floor && x.detourId === card.detourId);
-          if (past > 0) {
-            anchor = ahead[past - 1];
-            anchorPos = past - 1;
-          } else if (past === 0) {
-            anchor = card;
-            anchorPos = -1;
-          } else {
-            anchor = ahead[ahead.length - 1] ?? card;
-            anchorPos = ahead.length - 1;
-          }
+          const past = after.findIndex((x) => x.idx > floor && x.detourId === card.detourId);
+          // no in-thread row past the floor at all → the reader has outrun this thread, so the recap
+          // goes on the very end of the deck. it has to be the end of the FULL list: anchoring to the
+          // end of a page took the key the real next row already holds, and the insert died on it.
+          anchor = past > 0 ? after[past - 1] : past === 0 ? card : all[all.length - 1] ?? card;
         }
-        const before = ahead[anchorPos + 1] ?? null;
+        // the slot is always read off the full list — a paged window cannot tell "nothing follows"
+        // apart from "nothing follows in this page", and the two want opposite keys
+        const before = all.find((x) => x.idx > anchor.idx) ?? null;
         const key = keyBetween(anchor.idx, before?.idx ?? null);
         try {
           inserted.push(...(await store.insertCards([row(sessionId, key, payload, null)])));

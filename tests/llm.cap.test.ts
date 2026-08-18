@@ -39,7 +39,7 @@ describe("spend cap (fails closed)", () => {
     expect(store.calls).toHaveLength(1);
     expect(store.calls[0].ok).toBe(false);
     expect(store.calls[0].purpose).toBe("write");
-    expect(store.calls[0].promptVersion).toMatch(/^write\.v4\+shared\.v\d+\.[0-9a-f]{8}$/);
+    expect(store.calls[0].promptVersion).toMatch(/^write\.v5\+shared\.v\d+\.[0-9a-f]{8}$/);
     expect(store.calls[0].error).toMatch(/budget/);
   });
 
@@ -135,7 +135,7 @@ describe("logging + mock pipeline", () => {
     expect(typeof toast).toBe("string");
     expect(store.calls.map((c) => c.purpose)).toEqual(["plan", "write", "triage", "detour", "chat"]);
     const shared = /\+shared\.v\d+\.[0-9a-f]{8}$/;
-    expect(store.calls.map((c) => c.promptVersion.replace(shared, ""))).toEqual(["plan.v3", "write.v4", "triage.v2", "detour.v2+write.v4", "dial.v1"]);
+    expect(store.calls.map((c) => c.promptVersion.replace(shared, ""))).toEqual(["plan.v4", "write.v5", "triage.v2", "detour.v2+write.v5", "dial.v1"]);
     for (const c of store.calls) expect(c.promptVersion).toMatch(shared);
     for (const c of store.calls) {
       expect(c.ok).toBe(true);
@@ -148,7 +148,7 @@ describe("logging + mock pipeline", () => {
     }
     if (p.ok) {
       expect(PlanOutputSchema.safeParse(p.value).success).toBe(true);
-      expect(p.meta.promptVersion).toMatch(/^plan\.v3\+shared/);
+      expect(p.meta.promptVersion).toMatch(/^plan\.v4\+shared/);
       expect(p.meta.attempts).toBe(1);
     }
     if (w.ok) for (const c of w.value) expect(CardSchema.safeParse(c).success).toBe(true);

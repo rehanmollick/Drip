@@ -2,11 +2,12 @@ import type { PlanInput } from "@/lib/llm-types";
 import { PlanOutputSchema, type PlanOutput } from "@/lib/schemas/plan";
 import { BODY_FONTS, DISPLAY_FONTS, MONO_FONTS, MOTIONS, TEXTURES, ThemeSchema } from "@/lib/schemas/theme";
 import {
-  BASE_CARD_FIELDS, JSON_ONLY, NO_ASSUMING, PRIME_DIRECTIVE, SHOW_DONT_TELL, WRITER_RULES, bullets,
-  cardSchemaBlock, jsonForPrompt, schemaText, sliceCorpus, type Prompt,
+  BASE_CARD_FIELDS, HOW_TO_EXPLAIN, JSON_ONLY, NO_ASSUMING, PRIME_DIRECTIVE, SHOW_DONT_TELL,
+  VOICE_IN_THE_SENTENCE, WRITER_RULES, bullets, cardSchemaBlock, jsonForPrompt, schemaText,
+  sliceCorpus, type Prompt,
 } from "./shared";
 
-export const PROMPT_VERSION = "plan.v3";
+export const PROMPT_VERSION = "plan.v4";
 
 /** Corpus budget for the planner (chars). Sonnet sees this much + a headings sample. */
 export const PLAN_CORPUS_CHARS = 24_000;
@@ -26,10 +27,21 @@ const THEME_RULES = `theme rules (per-session visual identity, derived from the 
 - "signature" is ONE distinctive device that appears on hook + checkpoint cards and derives from the subject matter. pick "signatureKind" from: ${SIGNATURE_KINDS.join(", ")}, and describe how it reads for THIS subject in "signature".
 - ink must be legible on bg (high contrast); accent must be legible on bg. all colors are hex.`;
 
-const PERSONA_RULES = `persona rules (the voice every card is written in):
+const PERSONA_RULES = `persona rules — DEMONSTRATE the voice, do not describe it. this is the highest-leverage part of your whole output and almost nobody gets it right, so read it twice.
+
+the writer that produces the other forty cards never meets you. all it ever gets is this block, and three adjectives have never once made anyone write well. so you hand it a description AND a performance.
+
 - jarvis-tier intelligence is constant; only the FLAVOR changes per subject.
 - exactly 3 traits, exactly 2 signature verbal tics, one humor register, one thing it never does. optional short name and one voiceSample line.
-- the persona talks like the smartest friend who happens to live in this subject's world (an on-call SRE for a caching doc, a marine biologist who has been cold and wet for 20 years for tide pools). lowercase, dry, warm.`;
+- the persona talks like the smartest friend who happens to live in this subject's world (someone who has been on call for a decade, for a caching doc; someone cold and wet on a tide-pool survey for twenty years, for intertidal ecology). lowercase, dry, warm. never a mascot, never a bit.
+- "analogyWorld" (≤ 60): the ONE world this voice reaches into for comparisons — "pit lane in the wet", "a bad kitchen shift", "a courtroom in august". every metaphor in the session comes from there, which is what makes forty cards sound like one person instead of forty. it must NOT be the subject's own world: a caching doc whose comparisons are all caching has no comparisons.
+- "sampleCard": write ONE COMPLETE concept card, in this voice, about THIS subject — {"headline": ≤ 64, "body": ≤ 320}. the writer imitates it forty times, so make it the card you would most want it to copy:
+  · the everyday thing named BEFORE the technical name for it
+  · a specific noun where a lesser writer would put an adjective
+  · a last sentence that carries the consequence, not a restatement
+  · one line only this voice would ever produce
+  do not write ABOUT the voice here. write the card. a sampleCard that reads like an encyclopedia entry sets the ceiling for the entire session.
+- the sampleCard is a demonstration, not content: the writer copies its register, its rhythm and its restraint, never its subject and never its sentences.`;
 
 /**
  * The through-line. The app stores it on the session and hands it back to the
@@ -87,7 +99,7 @@ const FIRST_CARDS_RULES = `firstCards (fast path — the feed becomes scrollable
 - these three must be self-contained even if nothing follows for a moment.`;
 
 const HARD_CAPS = `HARD CHARACTER CAPS — anything over is rejected and you get called again (slow, expensive). aim for ~70% of each cap:
-spine 280 · title 60 · theme.name 40 · theme.mood 120 · theme.signature 160 · persona.name 24 · each trait 40 · each tic 60 · humor 60 · neverDoes 80 · voiceSample 160 (or omit it)
+spine 280 · title 60 · theme.name 40 · theme.mood 120 · theme.signature 160 · persona.name 24 · each trait 40 · each tic 60 · humor 60 · neverDoes 80 · voiceSample 160 (or omit it) · persona.analogyWorld 60 · persona.sampleCard.headline 64 / body 320
 node.title 60 · node.brief 240 (two tight sentences, no more) · node.corpusHint 200 (omit for a single-sentence source) · node.estCards 4–6
 clarifier.prompt 140 · clarifier.option 40 · card.eyebrow 28 · hook.headline 90 · hook.sub 120 · concept.headline 64 · concept.body 320 (~55 words)
 stat.value 12 · stat.label 48 · stat.context 160 · reveal.setup 140 · reveal.payoff 240 · diagram.title 48 / node.label 24 / node.sub 40 / edge.label 20 · terms: max 3, term 32 / gloss 140
@@ -101,6 +113,8 @@ export const PLAN_SYSTEM = [
   WRITER_RULES,
   SHOW_DONT_TELL,
   NO_ASSUMING,
+  HOW_TO_EXPLAIN,
+  VOICE_IN_THE_SENTENCE,
   THEME_RULES,
   PERSONA_RULES,
   SPINE_RULES,
@@ -135,7 +149,7 @@ export function buildPlanPrompt(input: PlanInput): Prompt {
     answers ? `clarifier answers (RE-PLAN with these; emit no clarifiers):\n${answers}` : `clarifier answers: none yet.`,
     prev ? `previous plan (refine it with the answers; keep what still fits, keep node ids stable where the node survives):\n${prev}` : null,
     `source (${input.sourceText.length.toLocaleString("en-US")} chars total; bounded slice below):\n<<<SOURCE\n${corpus}\nSOURCE>>>`,
-    `work in this order, then emit the JSON: (1) the spine — one or two sentences on what this is really about. (2) the outline as a story that argues the spine, with the prerequisites pass actually done. (3) theme + persona from this subject's own world. (4) the 3 opening cards.`,
+    `work in this order, then emit the JSON: (1) the spine — one or two sentences on what this is really about. (2) the outline as a story that argues the spine, with the prerequisites pass actually done. (3) theme + persona from this subject's own world, including the analogy world and a sampleCard actually written in that voice about this subject. (4) the 3 opening cards.`,
   ].filter(Boolean).join("\n\n");
 
   return { system: PLAN_SYSTEM, user };

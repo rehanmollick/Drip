@@ -207,6 +207,42 @@ test.describe("placeholders (bug: my slide turned into something else)", () => {
   });
 });
 
+test.describe("what the bar costs to keep honest", () => {
+  test("scrolling for 20s never re-reads the session", async ({ page }) => {
+    // Every GET /api/sessions/:id is a full card scan plus a session read, and a bar kept live on a
+    // clock pays that per reader, for as long as they read. The frontier rides back on the generate
+    // the feed was already posting, so the only polls left are the bounded ones for a flip nothing
+    // else can announce (still planning, re-planning) — and neither is running once the deck exists.
+    test.setTimeout(120_000);
+    const id = await createSession(page, "how a cache stampede takes a site down");
+    await waitForCards(page, 3);
+    // the planning poll stops on this flip; `page.request` doesn't go through the page, so the
+    // waiting itself is invisible to the counter below
+    await expect
+      .poll(async () => (await (await page.request.get(`/api/sessions/${id}`)).json()).data.session.status, { timeout: 60_000 })
+      .toBe("active");
+    await page.waitForTimeout(3_000); // let the last planning tick land
+
+    let reads = 0;
+    page.on("request", (r) => {
+      if (r.method() === "GET" && new URL(r.url()).pathname === `/api/sessions/${id}`) reads += 1;
+    });
+
+    /** Pull on the runway the way a reader does, for `ms`. */
+    const scrollFor = async (ms: number) => {
+      const until = Date.now() + ms;
+      for (let i = 0; Date.now() < until; i++) await goToSlide(page, i % Math.max(1, await slides(page).count()));
+    };
+
+    await scrollFor(10_000);
+    const first = reads;
+    await scrollFor(10_000);
+
+    expect(first, "the session is being polled while the reader scrolls").toBeLessThanOrEqual(1);
+    expect(reads, "session reads grow with time spent in the feed").toBe(first);
+  });
+});
+
 test.describe("crossroads", () => {
   test("while it waits on the reader, nothing generates and no catching-up tail appears", async ({ page }) => {
     const generates: string[] = [];

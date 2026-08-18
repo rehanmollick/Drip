@@ -3,12 +3,13 @@ import { CardBatchSchema, PROSE_CARD_TYPES, VISUAL_CARD_TYPES, type CardType } f
 import type { Persona } from "@/lib/schemas/plan";
 import type { Theme } from "@/lib/schemas/theme";
 import {
-  BASE_CARD_FIELDS, JSON_ONLY, NO_ASSUMING, PRIME_DIRECTIVE, SHOW_DONT_TELL, WRITER_RULES, bullets,
-  cardSchemaBlock, difficultyDirective, learnerSummary, personaBlock, recentTypesBlock, sliceCorpus,
-  storylineBlock, themeGroundingBlock, type Prompt,
+  BASE_CARD_FIELDS, HOW_TO_EXPLAIN, JSON_ONLY, NO_ASSUMING, PRIME_DIRECTIVE, SHOW_DONT_TELL,
+  VOICE_IN_THE_SENTENCE, WRITER_RULES, bullets, cardSchemaBlock, difficultyDirective, dueBlock,
+  glossaryBlock, learnerSummary, personaBlock, recentTypesBlock, sliceCorpus, storylineBlock,
+  themeGroundingBlock, type Prompt,
 } from "./shared";
 
-export const PROMPT_VERSION = "write.v4";
+export const PROMPT_VERSION = "write.v5";
 
 /** Corpus budget for one writer call (chars). The caller already slices per node; this is a hard ceiling. */
 export const WRITE_CORPUS_CHARS = 12_000;
@@ -25,7 +26,9 @@ const CRAFT = `craft:
 - write from the source. quote numbers, names, and specifics from it. when you must go beyond it, say "the source doesn't cover this, but generally…" and set eyebrow "off-source".
 - continuity: read the recent-card summaries and the through-line. do not repeat their claims, examples, or metaphors. build on them.
 - every string fits its cap. shorter is better. one idea per card. lowercase.
-- visuals: only the schema-listed kinds; icons from the allowed icon list.`;
+- visuals: only the schema-listed kinds; icons from the allowed icon list.
+- anchors: stamp "anchor" on every card, and REUSE the slug an idea already has (the recent ones are listed in the user turn) rather than coining a second one. it is invisible to the reader and it is what lets a card come back to an idea instead of re-teaching it.
+- a callback is a bet, not a reminder. when you come back to an older idea, it arrives in a new shape and never says that it is coming back.`;
 
 /**
  * System prompt: persona + theme are stapled in (grounding — callers can never
@@ -44,6 +47,8 @@ export function buildWriteSystem(
     WRITER_RULES,
     SHOW_DONT_TELL,
     NO_ASSUMING,
+    HOW_TO_EXPLAIN,
+    VOICE_IN_THE_SENTENCE,
     CRAFT,
     BASE_CARD_FIELDS,
     cardSchemaBlock(allowedTypes),
@@ -54,7 +59,22 @@ export function buildWriteSystem(
 
 function recentBlock(recent: CardSummary[]): string {
   if (!recent.length) return `recent cards: none yet — this is the opening.`;
-  return `recent cards (most recent last; do NOT repeat these):\n${bullets(recent.map((r) => `${r.type}: ${r.gist}${r.metaphor ? ` [metaphor: ${r.metaphor}]` : ""}`))}`;
+  const rows = bullets(recent.map((r) => `${r.type}: ${r.gist}${r.anchor ? ` [anchor: ${r.anchor}]` : ""}${r.metaphor ? ` [metaphor: ${r.metaphor}]` : ""}`));
+  const anchors = Array.from(new Set(recent.map((r) => r.anchor).filter(Boolean)));
+  const reuse = anchors.length
+    ? `\nthe anchors above are the slugs already in play: ${anchors.join(", ")}. a card about one of those ideas carries the SAME slug — never a new spelling of it.`
+    : "";
+  return `recent cards (most recent last; do NOT repeat these):\n${rows}${reuse}`;
+}
+
+/**
+ * The glossary ledger: whole-session when the caller has it, otherwise whatever the recent
+ * summaries carry. The fallback matters — a writer that re-glosses "diction" every six cards is
+ * spending the same screen twice, and the recent window is the part we always have.
+ */
+function glossedFor(ctx: WriteContext): string[] {
+  if (ctx.glossedTerms?.length) return ctx.glossedTerms;
+  return ctx.recent.flatMap((r) => r.terms ?? []);
 }
 
 function metaphorBlock(used: string[]): string {
@@ -84,7 +104,7 @@ function batchShape(ctx: WriteContext, n: number): string {
   const lines = [
     `batch shape — this is the part that decides whether the feed is good:`,
     a.visual.length
-      ? `- LEAD with the most concrete thing this node has. a number → "stat". a mechanism → "diagram". an order → "sequence". real code → "code". a relationship you feel by moving it → "slider". your first card is NOT a "concept".`
+      ? `- LEAD with the most concrete thing this node has. a number → "stat". a mechanism → "diagram". an order → "sequence". real code → "code". a relationship you feel by moving it → "slider". and when the material has none of those — a passage, an argument, a ruling, a movement — real lines worth hunting through → "spot", two positions that disagree → "diagram" variant "compare", something that shifts over time → "scrub". your first card is NOT a "concept".`
       : `- LEAD with the most concrete thing this node has — the surprising claim, the twist, the number in the copy. your first card is NOT a "concept".`,
     a.visual.length ? `- at least ${wantVisual === 1 ? "ONE card" : `${wantVisual} cards`} of ${VISUAL_LIST} in this batch. these are the cards that don't read like a wall.` : null,
     `- at most ONE "concept" card here, and only if the point is genuinely none of the shapes above. if you write it, it carries a "visual" and it is under 55 words.`,
@@ -153,7 +173,7 @@ function modeInstructions(ctx: WriteContext): string {
       return [
         `mode: recap. they missed the same idea twice (or stalled on it). write EXACTLY 1 "recap" card: headline + 3 beats that re-explain it through a NEW metaphor. never the earlier wording, never a used metaphor.`,
         // beats render as three short lines on one phone screen; long ones fail validation and cost a whole retry
-        `each beat is ONE short sentence, 120 characters MAX — count them. this is the shape and length: "a cache is the sticky note on your fridge: the answer you keep reaching for." three beats, three angles, no beat longer than that example by much.`,
+        `each beat is ONE short sentence, 120 characters MAX — count them. this is the shape and length: "a branch is a sticky note with a name on it: move the note, nothing else moves." three beats, three angles, no beat longer than that example by much.`,
         `the idea: ${missed.length ? missed.join("; ") : ctx.learnerState.directives.recapDue ?? node?.title ?? "(see recent cards)"}.`,
         `topicNodeId "${node?.id ?? "recap"}".`,
       ].join("\n");
@@ -179,11 +199,13 @@ export function buildWritePrompt(ctx: WriteContext): Prompt {
     storylineBlock(ctx.storyline),
     recentTypesBlock(ctx.recentTypes),
     `learner:\n${learnerSummary(ctx.learnerState)}`,
+    dueBlock(ctx.learnerState),
     ctx.extraDirectives.length ? `extra directives:\n${bullets(ctx.extraDirectives)}` : null,
     recentBlock(ctx.recent),
+    glossaryBlock(glossedFor(ctx)),
     metaphorBlock(ctx.usedMetaphors),
     `source kind: ${ctx.sourceKind}. grounding slice for this node:\n<<<SOURCE\n${corpus || "(no source text for this node — say so on-screen when you go general, eyebrow \"off-source\")"}\nSOURCE>>>`,
-    `now emit {"cards":[…]} — exactly the count asked for. before you emit: if more than one card is a headline plus a paragraph, rewrite it as a stat, a diagram, a sequence or a reveal.`,
+    `now emit {"cards":[…]} — exactly the count asked for. before you emit, two passes: (1) if more than one card is a headline plus a paragraph, rewrite it as a stat, a diagram, a sequence, a spot, a scrub or a reveal — "there was nothing to draw" is never the reason, there is always a shape. (2) count the longest string on each card against its cap and cut it back, because a card over a cap is a card the reader never sees.`,
   ].filter(Boolean).join("\n\n");
 
   return { system, user };

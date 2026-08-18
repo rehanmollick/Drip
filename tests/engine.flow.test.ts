@@ -294,9 +294,23 @@ describe("storyline", () => {
     await settleBackgroundForTests();
     cur = (await store.getSession(s.id))!;
     expect(cur.storyline?.spine).toBe("a sharpened spine");
-    const call = llm.calls.filter((c) => c.fn === "updateStoryline").at(-1)!.ctx as { nodeIdx: number; recent: unknown[] };
+    const call = llm.calls.filter((c) => c.fn === "updateStoryline").at(-1)!.ctx as { nodeIdx: number; recent: unknown[]; persona?: { tics: string[] } };
     expect(call.nodeIdx).toBe(1);
     expect(call.recent.length).toBeGreaterThan(0);
+    // the spine can end up on screen, so it is written in the session's voice, not a neutral one
+    expect(call.persona?.tics).toContain("ok so");
+  });
+
+  it("hands the writer the whole session's glossary, not just the recent window", async () => {
+    const { glossedTerms } = await import("@/lib/generation/summaries");
+    const s = await planned();
+    await generateNext(s.id);
+    const ctx = llm.calls.filter((c) => c.fn === "writeBatch").at(-1)!.ctx as WriteContext;
+    // a word explained once is never handed over again forty slides later, so the ledger is the
+    // whole deck — undefined here silently drops the writer back to the last-6 window
+    const rows = await store.listAllCards(s.id);
+    expect(ctx.glossedTerms).toEqual(glossedTerms(rows.map((r) => r.payload)));
+    expect(ctx.glossedTerms).not.toBeUndefined();
   });
 
   it("re-anchors the first batch after a detour closes", async () => {
@@ -440,6 +454,29 @@ describe("nothing is ever inserted above the reader", () => {
     for (const row of r.inserted) {
       expect(row.idx > furthest, `recap at ${row.idx} landed behind the reader at ${furthest}`).toBe(true);
     }
+  });
+
+  it("still lands the recap when the reader has outrun the page the splice looks at", async () => {
+    const s = await planned();
+    for (let i = 0; i < 2; i++) {
+      const g = await generateNext(s.id);
+      const fork = g.cards.at(-1);
+      if (fork?.type === "crossroads") await chooseAtCrossroads(s.id, fork.id, "continue");
+    }
+    const all = await store.listAllCards(s.id);
+
+    const early = all.find((c) => c.payload.type === "concept")!;
+    // the splice reads one page of rows after the trigger; the reader is past the end of that page
+    expect(all.length - all.indexOf(early)).toBeGreaterThan(10);
+    for (const c of all) await interact(c.id, { viewed: true, dwellMs: 900 });
+    const furthest = all[all.length - 1].idx;
+
+    const r = await interact(early.id, { scrollBack: true });
+    expect(r.inserted.length, "the recap must survive, not die on a duplicate idx").toBe(1);
+    expect(r.inserted[0].idx > furthest).toBe(true);
+    const after = await store.listAllCards(s.id);
+    expect(new Set(after.map((c) => c.idx)).size).toBe(after.length);
+    expect(after.length).toBe(all.length + 1);
   });
 });
 

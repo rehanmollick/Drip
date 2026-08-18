@@ -92,11 +92,14 @@ export function PredictRevealView({
   card,
   interaction,
   entered,
+  called,
   onAskAbout,
 }: {
   card: PredictCardT;
   interaction?: Interaction | null;
   entered: boolean;
+  /** lib/feed/progress.ts `calledIt`, read off the recorded answer. Undefined → fall back to this slide's own read. */
+  called?: boolean;
   onAskAbout?: () => void;
 }) {
   const { reduced } = useTheme();
@@ -113,13 +116,19 @@ export function PredictRevealView({
       ticks.reveal();
     }
   }, [entered, correct, fired]);
+  /**
+   * Two words, and the entire on-screen footprint of the pedagogy layer (lib/feed/progress.ts).
+   * A nod, never a score: it never says how many, how often, or out of what. If a reader can tell
+   * there is a retrieval schedule under the feed, it is wrong.
+   */
+  const nailed = called ?? correct === true;
   const headFs = fitFontSize(card.revealHeadline, [[36, 34], [Infinity, 29]]);
   const bodyFs = fitFontSize(card.revealBody, [[160, 18.5], [Infinity, 17]]);
 
   return (
     <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} align="center" gap={18}>
       <Rise>
-        <Eyebrow>{correct == null ? "the answer" : correct ? "you called it" : "the twist"}</Eyebrow>
+        <Eyebrow>{nailed ? "called it" : correct === false ? "the twist" : "the answer"}</Eyebrow>
       </Rise>
       <Rise>
         <h2 style={headlineStyle(headFs, 1.05)}>{card.revealHeadline}</h2>

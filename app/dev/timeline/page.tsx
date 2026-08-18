@@ -64,9 +64,9 @@ function counted(session: SessionPublic, rows: CardRow[], fixture: Fixture) {
 
   const frontier: FrontierPublic = {
     // n0 is finished, n1 is what the writer is in, n2 has a stretch written but unreached, and n3
-    // is nothing but a heading — the four things the bar has to be able to draw differently
-    written: { n0: half, n1: rows.length - half, n2: 4, n3: 0 },
-    beyond: 0,
+    // is absent from the census entirely — nothing but a heading, which is how an unwritten node
+    // arrives. the four things the bar has to be able to draw differently
+    written: { n0: half, n1: rows.length - half, n2: 4 },
     nodeIdx: 1,
     deeper: {},
     closed: ["n0"],
@@ -74,7 +74,6 @@ function counted(session: SessionPublic, rows: CardRow[], fixture: Fixture) {
     // set on the gate fixture too: a fork claims no batch, so the nib must vanish anyway
     live: fixture === "buffered" ? null : { nodeIdx: 2, startedAt: SEEN },
     epoch: 0,
-    halted: false,
   };
   return { session: { ...session, position: at, frontier }, cards };
 }

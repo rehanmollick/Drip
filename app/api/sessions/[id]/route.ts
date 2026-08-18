@@ -13,9 +13,10 @@ type Ctx = { params: Promise<{ id: string }> };
 export const GET = handle<Ctx>(async (_req, { params }) => {
   const { id } = await params;
   const session = await getSessionOr404(id);
-  // one scan, counted twice: the card count and the frontier come off the same rows
+  // one scan and one session read, each counted twice: the card count and the frontier come off
+  // the same rows, and the frontier is counted against the session already in hand
   const cards = await allCards(id);
-  return ok({ session: toPublic(session, cards.length, await frontierOf(id, cards)) });
+  return ok({ session: toPublic(session, cards.length, await frontierOf(id, cards, session)) });
 });
 
 /** PATCH /api/sessions/:id — settings / position / title / archive / clarifier answers. */
@@ -31,7 +32,7 @@ export const PATCH = handle<Ctx>(async (req, { params }) => {
     if (res.ready) after(() => replan(id));
   }
   const cards = await allCards(id);
-  return ok({ session: toPublic(session, cards.length, await frontierOf(id, cards)) });
+  return ok({ session: toPublic(session, cards.length, await frontierOf(id, cards, session)) });
 });
 
 /** DELETE /api/sessions/:id */

@@ -45,6 +45,7 @@ export const FeedSlide = memo(function FeedSlide({
   active,
   interaction,
   streak,
+  called,
   handlers,
   overlay,
 }: {
@@ -55,6 +56,8 @@ export const FeedSlide = memo(function FeedSlide({
   active: boolean;
   interaction?: Interaction | null;
   streak?: number;
+  /** predict reveal slides: they committed and they were right. */
+  called?: boolean;
   handlers?: SlideHandlers;
   overlay?: ReactNode;
 }) {
@@ -79,7 +82,7 @@ export const FeedSlide = memo(function FeedSlide({
         <div className="relative z-[1] flex h-full w-full flex-col">
           <SafeCard resetKey={slide.key} fallbackView={<CardView card={FALLBACK} entered active={active} />}>
             {slide.kind === "predict_reveal" ? (
-              <PredictRevealView card={slide.card} interaction={interaction ?? null} entered={entered} onAskAbout={handlers?.onAskAbout} />
+              <PredictRevealView card={slide.card} interaction={interaction ?? null} entered={entered} called={called} onAskAbout={handlers?.onAskAbout} />
             ) : (
               <CardView
                 card={slide.card}

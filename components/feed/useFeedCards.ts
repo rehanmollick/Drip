@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/api/client";
-import type { GenerateData, ListCardsData } from "@/lib/api/contract";
+import type { FrontierPublic, GenerateData, ListCardsData } from "@/lib/api/contract";
 import type { CardRow } from "@/lib/schemas/session";
 import { mergeCards, sortCards } from "@/lib/feed/slides";
 
@@ -19,7 +19,12 @@ import { mergeCards, sortCards } from "@/lib/feed/slides";
  *       budget      → today's cap is hit: stop asking until the UTC day rolls over
  *       superseded  → the batch was invalidated by a dial/re-plan mid-flight: ask again soon
  *       pending_plan→ a re-plan is running: normal backoff, the feed's replan watch resyncs
+ *       wrapped     → TERMINAL: the reader ended the thread. there is nothing left to ask for
+ *       awaiting_choice → TERMINAL: a fork is parked on them; their tap is what restarts the loop
  *   - offline: no calls; retries on the `online` event
+ *
+ * Every generate response also carries the frontier the writer stood at when it answered, so the
+ * timeline is fed by work the client was already doing. Nothing here polls for it.
  *
  * The caller decides WHEN to pump (runway ≤ 4) via `wantMore`; this hook owns
  * HOW. staticMode disables all network.
@@ -30,7 +35,17 @@ const BUDGET_RETRY_CAP_MS = 60 * 60_000;
 
 export type FillState = "idle" | "pending" | "failed";
 
-const PSEUDO_REASONS = new Set(["runway_full", "budget", "superseded", "pending_plan"]);
+/**
+ * Reasons the deck stops here and staying quiet is the correct answer: the thread was wrapped on
+ * request, or a crossroads is parked on the reader. Both used to fall into the generic backoff and
+ * were harmless only by accident — the retries were pointless, not wrong.
+ */
+export const TERMINAL_REASONS = ["wrapped", "awaiting_choice"] as const;
+export type TerminalReason = (typeof TERMINAL_REASONS)[number];
+const isTerminal = (reason: string | null): reason is TerminalReason =>
+  (TERMINAL_REASONS as readonly string[]).includes(reason ?? "");
+
+const PSEUDO_REASONS = new Set(["runway_full", "budget", "superseded", "pending_plan", ...TERMINAL_REASONS]);
 
 /** Why a batch carried nothing new — batch.reason, or inferred from the pseudo batch id (older servers). */
 export function batchReason(res: GenerateData): string | null {
@@ -44,6 +59,33 @@ export function msUntilUtcMidnight(now = Date.now(), cap = BUDGET_RETRY_CAP_MS):
   const d = new Date(now);
   const next = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1);
   return Math.max(1_000, Math.min(cap, next - now));
+}
+
+/**
+ * What a generate response means for the loop — the ONE place "do we ask again, and when" is
+ * decided, so the answer is readable and unit-testable instead of buried in a chain of else-ifs.
+ *
+ *   fresh    → cards landed; the caller's runway effect decides whether to ask again
+ *   terminal → stop. nothing changes until the reader does something
+ *   wait     → nothing is wrong, we just know when to ask again (the daily cap resets at midnight)
+ *   again    → our own dial/re-plan invalidated that batch; ask straight back, it isn't a failure
+ *   backoff  → nothing new yet: 2s → 4s → 8s → 15s
+ *
+ * Pure + unit-tested (tests/feed.pump.test.ts).
+ */
+export type PumpOutcome =
+  | { kind: "fresh" }
+  | { kind: "terminal"; reason: TerminalReason }
+  | { kind: "wait"; ms: number }
+  | { kind: "again"; ms: number }
+  | { kind: "backoff" };
+
+export function pumpOutcome(reason: string | null, fresh: number, now = Date.now()): PumpOutcome {
+  if (fresh > 0) return { kind: "fresh" };
+  if (isTerminal(reason)) return { kind: "terminal", reason };
+  if (reason === "budget") return { kind: "wait", ms: msUntilUtcMidnight(now) };
+  if (reason === "superseded") return { kind: "again", ms: SUPERSEDED_RETRY_MS };
+  return { kind: "backoff" };
 }
 
 export function useFeedCards({
@@ -70,6 +112,11 @@ export function useFeedCards({
   const [cards, setCards] = useState<CardRow[]>(() => sortCards(initialCards));
   const [fill, setFill] = useState<FillState>("idle");
   const [online, setOnline] = useState(true);
+  // the frontier the last generate answered with — the timeline's live count, arriving on a request
+  // the feed was making anyway. A response that couldn't count it says null, and "we didn't look"
+  // is not news: we keep the last count we were given rather than blanking the bar.
+  const [frontier, setFrontier] = useState<FrontierPublic | null>(null);
+  const [terminal, setTerminal] = useState<TerminalReason | null>(null);
 
   const cardsRef = useRef(cards);
   cardsRef.current = cards;
@@ -84,12 +131,17 @@ export function useFeedCards({
   beforeGenerateRef.current = beforeGenerate;
   const onRunwayFullRef = useRef(onRunwayFull);
   onRunwayFullRef.current = onRunwayFull;
+  const terminalRef = useRef(terminal);
+  terminalRef.current = terminal;
 
   const mergeIn = useCallback((incoming: CardRow[]): number => {
     if (incoming.length === 0) return 0;
     const known = new Set(cardsRef.current.map((c) => c.id));
     const fresh = incoming.filter((c) => !known.has(c.id)).length;
     setCards((prev) => mergeCards(prev, incoming));
+    // a card arriving from anywhere — a batch, a detour splice, a crossroads pick — means the
+    // thread moved, so whatever terminal answer we were sitting on stopped being true
+    if (fresh > 0) setTerminal(null);
     return fresh;
   }, []);
 
@@ -120,8 +172,22 @@ export function useFeedCards({
     schedule(BACKOFF_MS[Math.min(failures.current - 1, BACKOFF_MS.length - 1)]);
   }, [schedule]);
 
-  const pump = useCallback(async () => {
+  /**
+   * Ask for more. `forced` marks the asks a reader action caused (a fork answered, a dial, a tap on
+   * a fallback) — those go through even from a terminal state, because that action is exactly what
+   * changes the answer. The automatic ones (runway pressure, the retry timer, coming back online)
+   * stay quiet: scrolling into the end of a wrapped deck must not re-ask forever.
+   */
+  const pump = useCallback(async (forced = false) => {
     if (!enabledRef.current || inFlight.current) return;
+    if (terminalRef.current) {
+      if (!forced) return;
+      // a forced ask IS the reader doing the thing that unsticks the deck, so the old answer is void
+      // from here — otherwise a "nothing yet" reply would schedule a retry that the stale terminal
+      // then swallows, and the feed would sit waiting for a second tap that never comes
+      terminalRef.current = null;
+      setTerminal(null);
+    }
     if (typeof navigator !== "undefined" && navigator.onLine === false) {
       setOnline(false);
       return;
@@ -131,6 +197,7 @@ export function useFeedCards({
     try {
       let got: CardRow[] = [];
       let reason: string | null = null;
+      let counted: FrontierPublic | null = null;
       if (serverHasMore.current) {
         const after = lastIdx();
         const qs = new URLSearchParams({ limit: "24" });
@@ -150,17 +217,22 @@ export function useFeedCards({
           reason = batchReason(res);
         }
         got = res.cards;
+        counted = res.frontier ?? null;
       }
       const fresh = mergeIn(got);
       setFill("idle");
-      if (fresh > 0) {
+      if (counted) setFrontier(counted);
+      const outcome = pumpOutcome(reason, fresh);
+      if (outcome.kind === "fresh") {
+        failures.current = 0; // caller's runway effect re-pumps if still short
+      } else if (outcome.kind === "terminal") {
+        failures.current = 0; // nothing failed here — the deck simply ends, and asking again can't move it
+        setTerminal(outcome.reason);
+      } else if (outcome.kind === "wait") {
         failures.current = 0;
-        // caller's runway effect re-pumps if still short
-      } else if (reason === "budget") {
-        failures.current = 0;
-        schedule(msUntilUtcMidnight()); // nothing more today; the feed shows the budget notice, no catching-up tail
-      } else if (reason === "superseded") {
-        schedule(SUPERSEDED_RETRY_MS); // our own dial/re-plan invalidated that batch — ask again right away
+        schedule(outcome.ms); // nothing more today; the feed shows the budget notice, no catching-up tail
+      } else if (outcome.kind === "again") {
+        schedule(outcome.ms); // our own dial/re-plan invalidated that batch — ask again right away
       } else {
         // pending batch elsewhere / runway still full / nothing new yet → back off and ask again
         backoff();
@@ -196,6 +268,9 @@ export function useFeedCards({
       return mergeCards(beyond, res.cards);
     });
     failures.current = 0;
+    // a full re-sync follows a dial / re-plan / status flip: the runway we were told was over may
+    // not be the runway that exists now, so the loop gets to ask again
+    setTerminal(null);
   }, [sessionId, staticMode]);
 
   // online / offline
@@ -223,7 +298,12 @@ export function useFeedCards({
   }, [enabled, staticMode]);
 
   return useMemo(
-    () => ({ cards, setCards, mergeIn, patchCard, fill, online, setWantMore, pump: () => void pumpRef.current(), refetchAll }),
-    [cards, mergeIn, patchCard, fill, online, setWantMore, refetchAll],
+    () => ({
+      cards, setCards, mergeIn, patchCard, fill, frontier, terminal, online, setWantMore,
+      // every pump the feed asks for by name is a reader action; those are allowed out of a terminal state
+      pump: () => void pumpRef.current(true),
+      refetchAll,
+    }),
+    [cards, mergeIn, patchCard, fill, frontier, terminal, online, setWantMore, refetchAll],
   );
 }

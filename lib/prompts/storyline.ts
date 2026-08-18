@@ -1,9 +1,9 @@
 import { z } from "zod";
 import type { StorylineInput } from "@/lib/llm-types";
 import { StorylineSchema } from "@/lib/schemas/session";
-import { JSON_ONLY, PRIME_DIRECTIVE, bullets, jsonForPrompt, schemaText, sliceCorpus, type Prompt } from "./shared";
+import { JSON_ONLY, PRIME_DIRECTIVE, bullets, jsonForPrompt, personaBlock, schemaText, sliceCorpus, type Prompt } from "./shared";
 
-export const PROMPT_VERSION = "storyline.v1";
+export const PROMPT_VERSION = "storyline.v2";
 
 export const STORYLINE_CORPUS_CHARS = 2_500;
 
@@ -19,7 +19,7 @@ const RULES = `you keep one paragraph of memory for a scrolling feed: its THROUG
 
 "next" (≤ 120): where the thread is heading next, one line, in the same voice. it should read like the next thing you'd say, not a heading.
 
-keep the reader's voice: lowercase, plain, no school vocabulary, no card counts, no percentages, no "in this section". this text can end up on screen.`;
+keep the reader's voice: lowercase, plain, no school vocabulary, no card counts, no percentages, no "in this section". this text can end up on screen, so when a persona is given below, write the spine and the beats in THAT voice — the through-line is the one line of the session the reader may be shown twice.`;
 
 export const STORYLINE_SYSTEM = [
   `you maintain the through-line for DRIP — tiktok's format, a great teacher's brain.`,
@@ -36,13 +36,16 @@ export function buildStorylinePrompt(input: StorylineInput): Prompt {
     : "(none yet — this is the first refresh)";
 
   const user = [
+    // the persona rides in the USER turn on purpose: STORYLINE_SYSTEM is one module-level string, so
+    // it prompt-caches across every session at once, and per-session voice would end that.
+    input.persona ? personaBlock(input.persona) : null,
     `session title: ${input.title}`,
     `previous through-line:\n${prev}`,
     `the planned outline (→ marks where the feed is now):\n${outline.length ? outline.join("\n") : "  (none)"}`,
     `cards that just went by (most recent last):\n${bullets(input.recent.map((r) => `${r.type}: ${r.gist}`))}`,
     `source slice:\n<<<SOURCE\n${sliceCorpus(input.corpusSlice, STORYLINE_CORPUS_CHARS) || "(none)"}\nSOURCE>>>`,
     `emit the refreshed through-line JSON: {"spine":…,"covered":[…],"next":…}.`,
-  ].join("\n\n");
+  ].filter(Boolean).join("\n\n");
 
   return { system: STORYLINE_SYSTEM, user };
 }

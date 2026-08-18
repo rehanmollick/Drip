@@ -37,5 +37,5 @@ export default async function FeedPage({ params }: { params: Promise<{ id: strin
   const { session, cards } = loaded;
   // enough to resume where they left off + a runway, without shipping a 300-card session up front
   const initialCards = cards.slice(0, Math.max(INITIAL_CARDS, session.position + 12));
-  return <Feed session={toSessionPublic(session, cards.length)} initialCards={initialCards} />;
+  return <Feed session={toSessionPublic(session, cards)} initialCards={initialCards} />;
 }
