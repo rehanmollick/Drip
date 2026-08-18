@@ -2,7 +2,7 @@ import { CARD_SCHEMA_VERSION, CHILL_EXCLUDED_TYPES, CardSchema, WRITER_CARD_TYPE
 import { ProgressSchema, type Batch, type CardRow, type Detour, type Interaction, type Session } from "@/lib/schemas/session";
 import { SessionSettingsSchema, defaultLearnerState, type LearnerState } from "@/lib/schemas/learner";
 import type { OutlineNode, Persona, PlanOutput } from "@/lib/schemas/plan";
-import type { CreateSessionBody, GenerateData, AskData, InteractBody, DialData, ChooseBody, OpenFeedback } from "@/lib/api/contract";
+import type { CreateSessionBody, FrontierPublic, GenerateData, AskData, InteractBody, DialData, ChooseBody, OpenFeedback } from "@/lib/api/contract";
 import type { DetourContext, LlmApi, LlmResult, WriteContext, WriteMode } from "@/lib/llm-types";
 import { llm as realLlm } from "@/lib/llm";
 import { getStore } from "@/lib/db";
@@ -17,6 +17,7 @@ import {
 import { sliceFor } from "./corpus";
 import { recentSummaries, recentTypes, usedMetaphors } from "./summaries";
 import { budgetNotice, fallbackCard, isBudgetNotice, isFallback, SYSTEM_NODE } from "./system-cards";
+import { frontierPublic } from "./frontier";
 import { buildCrossroadsCard, buildWrapCard } from "./crossroads";
 import { advanceStoryline, initialStoryline, mergeStoryline, reanchorDirective } from "./storyline";
 import { describeViolations, enforceVariety, narrowAllowed, varietyDirectives } from "./variety";
@@ -157,7 +158,7 @@ export function autoTitle(text: string): string {
   return first.length > 48 ? `${first.slice(0, 47).trimEnd()}…` : first || "untitled";
 }
 
-const sameUtcDay = (aIso: string, bIso: string) => aIso.slice(0, 10) === bIso.slice(0, 10);
+export const sameUtcDay = (aIso: string, bIso: string) => aIso.slice(0, 10) === bIso.slice(0, 10);
 const isUuid = (s: string) => UUID_RE.test(s);
 
 function row(sessionId: string, idx: string, payload: Card, batchId: string | null, createdAt = nowIso()): CardRow {
@@ -270,9 +271,9 @@ function lastViewedIdx(cards: CardRow[]): string | null {
 }
 
 /** Types that count toward a node's card budget. Recaps, crossroads, wraps and every system card do not. */
-const COUNTS_TOWARD_NODE: ReadonlySet<string> = new Set(WRITER_CARD_TYPES.filter((t) => t !== "recap"));
+export const COUNTS_TOWARD_NODE: ReadonlySet<string> = new Set(WRITER_CARD_TYPES.filter((t) => t !== "recap"));
 // the payload is the source of truth for a row's shape (the `type` column mirrors it)
-const countsTowardNode = (c: CardRow) => !c.detourId && COUNTS_TOWARD_NODE.has(c.payload.type);
+export const countsTowardNode = (c: CardRow) => !c.detourId && COUNTS_TOWARD_NODE.has(c.payload.type);
 
 /** Main-thread cards already written for a node. */
 export function cardsInNodeCount(cards: CardRow[], nodeId: string): number {
@@ -536,6 +537,31 @@ export function replanPending(session: Session, now = Date.now()): boolean {
   return !Number.isFinite(started) || now - started <= PLANNING_TIMEOUT_MS;
 }
 
+/**
+ * Where the writer stands, for the client (spec: the bar that explains itself).
+ *
+ * One session read, one single-key batch lookup on the frontier we would generate next, and a card
+ * scan only when the caller hasn't already done one — a bar that says where it is must not cost a
+ * second pass over the feed. `live` is non-null ONLY for a pending batch whose owner is still
+ * heartbeating: a stale pending batch is not thinking, it is dead, and pulsing for it would be a
+ * lie. Failure is data here too — a frontier we couldn't count is null, never an exception thrown
+ * across a response that otherwise worked.
+ */
+export async function frontierOf(sessionId: string, cards?: CardRow[]): Promise<FrontierPublic | null> {
+  try {
+    const { store } = await deps();
+    const session = await store.getSession(sessionId);
+    if (!session) return null;
+    const all = cards ?? (await store.listAllCards(sessionId));
+    const batch = await store.getBatch(sessionId, frontierKeyFor(session, all[all.length - 1]?.idx ?? null));
+    const writing = batch && batch.status === "pending" && Date.now() - Date.parse(batch.updatedAt) <= STALE_BATCH_MS;
+    return frontierPublic(session, all, writing ? { nodeIdx: session.progress.nodeIdx, startedAt: batch.createdAt } : null);
+  } catch (e) {
+    console.warn("[engine] frontier failed", sessionId, e instanceof Error ? e.message : e);
+    return null;
+  }
+}
+
 async function waitForBatch(store: Store, sessionId: string, frontierKey: string, timeoutMs: number): Promise<Batch | null> {
   const deadline = Date.now() + timeoutMs;
   let b = await store.getBatch(sessionId, frontierKey);
@@ -563,9 +589,15 @@ export async function generateNext(sessionId: string, opts: { waitMs?: number } 
   const { llm, store } = await deps();
   const session = await store.getSession(sessionId);
   if (!session) throw new HttpError(404, "not_found", "session not found");
-  if (session.status === "planning") return { batch: pseudo("planning", "pending", `planning:${sessionId}`), cards: [] };
-  if (session.status === "error") return { batch: pseudo("error", "failed", `error:${sessionId}`), cards: [] };
-  if (replanPending(session)) return { batch: pseudo("pending_plan", "done", `pending_plan:${sessionId}`, "pending_plan"), cards: [] };
+  /**
+   * Every exit says where generation stands, including the ones that wrote nothing — waiting on a
+   * choice and a full runway are exactly when the reader most needs the bar to explain itself.
+   * `known` is passed whenever the caller already holds the current rows, so this costs no scan.
+   */
+  const withFrontier = async (data: GenerateData, known?: CardRow[]): Promise<GenerateData> => ({ ...data, frontier: await frontierOf(sessionId, known) });
+  if (session.status === "planning") return withFrontier({ batch: pseudo("planning", "pending", `planning:${sessionId}`), cards: [] });
+  if (session.status === "error") return withFrontier({ batch: pseudo("error", "failed", `error:${sessionId}`), cards: [] });
+  if (replanPending(session)) return withFrontier({ batch: pseudo("pending_plan", "done", `pending_plan:${sessionId}`, "pending_plan"), cards: [] });
 
   const all = await store.listAllCards(sessionId);
   const last = all[all.length - 1] ?? null;
@@ -573,12 +605,12 @@ export async function generateNext(sessionId: string, opts: { waitMs?: number } 
 
   // The thread was wrapped on request: the feed stays scrollable, nothing more is written.
   if (last && last.payload.type === "wrap") {
-    return { batch: pseudo("wrapped", "done", `wrapped:${sessionId}`, "wrapped"), cards: [] };
+    return withFrontier({ batch: pseudo("wrapped", "done", `wrapped:${sessionId}`, "wrapped"), cards: [] }, all);
   }
   // A topic just closed and the reader hasn't picked a direction: the feed ASKS instead of running on.
   if (session.progress.awaitingChoice) {
     if (atOpenChoice(all)) {
-      return { batch: pseudo("awaiting_choice", "done", `choice:${sessionId}:${last?.idx ?? "start"}`, "awaiting_choice"), cards: [] };
+      return withFrontier({ batch: pseudo("awaiting_choice", "done", `choice:${sessionId}:${last?.idx ?? "start"}`, "awaiting_choice"), cards: [] }, all);
     }
     // the crossroads went with a dropped runway — heal rather than stall forever
     await updateSessionLocked(store, sessionId, (fresh) =>
@@ -588,16 +620,16 @@ export async function generateNext(sessionId: string, opts: { waitMs?: number } 
 
   // Guards: don't stack budget notices or fallbacks; don't run past a sane runway.
   if (last && isBudgetNotice(last.payload) && sameUtcDay(last.createdAt, now)) {
-    return { batch: pseudo("budget", "done", `budget:${sessionId}`, "budget"), cards: [last] };
+    return withFrontier({ batch: pseudo("budget", "done", `budget:${sessionId}`, "budget"), cards: [last] }, all);
   }
   if (last && isFallback(last.payload) && !last.viewedAt) {
-    return { batch: pseudo("fallback", "failed", last.payload.retryKey ?? `fallback:${sessionId}`), cards: [last] };
+    return withFrontier({ batch: pseudo("fallback", "failed", last.payload.retryKey ?? `fallback:${sessionId}`), cards: [last] }, all);
   }
   // runway = unviewed rows past the user's frontier (skipped / lost-view rows behind them don't count)
   const seenUpTo = lastViewedIdx(all);
   const unviewed = all.filter((c) => !c.viewedAt && (seenUpTo === null || c.idx > seenUpTo)).length;
   if (unviewed >= MAX_UNVIEWED_RUNWAY) {
-    return { batch: pseudo("runway_full", "done", `runway:${sessionId}:${last?.idx ?? "start"}`, "runway_full"), cards: [] };
+    return withFrontier({ batch: pseudo("runway_full", "done", `runway:${sessionId}:${last?.idx ?? "start"}`, "runway_full"), cards: [] }, all);
   }
 
   const frontierKey = frontierKeyFor(session, last?.idx ?? null);
@@ -607,16 +639,17 @@ export async function generateNext(sessionId: string, opts: { waitMs?: number } 
   if (!claim.created) {
     if (batch.status === "done") {
       const cards = await cardsOfBatch(store, batch);
-      if (cards.length > 0 || batch.cardIds.length === 0) return { batch: toWire(batch, cards), cards };
+      if (cards.length > 0 || batch.cardIds.length === 0) return withFrontier({ batch: toWire(batch, cards), cards }, all);
       // its cards are gone (runway dropped by an older build without an epoch bump): never hand back an empty done batch
       batch = await store.updateBatch(batch.id, { status: "failed", error: "cards gone", updatedAt: nowIso() });
     }
     const stale = batch.status === "pending" && Date.now() - Date.parse(batch.updatedAt) > STALE_BATCH_MS;
-    if (batch.status === "pending" && !stale) return settledResult(store, sessionId, frontierKey, batch, waitMs);
+    // the owner's cards landed while we waited, so the frontier is recounted rather than read off our stale list
+    if (batch.status === "pending" && !stale) return withFrontier(await settledResult(store, sessionId, frontierKey, batch, waitMs));
     // failed (explicit retry) or stale pending (owner died): take it over — atomically, so two concurrent retries
     // (fallback tap + client retry, two tabs) can never both generate this frontier.
     const taken = await store.takeoverBatch(batch.id, { ifUpdatedBefore: new Date(Date.now() - STALE_BATCH_MS).toISOString() });
-    if (!taken) return settledResult(store, sessionId, frontierKey, batch, waitMs);
+    if (!taken) return withFrontier(await settledResult(store, sessionId, frontierKey, batch, waitMs));
     batch = taken;
   }
 
@@ -627,7 +660,8 @@ export async function generateNext(sessionId: string, opts: { waitMs?: number } 
   heartbeat.unref?.();
   const superseded = async (): Promise<GenerateData> => {
     await store.updateBatch(batch.id, { status: "failed", cardIds: [], error: "superseded", updatedAt: nowIso() }).catch(() => undefined);
-    return { batch: { id: batch.id, status: "failed", frontierKey, reason: "superseded" }, cards: [] };
+    // the runway moved under us: our card list is fiction now, so the frontier is recounted from the store
+    return withFrontier({ batch: { id: batch.id, status: "failed", frontierKey, reason: "superseded" }, cards: [] });
   };
   try {
     const built = await buildBatch(llm, session, all);
@@ -670,7 +704,7 @@ export async function generateNext(sessionId: string, opts: { waitMs?: number } 
       const finishedIdx = Math.max(0, session.outline.findIndex((n) => n.id === built.node!.id));
       refreshStorylineSoon(llm, store, sessionId, finishedIdx);
     }
-    return { batch: { id: batch.id, status, frontierKey }, cards: rows };
+    return withFrontier({ batch: { id: batch.id, status, frontierKey }, cards: rows }, [...all, ...rows]);
   } catch (e) {
     const message = (e instanceof Error ? e.message : String(e)).slice(0, 200);
     console.error("[engine] generate failed", sessionId, message);
@@ -686,7 +720,7 @@ export async function generateNext(sessionId: string, opts: { waitMs?: number } 
       /* the store itself is down; the route surfaces an enveloped error */
     }
     await store.updateBatch(batch.id, { status: "failed", cardIds: rows.map((r) => r.id), error: message, updatedAt: nowIso() }).catch(() => undefined);
-    return { batch: { id: batch.id, status: "failed", frontierKey }, cards: rows };
+    return withFrontier({ batch: { id: batch.id, status: "failed", frontierKey }, cards: rows }, [...all, ...rows]);
   } finally {
     clearInterval(heartbeat);
   }
@@ -1447,7 +1481,12 @@ export async function deleteSession(sessionId: string): Promise<void> {
   watchdogs.delete(sessionId);
 }
 
-export async function countCards(sessionId: string): Promise<number> {
+/** Every row for a session — the one full scan a response gets, so the count and the frontier are counted from the same rows. */
+export async function allCards(sessionId: string): Promise<CardRow[]> {
   const { store } = await deps();
-  return (await store.listAllCards(sessionId)).length;
+  return store.listAllCards(sessionId);
+}
+
+export async function countCards(sessionId: string): Promise<number> {
+  return (await allCards(sessionId)).length;
 }

@@ -14,6 +14,7 @@ export const SAMPLE_CARDS: Card[] = [
     type: "hook", topicNodeId: N, detourId: null, eyebrow: "0x00",
     headline: "one process is holding your whole site up.",
     sub: "and it never touches your database.",
+    terms: [{ term: "database", gloss: "the thing on disk that holds the real answer. correct, durable, and slow enough that you don't want to ask it twice." }],
     visual: { kind: "icon", icon: "database" },
   },
   {
@@ -30,6 +31,7 @@ export const SAMPLE_CARDS: Card[] = [
     options: ["real", "nah"],
     correctIndex: 1,
     revealCopy: "nah — the DB still answers, just slower. what actually kills you is the traffic that used to hit the cache now hitting the DB all at once. that's a stampede, not an outage.",
+    terms: [{ term: "stampede", gloss: "every reader missing at the same instant, so one cold key turns into thousands of identical queries." }],
     difficulty: 2,
   },
   {
@@ -70,6 +72,7 @@ export const SAMPLE_CARDS: Card[] = [
     correctIndex: 1,
     revealHeadline: "the DB gets slammed",
     revealBody: "every request that used to be a hit is now a miss, all at once. the DB sees its Monday peak with zero help. that's the thundering herd — and it's why warmups exist.",
+    terms: [{ term: "thundering herd", gloss: "one missing answer, wanted by everyone at once. they all go the slow way round in the same second." }],
     difficulty: 3,
   },
   {
@@ -83,6 +86,7 @@ export const SAMPLE_CARDS: Card[] = [
       { id: "d", label: "return to the user" },
     ],
     revealCopy: "check → read → write → return. the write happens BEFORE returning so the next request is a hit. some teams flip the last two for speed and eat the risk.",
+    terms: [{ term: "hit", gloss: "the answer was already in memory, so nothing slow had to run at all." }],
     difficulty: 2,
   },
   {
@@ -96,6 +100,7 @@ export const SAMPLE_CARDS: Card[] = [
     outputUnit: "/s",
     outputFormat: "int",
     insight: "90% → 99% isn't +9%. it's 10× fewer DB reads.",
+    terms: [{ term: "DB", gloss: "the database — the slow, correct copy on disk that the cache is trying to spare." }],
   },
   {
     id: "3f2a1c9e-9b7d-4b1e-8f4a-1c2d3e4f5a09",
@@ -113,6 +118,7 @@ export const SAMPLE_CARDS: Card[] = [
       "a miss means the note isn't there yet, so you go dig through the drawer (the DB).",
       "TTL is the note yellowing and falling off — on purpose, so it can't lie to you forever.",
     ],
+    terms: [{ term: "TTL", gloss: "time to live — the countdown on a stored answer. at zero it's dropped, so the next reader gets a fresh one." }],
     metaphor: "sticky note on the fridge",
   },
   {
@@ -120,6 +126,7 @@ export const SAMPLE_CARDS: Card[] = [
     type: "checkpoint", topicNodeId: N, detourId: null, eyebrow: "0x02",
     headline: "you now know more about cache stampedes than most on-call engineers.",
     sub: "next: how to make invalidation not ruin your week.",
+    terms: [{ term: "invalidation", gloss: "telling the cache an answer it holds is now wrong. the hard part is knowing when." }],
     stat: { value: "7", label: "in a row" },
     visual: { kind: "spark", values: [2, 4, 3, 6, 7, 9, 12], label: "momentum" },
   },

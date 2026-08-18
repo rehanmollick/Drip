@@ -106,3 +106,17 @@ describe("sessionMap", () => {
     expect(sessionMap([], OUTLINE, null).every((t) => !t.reachable)).toBe(true);
   });
 });
+
+describe("sessionMap: written vs planned", () => {
+  it("a topic with cards is written; one that is still only a heading is planned", () => {
+    const map = sessionMap(deck([{ node: "a", viewed: true }, { node: "b" }]), OUTLINE, uuid(1));
+    expect(map.map((t) => t.material)).toEqual(["written", "written", "planned"]);
+  });
+
+  it("the census sees topics written ahead of anything we are holding rows for", () => {
+    const map = sessionMap(deck([{ node: "a", viewed: true }]), OUTLINE, uuid(1), { written: { c: 3 } });
+    expect(map.map((t) => t.material)).toEqual(["written", "planned", "written"]);
+    // …and knowing it exists still never makes it tappable
+    expect(map[2].reachable).toBe(false);
+  });
+});

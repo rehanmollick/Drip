@@ -4,11 +4,20 @@ import type { CheckpointCard as CheckpointCardT } from "@/lib/schemas/cards";
 import type { CardViewProps } from "./types";
 import { CardFrame, Rise, headlineStyle } from "./CardFrame";
 import { SignatureEyebrow, SignatureHeadline } from "@/components/ui/Signature";
+import { Glossed, GlossHint, hasTerms } from "./Glossed";
+import { LiteralOdometer } from "@/components/ui/Odometer";
 import { Visual } from "./Visual";
 import { useTheme } from "@/components/theme/ThemeRoot";
 import { fitFontSize } from "./helpers";
 
-/** checkpoint — the flex. Big headline, optional stat, streak pill (only here), signature device. */
+/** The flex number steps down rather than wrapping: "1,234,567ms" on two lines is not a flex. */
+const STAT_FIT = [[3, 56], [6, 50], [9, 42], [Infinity, 32]] as const;
+
+/**
+ * checkpoint — the flex. Big headline, optional stat that counts itself up,
+ * streak pill (only here), signature device. The sub-line carries the inline
+ * glossary: this is the card most likely to name the thing you just learned.
+ */
 export function CheckpointView({ card, entered, streak, onAskAbout }: CardViewProps<CheckpointCardT>) {
   const { reduced, spring } = useTheme();
   const headFs = fitFontSize(card.headline, [[40, 40], [64, 34], [Infinity, 30]]);
@@ -48,7 +57,18 @@ export function CheckpointView({ card, entered, streak, onAskAbout }: CardViewPr
       </Rise>
       {card.sub && (
         <Rise>
-          <p className="font-body" style={{ margin: 0, fontSize: 17, lineHeight: 1.4, color: "var(--ink-2)", textWrap: "pretty" }}>{card.sub}</p>
+          <Glossed
+            text={card.sub}
+            terms={card.terms}
+            cascade
+            className="font-body"
+            style={{ margin: 0, fontSize: 17, lineHeight: 1.4, color: "var(--ink-2)", textWrap: "pretty", overflowWrap: "anywhere" }}
+          />
+        </Rise>
+      )}
+      {card.sub && hasTerms(card.sub, card.terms) && (
+        <Rise>
+          <GlossHint text={card.sub} terms={card.terms} />
         </Rise>
       )}
       {(card.stat || (card.visual && card.visual.kind !== "none")) && (
@@ -56,9 +76,14 @@ export function CheckpointView({ card, entered, streak, onAskAbout }: CardViewPr
           <div style={{ display: "flex", alignItems: "flex-end", gap: 24, flexWrap: "wrap" }}>
             {card.stat && (
               <div style={{ display: "flex", flexDirection: "column" }}>
-                <span className="font-display" style={{ fontSize: 56, lineHeight: 0.95, letterSpacing: "-0.03em", fontWeight: 700, color: "var(--accent)", fontVariantNumeric: "tabular-nums" }}>
-                  {card.stat.value}
-                </span>
+                <LiteralOdometer
+                  data-checkpoint-stat=""
+                  value={card.stat.value}
+                  entered={entered}
+                  reduced={reduced}
+                  fit={STAT_FIT}
+                  style={{ lineHeight: 0.95, letterSpacing: "-0.03em" }}
+                />
                 <span className="font-body" style={{ marginTop: 6, fontSize: 14, color: "var(--ink-2)" }}>{card.stat.label}</span>
               </div>
             )}

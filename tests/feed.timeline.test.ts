@@ -90,3 +90,71 @@ describe("timelineModel", () => {
     }
   });
 });
+
+describe("timelineModel: what is written vs what was merely planned", () => {
+  it("never draws an OPEN topic as finished, however far past its estimate the writer has run", () => {
+    // 9 cards written into a 4-card estimate. the denominator is written+1, so the ghost band
+    // stops short — "there is more of this coming" is the one thing an open topic must still say.
+    const cards = deck(Array.from({ length: 9 }, () => ["a", null] as [string, null]));
+    const m = timelineModel(cards, OUTLINE, uuid(9), { written: { a: 9 } });
+    expect(m.segments[0].buffered).toBeCloseTo(0.9);
+    expect(m.segments[0].buffered).toBeLessThan(1);
+    // …and closing it is the ONLY thing that fills it
+    const closed = timelineModel(cards, OUTLINE, uuid(9), { written: { a: 9 }, closed: ["a"] });
+    expect(closed.segments[0].buffered).toBe(1);
+  });
+
+  it("says how much of a topic ahead of you already exists, without claiming you have read any of it", () => {
+    const outline = [OUTLINE[0], OUTLINE[1], { ...OUTLINE[2], estCards: 6 }];
+    const cards = deck([["a", null]]);
+    const m = timelineModel(cards, outline, uuid(1), { written: { a: 1, c: 3 } });
+    expect(m.segments[2].state).toBe("ahead");
+    expect(m.segments[2].read).toBe(0);
+    expect(m.segments[2].buffered).toBeCloseTo(0.5); // 3 written into a 6-card estimate
+    // a topic with nothing written is a bare track, not a faint promise
+    expect(m.segments[1].buffered).toBe(0);
+  });
+
+  it("counts whichever of the census and our own rows saw more, and the read band never overtakes the ghost", () => {
+    const cards = deck([["a", null], ["a", null], ["a", null], ["a", null], ["a", null], ["a", null]]);
+    // the server is behind: it counted 2, we are holding 6
+    const m = timelineModel(cards, OUTLINE, uuid(6), { written: { a: 2 } });
+    expect(m.segments[0].buffered).toBeCloseTo(6 / 7);
+    for (const s of m.segments) expect(s.read).toBeLessThanOrEqual(s.buffered);
+  });
+
+  it("without a census it says exactly what it always said: buffered collapses onto read", () => {
+    const cards = deck([["a", null], ["a", null], ["b", null]]);
+    const m = timelineModel(cards, OUTLINE, uuid(3));
+    for (const s of m.segments) {
+      expect(s.buffered).toBe(s.fill);
+      expect(s.read).toBe(s.fill);
+      expect(s.live).toBe(false);
+      expect(s.gate).toBeNull();
+    }
+    expect(m.gate).toBeNull();
+  });
+
+  it("marks the ONE topic being written right now", () => {
+    const cards = deck([["a", null]]);
+    const m = timelineModel(cards, OUTLINE, uuid(1), { live: { nodeIdx: 2 } });
+    expect(m.segments.map((s) => s.live)).toEqual([false, false, true]);
+    // a nodeIdx past the end of the outline still lands on a real segment
+    const past = timelineModel(cards, OUTLINE, uuid(1), { live: { nodeIdx: 9 } });
+    expect(past.segments.map((s) => s.live)).toEqual([false, false, true]);
+  });
+
+  it("a fork marks the topic it is asking about and stops anything from claiming to be in flight", () => {
+    const cards = deck([["a", null], ["b", null], ["b", null, "crossroads"], ["c", null]]);
+    const m = timelineModel(cards, OUTLINE, uuid(2), { gate: "crossroads", live: { nodeIdx: 2 } });
+    expect(m.gate).toBe("crossroads");
+    expect(m.segments.map((s) => s.gate)).toEqual([null, "crossroads", null]);
+    expect(m.segments.some((s) => s.live)).toBe(false);
+  });
+
+  it("falls back to where the reader is when the fork's own row isn't in hand", () => {
+    const cards = deck([["a", null], ["b", null]]);
+    const m = timelineModel(cards, OUTLINE, uuid(2), { gate: "crossroads" });
+    expect(m.segments.map((s) => s.gate)).toEqual([null, "crossroads", null]);
+  });
+});

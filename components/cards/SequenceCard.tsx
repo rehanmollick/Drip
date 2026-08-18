@@ -5,6 +5,7 @@ import type { SequenceCard as SequenceCardT } from "@/lib/schemas/cards";
 import type { CardViewProps } from "./types";
 import { CardFrame, Rise, bodyStyle, headlineStyle } from "./CardFrame";
 import { Eyebrow } from "@/components/ui/Eyebrow";
+import { Glossed, GlossHint, hasTerms } from "./Glossed";
 import { GhostButton } from "@/components/ui/GhostButton";
 import { Shake } from "@/components/ui/Shake";
 import { Confetti } from "@/components/ui/Confetti";
@@ -58,6 +59,7 @@ export function SequenceView({ card, entered, interaction, onInteract, onAskAbou
 
   const promptFs = fitFontSize(card.prompt, [[50, 28], [90, 25], [Infinity, 22]]);
   const revealFs = fitFontSize(card.revealCopy, [[160, 17], [Infinity, 16]]);
+  const glossed = hasTerms(card.revealCopy, card.terms);
   const chipH = card.items.length > 5 ? 44 : 50;
 
   return (
@@ -98,7 +100,7 @@ export function SequenceView({ card, entered, interaction, onInteract, onAskAbou
           </Reorder.Group>
         </Shake>
       </Rise>
-      <div style={{ minHeight: Math.max(48, reserveHeight(card.revealCopy, revealFs, 42)) }}>
+      <div style={{ minHeight: Math.max(48, reserveHeight(card.revealCopy, revealFs, 42)) + (glossed ? 24 : 0) }}>
         <AnimatePresence initial={live} mode="wait">
           {!locked ? (
             <motion.div key="lock" exit={{ opacity: 0, transition: { duration: 0.12 } }} style={{ position: "relative", display: "inline-flex" }}>
@@ -116,7 +118,10 @@ export function SequenceView({ card, entered, interaction, onInteract, onAskAbou
               style={{ display: "flex", gap: 12, alignItems: "flex-start", position: "relative" }}
             >
               <span aria-hidden style={{ width: 3, alignSelf: "stretch", borderRadius: 2, background: locked.correct ? "var(--state-correct)" : "var(--state-wrong)", flexShrink: 0 }} />
-              <p style={bodyStyle(revealFs)}>{card.revealCopy}</p>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
+                <Glossed text={card.revealCopy} terms={card.terms} style={bodyStyle(revealFs)} />
+                {glossed && <GlossHint text={card.revealCopy} terms={card.terms} />}
+              </div>
               <Confetti burst={burst} count={16} origin={{ x: 20, y: 30 }} />
             </motion.div>
           )}

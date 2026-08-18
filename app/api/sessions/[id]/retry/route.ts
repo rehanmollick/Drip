@@ -1,6 +1,6 @@
 import { after } from "next/server";
 import { handle, ok } from "@/lib/api/envelope";
-import { generateNext, getSessionOr404, retrySession, startPlanning } from "@/lib/generation/engine";
+import { frontierOf, generateNext, getSessionOr404, retrySession, startPlanning } from "@/lib/generation/engine";
 import { toPublic } from "@/lib/generation/public";
 
 export const runtime = "nodejs";
@@ -15,5 +15,5 @@ export const POST = handle<Ctx>(async (_req, { params }) => {
   const { session, action } = await retrySession(id);
   if (action === "replan") after(() => startPlanning(id));
   if (action === "regenerate") after(() => generateNext(id).catch(() => undefined));
-  return ok({ session: toPublic(session) });
+  return ok({ session: toPublic(session, undefined, await frontierOf(id)) });
 });

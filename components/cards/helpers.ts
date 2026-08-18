@@ -360,3 +360,64 @@ export function countTo(raw: string): Countable | null {
     },
   };
 }
+
+// ── prose that assembles (components/cards/Glossed, `cascade`) ──────────────
+
+/** A piece that ends on a terminator — the next segment starts a new thought. */
+const CLOSES_SENTENCE = /[.!?…][)"'”’\]]*\s*$/;
+
+/**
+ * Group glossed segments into sentence runs so a paragraph can land a sentence
+ * at a time instead of as one slab. LOSSLESS: the runs flatten back to exactly
+ * the text that went in, and a glossed term is never cut across a run — an
+ * underline arriving in two halves reads as a rendering bug, not as rhythm.
+ */
+export function sentenceRuns(segments: readonly GlossSegment[]): GlossSegment[][] {
+  const runs: GlossSegment[][] = [];
+  let cur: GlossSegment[] = [];
+  const cut = () => {
+    if (cur.length) { runs.push(cur); cur = []; }
+  };
+  for (const seg of segments) {
+    if (seg.gloss) { cur.push(seg); continue; }
+    const pieces = splitSentences(seg.text);
+    for (let i = 0; i < pieces.length; i++) {
+      cur.push({ text: pieces[i] });
+      // the tail piece of a segment only closes the run when it actually ended a
+      // sentence; otherwise the glossed word after it is still mid-thought
+      if (i < pieces.length - 1 || CLOSES_SENTENCE.test(pieces[i])) cut();
+    }
+  }
+  cut();
+  return runs;
+}
+
+/**
+ * Split `terms` into the ones `text` will really underline and the ones left
+ * for the copy after it. A card that renders in two pieces (a lede and its
+ * elaboration, three recap beats) has to hand each term to exactly ONE of them:
+ * the same word underlined twice on one screen reads as two different words.
+ */
+export function claimTerms<T extends { term: string; gloss: string }>(
+  text: string,
+  terms?: readonly T[] | null,
+): { claimed: T[]; left: T[] } {
+  const list = terms ?? [];
+  if (list.length === 0) return { claimed: [], left: [] };
+  const hit = new Set(splitGlossed(text, list).map((s) => s.term).filter(Boolean) as string[]);
+  const claimed = list.filter((t) => hit.has(t.term.trim()));
+  return { claimed, left: list.filter((t) => !claimed.includes(t)) };
+}
+
+/**
+ * A paragraph read as a lede plus its elaboration: the first sentence carries
+ * the idea at a bigger size, the rest arrives under it. `rest` is empty when
+ * there is only one sentence, or when the first one is long enough that
+ * promoting it would just make the wall of text bigger.
+ */
+export function ledeAndRest(text: string, maxLede = 150): { lede: string; rest: string } {
+  const pieces = splitSentences(text);
+  if (pieces.length < 2) return { lede: text, rest: "" };
+  if (pieces[0].trim().length > maxLede) return { lede: text, rest: "" };
+  return { lede: pieces[0], rest: pieces.slice(1).join("") };
+}

@@ -8,12 +8,22 @@ import { Eyebrow } from "@/components/ui/Eyebrow";
 import { Chip } from "@/components/ui/Chip";
 import { useTheme } from "@/components/theme/ThemeRoot";
 import { codeFontSize } from "./helpers";
-import { usePressable } from "@/lib/motion";
+import { CASCADE_FADE_MS, cascadeStep, usePressable } from "@/lib/motion";
+
+/**
+ * Lines land top-to-bottom, fast enough to read as typing rather than as a queue —
+ * squeezed by cascadeStep so even a 23-line block is fully assembled inside the
+ * 400ms budget. A reader who flicks fast must never catch a card mid-write.
+ */
+const LINE_STEP_MS = 22;
 
 /**
  * code — monospaced block (server-side shiki tokens when present, plain lines
- * otherwise). Lines with annotations get an accent dot; tapping one toggles a
- * note chip under it. Long lines wrap; never horizontal scroll.
+ * otherwise). The block writes itself in line by line, which is the order you'd
+ * read it anyway. Lines with annotations get an accent dot; tapping one toggles
+ * a note chip under it and drops every other line back to 0.45 so the line
+ * being talked about is the only one in focus. Long lines wrap; never
+ * horizontal scroll.
  */
 export function CodeView({ card, entered, onAskAbout }: CardViewProps<CodeCardT>) {
   const { spring, reduced } = useTheme();
@@ -29,6 +39,13 @@ export function CodeView({ card, entered, onAskAbout }: CardViewProps<CodeCardT>
   const [open, setOpen] = useState<number | null>(null);
   const [touched, setTouched] = useState(false);
   const gutter = `${String(lines.length).length}ch`;
+  const lineIn = useMemo(
+    () => ({
+      hidden: { opacity: 0 },
+      show: { opacity: 1, transition: { duration: (reduced ? 150 : CASCADE_FADE_MS) / 1000, ease: "easeOut" as const } },
+    }),
+    [reduced],
+  );
 
   return (
     <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} align="center" gap={14}>
@@ -44,9 +61,10 @@ export function CodeView({ card, entered, onAskAbout }: CardViewProps<CodeCardT>
         </div>
       </Rise>
       <Rise>
-        <div
+        <motion.div
           className="font-mono"
           data-code-block
+          variants={{ hidden: {}, show: { transition: { staggerChildren: reduced ? 0 : cascadeStep(LINE_STEP_MS, lines.length) / 1000 } } }}
           style={{
             fontSize: fs,
             lineHeight: 1.5,
@@ -75,10 +93,8 @@ export function CodeView({ card, entered, onAskAbout }: CardViewProps<CodeCardT>
                   whileTap={note ? pressable.whileTap : undefined}
                   transition={pressable.transition}
                   data-annotated={note ? "true" : undefined}
+                  variants={lineIn}
                   style={{
-                    display: "flex",
-                    gap: 8,
-                    alignItems: "flex-start",
                     borderRadius: 6,
                     padding: "0 4px",
                     cursor: note ? "pointer" : "default",
@@ -87,31 +103,42 @@ export function CodeView({ card, entered, onAskAbout }: CardViewProps<CodeCardT>
                     transformOrigin: "left center",
                   }}
                 >
-                  <span aria-hidden style={{ width: gutter, textAlign: "right", color: "var(--ink-2)", opacity: 0.6, flexShrink: 0, userSelect: "none" }}>
-                    {n}
-                  </span>
-                  <span aria-hidden style={{ width: 6, flexShrink: 0, display: "flex", alignItems: "center", height: `${fs * 1.5}px` }}>
-                    {note && (
-                      <span
-                        style={{
-                          width: 6,
-                          height: 6,
-                          borderRadius: 999,
-                          background: "var(--accent)",
-                          boxShadow: isOpen ? "0 0 0 3px var(--accent-soft)" : "none",
-                          transition: "box-shadow 160ms ease",
-                        }}
-                      />
-                    )}
-                  </span>
-                  <span style={{ flex: 1, minWidth: 0, whiteSpace: "pre-wrap", overflowWrap: "anywhere", wordBreak: "break-word", tabSize: 2 }}>
-                    {toks
-                      ? toks.map((t, k) => (
-                          <span key={k} style={t.c ? { color: t.c } : undefined}>
-                            {t.t}
-                          </span>
-                        ))
-                      : line || " "}
+                  {/* the dim rides its own wrapper: the entry fade owns the row's opacity */}
+                  <span
+                    style={{
+                      display: "flex",
+                      gap: 8,
+                      alignItems: "flex-start",
+                      opacity: open != null && !isOpen ? 0.45 : 1,
+                      transition: "opacity 200ms ease",
+                    }}
+                  >
+                    <span aria-hidden style={{ width: gutter, textAlign: "right", color: "var(--ink-2)", opacity: 0.6, flexShrink: 0, userSelect: "none" }}>
+                      {n}
+                    </span>
+                    <span aria-hidden style={{ width: 6, flexShrink: 0, display: "flex", alignItems: "center", height: `${fs * 1.5}px` }}>
+                      {note && (
+                        <span
+                          style={{
+                            width: 6,
+                            height: 6,
+                            borderRadius: 999,
+                            background: "var(--accent)",
+                            boxShadow: isOpen ? "0 0 0 3px var(--accent-soft)" : "none",
+                            transition: "box-shadow 160ms ease",
+                          }}
+                        />
+                      )}
+                    </span>
+                    <span style={{ flex: 1, minWidth: 0, whiteSpace: "pre-wrap", overflowWrap: "anywhere", wordBreak: "break-word", tabSize: 2 }}>
+                      {toks
+                        ? toks.map((t, k) => (
+                            <span key={k} style={t.c ? { color: t.c } : undefined}>
+                              {t.t}
+                            </span>
+                          ))
+                        : line || " "}
+                    </span>
                   </span>
                 </motion.div>
                 <AnimatePresence initial={false}>
@@ -126,7 +153,7 @@ export function CodeView({ card, entered, onAskAbout }: CardViewProps<CodeCardT>
               </Fragment>
             );
           })}
-        </div>
+        </motion.div>
       </Rise>
       {notes.size > 0 && (
         <Rise>

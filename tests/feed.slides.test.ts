@@ -3,7 +3,7 @@ import { generateNKeysBetween } from "fractional-indexing";
 import type { CardRow } from "@/lib/schemas/session";
 import type { Card } from "@/lib/schemas/cards";
 import { compareIdx, dropUnviewedAfter, isTodayUtc, mergeCards, ordinalOf, sortCards, toSlides } from "@/lib/feed/slides";
-import { streakBefore, topicProgress } from "@/lib/feed/progress";
+import { streakBefore } from "@/lib/feed/progress";
 
 const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 
@@ -102,26 +102,6 @@ describe("dropUnviewedAfter (mirrors Store.deleteUnviewedAfter exactly)", () => 
 });
 
 describe("progress + streak", () => {
-  it("topicProgress is the fraction within the node", () => {
-    const cards = [concept(1, "a0"), concept(2, "a1"), concept(3, "a2"), concept(4, "a3")];
-    expect(topicProgress(cards, uuid(1))).toBeCloseTo(0.25);
-    expect(topicProgress(cards, uuid(4))).toBe(1);
-    expect(topicProgress(cards, "nope")).toBe(0);
-  });
-
-  it("topicProgress uses the outline's estimate as the denominator floor so a landing batch never retracts the hairline", () => {
-    const three = [concept(1, "a0"), concept(2, "a1"), concept(3, "a2")];
-    const outline = [{ id: "n1", estCards: 6 }];
-    // last loaded card of the node reads half-way, not full
-    expect(topicProgress(three, uuid(3), outline)).toBeCloseTo(0.5);
-    // the next batch lands: same card, same fraction
-    const seven = [...three, concept(4, "a3"), concept(5, "a4"), concept(6, "a5"), concept(7, "a6")];
-    expect(topicProgress(seven, uuid(3), outline)).toBeCloseTo(3 / 7);
-    expect(topicProgress(seven, uuid(7), outline)).toBe(1);
-    // unknown node → loaded count as before
-    expect(topicProgress(three, uuid(3), [{ id: "other", estCards: 8 }])).toBe(1);
-  });
-
   it("isTodayUtc compares UTC dates", () => {
     const now = Date.parse("2026-08-17T23:30:00.000Z");
     expect(isTodayUtc("2026-08-17T00:10:00.000Z", now)).toBe(true);

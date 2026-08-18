@@ -5,6 +5,7 @@ import type { CardViewProps } from "./types";
 import { CardFrame, Rise } from "./CardFrame";
 import { Eyebrow } from "@/components/ui/Eyebrow";
 import { Glossed, GlossHint, hasTerms } from "./Glossed";
+import { LiteralOdometer } from "@/components/ui/Odometer";
 import { useTheme } from "@/components/theme/ThemeRoot";
 import { fitFontSize, statBars, statFontSize } from "./helpers";
 
@@ -43,21 +44,14 @@ export function StatView({ card, entered, onAskAbout }: CardViewProps<StatCardT>
 
       <Rise>
         <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
-          <span
-            data-stat-value
-            className="font-display"
-            style={{
-              fontSize: fs,
-              lineHeight: 0.88,
-              letterSpacing: "-0.045em",
-              fontWeight: 700,
-              color: "var(--accent)",
-              fontVariantNumeric: "tabular-nums",
-              overflowWrap: "anywhere",
-            }}
-          >
-            {card.value}
-          </span>
+          {/* the number counts up to exactly the string the writer authored, then stops */}
+          <LiteralOdometer
+            data-stat-value=""
+            value={card.value}
+            entered={entered}
+            reduced={reduced}
+            style={{ fontSize: fs, lineHeight: 0.88, letterSpacing: "-0.045em" }}
+          />
           {card.unit && (
             <span
               className="font-display"
@@ -130,6 +124,7 @@ export function StatView({ card, entered, onAskAbout }: CardViewProps<StatCardT>
           <Glossed
             text={card.context}
             terms={card.terms}
+            cascade
             wrapStyle={{ flex: "1 1 auto" }}
             className="font-body"
             style={{ margin: 0, fontSize: contextFs, lineHeight: 1.4, color: "var(--ink)", textWrap: "pretty", overflowWrap: "anywhere" }}

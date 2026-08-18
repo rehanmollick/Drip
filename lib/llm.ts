@@ -11,6 +11,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { randomUUID } from "crypto";
 import { z } from "zod";
 import { findBannedInValue, scrubBannedValue } from "@/lib/copy/banned";
+import { findStyleProblem, styleProblemMessage } from "@/lib/copy/style";
 import { stripMarkupValue } from "@/lib/copy/sanitize";
 import { getStore } from "@/lib/db";
 import type { Store } from "@/lib/db/store";
@@ -52,6 +53,13 @@ const env = (name: string): string | undefined => {
 export const PLAN_MODEL = () => env("LLM_PLAN_MODEL") ?? "claude-sonnet-4-6";
 export const WRITE_MODEL = () => env("LLM_WRITE_MODEL") ?? "claude-haiku-4-5";
 export const isMockMode = () => env("LLM_MODE") === "mock";
+
+/**
+ * The hard dead-prose gate (lib/copy/style.ts), on unless DRIP_STYLE_GATE=off.
+ * A gate that fires more often than we think quietly thins the feed instead of
+ * failing loudly, so it has to be switchable without a deploy.
+ */
+export const styleGateOn = () => env("DRIP_STYLE_GATE") !== "off";
 
 /** Mock mode spends nothing; its cap is only there so the pipeline stays identical (LLM_MOCK_DAILY_CALL_CAP to override). */
 export const MOCK_DAILY_CALL_CAP = 100_000;
@@ -380,7 +388,15 @@ export function cardsSchemaFor(allowed: readonly CardType[]) {
   const set = new Set<CardType>(allowed.filter((t) => (WRITER_CARD_TYPES as readonly CardType[]).includes(t)));
   const ok = set.size ? set : new Set<CardType>(WRITER_CARD_TYPES);
   const list = [...ok].join(", ");
-  const item = CardSchema.refine((c) => ok.has(c.type), { message: `card type not allowed for this call (allowed: ${list})` });
+  const item = CardSchema
+    .refine((c) => ok.has(c.type), { message: `card type not allowed for this call (allowed: ${list})` })
+    // the dead-prose gate — a PER-CALL accept check, not card shape, so no schema version bump and
+    // nothing already stored is ever re-judged. salvageCards absorbs a hit by dropping the one card.
+    .superRefine((c, ctx) => {
+      if (!styleGateOn()) return;
+      const problem = findStyleProblem(c);
+      if (problem) ctx.addIssue({ code: "custom", path: problem.keys, message: styleProblemMessage(problem) });
+    });
   return z.object({ cards: z.array(item).min(1).max(8) });
 }
 
@@ -438,7 +454,7 @@ export type CallOutcome =
   | { kind: "text"; text: string; inTokens: number; outTokens: number; latencyMs: number; truncated: boolean }
   | { kind: "refusal"; inTokens: number; outTokens: number; latencyMs: number }
   | { kind: "error"; error: string; latencyMs: number };
-export type CallOpts = { apiKey: string; model: string; system: string; user: string; maxTokens: number; deadlineMs: number };
+export type CallOpts = { apiKey: string; model: string; system: string; user: string; maxTokens: number; deadlineMs: number; temperature?: number };
 export type CallFn = (opts: CallOpts) => Promise<CallOutcome>;
 
 async function callAnthropic(opts: CallOpts): Promise<CallOutcome> {
@@ -452,6 +468,7 @@ async function callAnthropic(opts: CallOpts): Promise<CallOutcome> {
         {
           model: opts.model,
           max_tokens: opts.maxTokens,
+          ...(opts.temperature === undefined ? {} : { temperature: opts.temperature }),
           system: [{ type: "text", text: opts.system, cache_control: { type: "ephemeral" } }],
           messages: [{ role: "user", content: opts.user }],
         },
@@ -579,6 +596,8 @@ async function generate<T>(o: GenerateOpts<T>): Promise<LlmResult<T>> {
     const jsonText = extractJsonObject(out.text);
     let problem: string | null = null;
     let value: T | undefined;
+    /** Logged even on a successful call: this is how often the salvage pass (and the style gate) actually fires. */
+    let salvaged: string | null = null;
     if (out.truncated && !jsonText) {
       problem = "your output was cut off before the JSON closed (max_tokens). be more concise: shorter strings, no extras.";
     } else if (!jsonText) {
@@ -610,7 +629,8 @@ async function generate<T>(o: GenerateOpts<T>): Promise<LlmResult<T>> {
           // one over-long string shouldn't cost three good cards and a retry
           const s = salvageCards(normalized, o.schema as unknown as z.ZodType<{ cards: Card[] }>, o.salvageWant);
           if (s) {
-            console.warn(`[llm] ${o.purpose}: dropped ${s.dropped} card(s) that failed validation, kept ${s.value.cards.length}. ${v.error}`);
+            salvaged = `salvaged: dropped ${s.dropped} card(s) that failed validation, kept ${s.value.cards.length}. ${v.error}`;
+            console.warn(`[llm] ${o.purpose}: ${salvaged}`);
             v = { ok: true, value: s.value as unknown as T };
           }
         }
@@ -637,7 +657,7 @@ async function generate<T>(o: GenerateOpts<T>): Promise<LlmResult<T>> {
     const logError = value !== undefined ? null : attempt === 2
       ? `validation: ${problem}\n--- raw output (first ${LOG_RAW_CHARS} chars) ---\n${out.text.slice(0, LOG_RAW_CHARS)}`
       : `validation: ${problem}`;
-    await log({ sessionId: o.sessionId, purpose: o.purpose, model: o.model, promptVersion: o.promptVersion, inTokens: out.inTokens, outTokens: out.outTokens, latencyMs: out.latencyMs, ok: value !== undefined, error: logError });
+    await log({ sessionId: o.sessionId, purpose: o.purpose, model: o.model, promptVersion: o.promptVersion, inTokens: out.inTokens, outTokens: out.outTokens, latencyMs: out.latencyMs, ok: value !== undefined, error: logError ?? salvaged });
 
     if (value !== undefined) {
       const metaOut: LlmMeta = { model: o.model, promptVersion: o.promptVersion, latencyMs: totalLatency, inTokens: totalIn, outTokens: totalOut, attempts: attempt };

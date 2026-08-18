@@ -265,3 +265,77 @@ test.describe("crossroads", () => {
     await expect.poll(async () => slides(page).count(), { timeout: 30_000 }).toBeGreaterThan(before);
   });
 });
+
+/** Widths of the two bands inside one segment, in px — what the reader can actually see. */
+async function bands(page: Page, seg: number) {
+  const track = page.locator('[data-testid="timeline"] [data-segment]').nth(seg);
+  const read = await track.locator('[data-band="read"]').boundingBox();
+  const buffered = await track.locator('[data-band="buffered"]').boundingBox();
+  return { read: Math.round(read?.width ?? -1), buffered: Math.round(buffered?.width ?? -1) };
+}
+
+test.describe("the bar tells written apart from planned", () => {
+  test("a topic ahead of you shows what is already written, and one that is only a heading shows nothing", async ({ page }) => {
+    await page.goto("/dev/timeline?state=buffered");
+    await page.waitForSelector("section.card");
+    await expect(page.locator('[data-testid="timeline"] [data-segment]')).toHaveCount(4);
+    // deep into the second topic, so the current segment has read behind it and runway in front
+    await goToSlide(page, Math.floor((await slides(page).count()) * 0.75));
+    await expect(page.locator('[data-testid="timeline"] [data-segment="current"]')).toHaveCount(1);
+
+    // the topic the reader is in: written runway sitting ahead of where they've read to
+    const here = await bands(page, 1);
+    expect(here.buffered).toBeGreaterThan(here.read);
+    expect(here.read).toBeGreaterThan(0);
+
+    // one they have not reached: 4 cards counted by the server, none of them read
+    const ahead = await bands(page, 2);
+    expect(ahead.read).toBe(0);
+    expect(ahead.buffered).toBeGreaterThan(ahead.read);
+
+    // and one that is nothing but a heading so far — a bare track, no promise on it
+    expect(await bands(page, 3)).toEqual({ read: 0, buffered: 0 });
+
+    // still not a digit anywhere on it
+    expect(await page.locator('[data-testid="timeline"]').innerText()).not.toMatch(/\d/);
+  });
+
+  test("exactly one nib, on the topic being written right now", async ({ page }) => {
+    await page.goto("/dev/timeline?state=live");
+    await page.waitForSelector("section.card");
+    await expect(page.locator('[data-live="true"]')).toHaveCount(1);
+    const on = await page.locator('[data-testid="timeline"] [data-segment]')
+      .evaluateAll((els) => els.findIndex((e) => !!e.querySelector('[data-live="true"]')));
+    expect(on).toBe(2);
+  });
+
+  test("a fork pulses nothing and dims everything past it", async ({ page }) => {
+    await page.goto("/dev/timeline?state=gate");
+    await page.waitForSelector("section.card");
+    await expect(page.locator('[data-live="true"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="timeline"] [data-segment][data-gate="crossroads"]')).toHaveCount(1);
+    const dim = await page.locator('[data-testid="timeline"] [data-segment]')
+      .evaluateAll((els) => els.map((e) => Number(getComputedStyle(e).opacity)));
+    // the fork's own segment reads normally; the two behind it too. everything downstream fades.
+    expect(dim.slice(0, 2).every((o) => o === 1)).toBe(true);
+    expect(dim.slice(2).every((o) => o < 1)).toBe(true);
+  });
+});
+
+test.describe("the bar under reduced motion", () => {
+  test.use({ reducedMotion: "reduce" });
+
+  test("the nib is still there and nothing on the bar is animating", async ({ page }) => {
+    await page.goto("/dev/timeline?state=live");
+    await page.waitForSelector("section.card");
+    await expect(page.locator('[data-live="true"]')).toHaveCount(1);
+    await expect
+      .poll(async () =>
+        page.evaluate(() =>
+          [document.querySelector('[data-testid="timeline"]')!, ...document.querySelectorAll('[data-testid="timeline"] *')]
+            .reduce((n, el) => n + el.getAnimations().length, 0),
+        ),
+      )
+      .toBe(0);
+  });
+});

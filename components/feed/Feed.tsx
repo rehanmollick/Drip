@@ -43,6 +43,7 @@ const POSITION_THROTTLE_MS = 1_000;
 const PLANNING_POLL_MS = 1_500;
 const REPLAN_POLL_MS = 1_000;  // D3: after the last clarifier answer, watch the session at 1s
 const REPLAN_MAX_WAIT_MS = 8_000;
+const FRONTIER_POLL_MS = 4_000;   // while a batch is being written, re-read where the writer is
 
 export type FeedProps = {
   session: SessionPublic;
@@ -67,6 +68,11 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
   const replanningRef = useRef(replanning);
   replanningRef.current = replanning;
 
+  // the timeline's ghost band and its one pulsing nib are drawn from the server's frontier, and a
+  // frontier read once at page load is a snapshot pretending to be live. While a batch is actually
+  // in flight we re-read it on a short clock, and stop the moment nothing is being written.
+  const [generating, setGenerating] = useState(false);
+
   // ── session (polls while planning / re-planning) ────────────────────────
   const sessionQuery = useQuery({
     queryKey: ["session", sessionId],
@@ -78,6 +84,7 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
       const d = q.state.data;
       if (d?.status === "planning") return PLANNING_POLL_MS;
       if (replanningRef.current || d?.progress?.pendingReplan) return REPLAN_POLL_MS;
+      if (generating || d?.frontier?.live) return FRONTIER_POLL_MS;
       return false;
     },
     staleTime: 10_000,
@@ -101,7 +108,8 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
     beforeGenerate: () => syncBeforeGenerate.current(),
     onRunwayFull: () => landViewedUpToHere.current(),
   });
-  const { cards, mergeIn, patchCard, setCards, online, setWantMore, pump, refetchAll } = feed;
+  const { cards, mergeIn, patchCard, setCards, fill, online, setWantMore, pump, refetchAll } = feed;
+  useEffect(() => setGenerating(fill === "pending"), [fill]);
   const cardsRef = useRef(cards);
   cardsRef.current = cards;
 
@@ -814,8 +822,11 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
   const anchorRowId = useRef<string | null>(null);
   if (activeRowId) anchorRowId.current = activeRowId;
   const anchor = anchorRowId.current;
-  const timeline = useMemo(() => timelineModel(cards, session.outline, anchor), [cards, session.outline, anchor]);
-  const mapTopics = useMemo(() => (mapOpen ? sessionMap(cards, session.outline, anchor) : []), [mapOpen, cards, session.outline, anchor]);
+  // what the server counted. Absent (an older session row, a response that didn't count) means
+  // nobody counted, and the bar falls back to saying only what the local rows can prove.
+  const frontier = session.frontier ?? undefined;
+  const timeline = useMemo(() => timelineModel(cards, session.outline, anchor, frontier), [cards, session.outline, anchor, frontier]);
+  const mapTopics = useMemo(() => (mapOpen ? sessionMap(cards, session.outline, anchor, frontier) : []), [mapOpen, cards, session.outline, anchor, frontier]);
 
   // ── topic transitions: "now: why pods get evicted" for ~2s when the topic changes ────────
   // This is what stops a long session feeling like the same topic forever.
@@ -874,6 +885,7 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
       <Timeline
         model={timeline}
         pulseKey={activeKey}
+        epoch={epoch}
         scrolling={scrolling}
         label={topicLabel}
         onOpenMap={() => setMapOpen(true)}

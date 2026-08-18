@@ -1,17 +1,27 @@
 "use client";
+import { motion } from "framer-motion";
 import type { WrapCard as WrapCardT } from "@/lib/schemas/cards";
 import type { CardViewProps } from "./types";
 import { CardFrame, Rise, headlineStyle } from "./CardFrame";
 import { SignatureEyebrow, SignatureHeadline } from "@/components/ui/Signature";
+import { Glossed } from "./Glossed";
+import { LiteralOdometer } from "@/components/ui/Odometer";
+import { useTheme } from "@/components/theme/ThemeRoot";
 import { fitFontSize } from "./helpers";
+import { growIn } from "@/lib/motion";
+
+/** The parting number steps down rather than wrapping onto a second line. */
+const STAT_FIT = [[3, 44], [6, 40], [9, 34], [Infinity, 27]] as const;
 
 /**
  * wrap — the ending, and only ever because it was asked for at a crossroads.
- * Headline, the thread in 3–5 beats with quiet numbering, an optional number
- * to leave them with, and `openThread` at the bottom as an invitation rather
- * than a cliffhanger. Should read like a satisfying last page.
+ * Headline, the thread in 3–5 beats strung together by a hairline so they read
+ * as one line of reasoning, an optional number to leave them with, and
+ * `openThread` at the bottom as an invitation rather than a cliffhanger.
+ * Should read like a satisfying last page.
  */
 export function WrapView({ card, entered, onAskAbout }: CardViewProps<WrapCardT>) {
+  const { spring, reduced } = useTheme();
   const beats = card.beats;
   const totalBeats = beats.reduce((n, b) => n + b.length, 0);
   const beatFs = totalBeats > 460 ? 14.5 : totalBeats > 320 ? 15.5 : beats.length >= 5 ? 16 : 17;
@@ -33,7 +43,23 @@ export function WrapView({ card, entered, onAskAbout }: CardViewProps<WrapCardT>
       <ol data-wrap-beats style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: beatGap }}>
         {beats.map((beat, i) => (
           <Rise key={i}>
-            <li style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+            <li style={{ position: "relative", display: "flex", gap: 12, alignItems: "flex-start" }}>
+              {i < beats.length - 1 && (
+                <motion.span
+                  aria-hidden
+                  data-beat-link
+                  variants={growIn(1, spring, reduced, { axis: "y", origin: "center top", delay: 120 })}
+                  style={{
+                    position: "absolute",
+                    left: 10,
+                    marginLeft: -0.5,
+                    top: 16,
+                    bottom: -(beatGap - 2),
+                    width: 1,
+                    background: "color-mix(in oklab, var(--accent) 34%, transparent)",
+                  }}
+                />
+              )}
               <span
                 className="font-mono"
                 aria-hidden
@@ -49,12 +75,13 @@ export function WrapView({ card, entered, onAskAbout }: CardViewProps<WrapCardT>
               >
                 {String(i + 1).padStart(2, "0")}
               </span>
-              <p
+              <Glossed
+                text={beat}
+                cascade
+                wrapStyle={{ flex: "1 1 auto" }}
                 className="font-body"
                 style={{ margin: 0, fontSize: beatFs, lineHeight: 1.4, color: "var(--ink)", textWrap: "pretty", overflowWrap: "anywhere" }}
-              >
-                {beat}
-              </p>
+              />
             </li>
           </Rise>
         ))}
@@ -63,12 +90,13 @@ export function WrapView({ card, entered, onAskAbout }: CardViewProps<WrapCardT>
       {card.stat && (
         <Rise>
           <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
-            <span
-              className="font-display"
-              style={{ fontSize: 44, lineHeight: 0.95, letterSpacing: "-0.035em", fontWeight: 700, color: "var(--accent)", fontVariantNumeric: "tabular-nums", overflowWrap: "anywhere" }}
-            >
-              {card.stat.value}
-            </span>
+            <LiteralOdometer
+              value={card.stat.value}
+              entered={entered}
+              reduced={reduced}
+              fit={STAT_FIT}
+              style={{ lineHeight: 0.95, letterSpacing: "-0.035em" }}
+            />
             <span className="font-body" style={{ fontSize: 14, lineHeight: 1.25, color: "var(--ink-2)", minWidth: 0, overflowWrap: "anywhere" }}>
               {card.stat.label}
             </span>

@@ -1,7 +1,7 @@
 import { after } from "next/server";
 import { PatchSessionBody } from "@/lib/api/contract";
 import { handle, ok, parseBody } from "@/lib/api/envelope";
-import { answerClarifiers, countCards, deleteSession, getSessionOr404, patchSession, providedSettings, replan } from "@/lib/generation/engine";
+import { allCards, answerClarifiers, deleteSession, frontierOf, getSessionOr404, patchSession, providedSettings, replan } from "@/lib/generation/engine";
 import { toPublic } from "@/lib/generation/public";
 
 export const runtime = "nodejs";
@@ -13,7 +13,9 @@ type Ctx = { params: Promise<{ id: string }> };
 export const GET = handle<Ctx>(async (_req, { params }) => {
   const { id } = await params;
   const session = await getSessionOr404(id);
-  return ok({ session: toPublic(session, await countCards(id)) });
+  // one scan, counted twice: the card count and the frontier come off the same rows
+  const cards = await allCards(id);
+  return ok({ session: toPublic(session, cards.length, await frontierOf(id, cards)) });
 });
 
 /** PATCH /api/sessions/:id — settings / position / title / archive / clarifier answers. */
@@ -28,7 +30,8 @@ export const PATCH = handle<Ctx>(async (req, { params }) => {
     session = res.session;
     if (res.ready) after(() => replan(id));
   }
-  return ok({ session: toPublic(session, await countCards(id)) });
+  const cards = await allCards(id);
+  return ok({ session: toPublic(session, cards.length, await frontierOf(id, cards)) });
 });
 
 /** DELETE /api/sessions/:id */

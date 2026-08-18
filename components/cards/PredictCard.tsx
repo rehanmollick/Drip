@@ -7,6 +7,7 @@ import type { CardViewProps } from "./types";
 import { CardFrame, Rise, bodyStyle, headlineStyle } from "./CardFrame";
 import { Eyebrow } from "@/components/ui/Eyebrow";
 import { OptionButton, type OptionState } from "@/components/ui/OptionButton";
+import { Glossed, GlossHint, hasTerms } from "./Glossed";
 import { Confetti } from "@/components/ui/Confetti";
 import { useTheme } from "@/components/theme/ThemeRoot";
 import { ticks } from "@/lib/audio/ticks";
@@ -124,8 +125,13 @@ export function PredictRevealView({
         <h2 style={headlineStyle(headFs, 1.05)}>{card.revealHeadline}</h2>
       </Rise>
       <Rise>
-        <p style={bodyStyle(bodyFs)}>{card.revealBody}</p>
+        <Glossed text={card.revealBody} terms={card.terms} cascade style={bodyStyle(bodyFs)} />
       </Rise>
+      {hasTerms(card.revealBody, card.terms) && (
+        <Rise>
+          <GlossHint text={card.revealBody} terms={card.terms} />
+        </Rise>
+      )}
       <Rise>
         <div
           data-you-said

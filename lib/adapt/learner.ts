@@ -2,35 +2,46 @@ import { createHash } from "crypto";
 import { isInteractive, isScored, type Card } from "@/lib/schemas/cards";
 import { LEARNER_STATE_VERSION, type LearnerState } from "@/lib/schemas/learner";
 import type { Interaction } from "@/lib/schemas/session";
+import { abilityAfter, creditFor } from "./ability";
+import { anchorOf, conceptOf } from "./anchors";
+import { pullForward } from "./schedule";
 
 /**
  * Learner-state reducer (spec §8). PURE: every function returns a NEW state and
  * never mutates its input (JSONB mutation gotcha, spec §12.9).
  *
  * Signals → directives:
- *   - hit rate over last 10 scored cards (≥8 samples): >0.9 → `level` steps up;
- *     <0.65 → steps down + scaffoldNext = missed concepts; in the flow zone it
- *     relaxes one step back toward the level they dialled. It never wanders more
- *     than LEVEL_DRIFT off `globalLevel` — the dial is a statement, not a hint.
+ *   - every scored answer feeds the ability estimate (lib/adapt/ability.ts), which is what decides
+ *     `level`. It reads the card's own `difficulty`, discounts what could have been a guess, and
+ *     will not move the notch the writer is handed until the reading has genuinely left it. The
+ *     ±1-per-card ratchet this replaced saturated to the ceiling on two lucky taps.
+ *   - hit rate under HIT_RATE_LOW over the last 10 scored cards (≥8 samples) → scaffoldNext = the
+ *     concepts they missed. It no longer touches `level`; that is the estimate's job now.
  *   - two consecutive misses on one node → recapDue = that concept (the node
  *     is the concept granularity the schema knows; the label is the missed
  *     card's gist so the writer knows WHAT to recap).
  *   - median dwell < 1.8s over ≥5 consecutive non-interactive → pace "compress".
- *   - dwell > 25s or scroll-back on a teaching card (concept/code/diagram/reveal)
- *     → recapDue = that card's concept. Recaps, checkpoints, hooks and system
- *     cards never trigger a recap (no recap-of-a-recap chains).
+ *   - dwell > 25s on a teaching card (concept/code/diagram/reveal) → recapDue. The phone-in-pocket
+ *     objection does not apply: lib/dwell.ts already pauses the clock on visibilitychange/pagehide
+ *     and hard-caps a single dwell at 60s, so what reaches here is 25s of ACTIVE foreground reading
+ *     on one card — which is someone stuck, not someone who answered the door.
+ *   - scroll-back on a teaching card (concept/code/diagram/reveal) → recapDue = that card's
+ *     concept, AND the idea is pulled forward in the retrieval queue. Nobody scrolls UP in a feed
+ *     by accident. A long dwell used to fire the same trigger and no longer does: on a phone,
+ *     30 seconds on a card is as likely to be a doorbell as confusion, and it was spending a
+ *     recap on readers who had simply put the phone down.
  *   - explicit dial: globalLevel ±1 (1..5), simplerTaps/deeperTaps++.
  */
 
+export { conceptOf };
+
 export const DWELL_CAP_MS = 60_000;
-export const HIT_RATE_HIGH = 0.9;
 export const HIT_RATE_LOW = 0.65;
 /** Scored samples needed before difficulty moves (spec: "over last 10"; a nearly full window, not 5). */
 export const MIN_SAMPLES = 8;
 /** Non-interactive dwell samples needed before pace can flip to "compress". */
 export const MIN_DWELL_SAMPLES = 5;
 export const COMPRESS_MEDIAN_MS = 1800;
-export const LONG_DWELL_MS = 25_000;
 /** How far the measured level may drift from the level the reader dialled, in either direction. */
 export const LEVEL_DRIFT = 2;
 const KEEP_INTERACTIVE = 10;
@@ -45,7 +56,7 @@ export type InteractionEvent = {
   /** true when this event carries the FIRST answer for a scored card (guards double counting) */
   firstAnswer?: boolean;
   /** this card already reported dwell before (hide/resume split, revisit): `interaction.dwellMs` is the CUMULATIVE
-   *  dwell — evaluate the long-dwell trigger on it but do not push a second pace sample for the same card */
+   *  dwell — do not push a second pace sample for the same card */
   repeatVisit?: boolean;
 };
 
@@ -60,31 +71,13 @@ export type InteractionEvent = {
  * doing exactly what we asked.
  */
 const DWELL_TYPES = new Set(["hook", "concept", "code", "diagram", "reveal", "checkpoint", "recap", "stat"]);
-/** Teaching cards where a long dwell / scroll-back means "stuck" → recap. Recap/checkpoint/hook never re-trigger. */
+/** Teaching cards where a scroll-back means "stuck" → recap. Recap/checkpoint/hook never re-trigger. */
+/** Active foreground reading past this on one teaching card reads as stuck (dripSpec §271). */
+export const LONG_DWELL_MS = 25_000;
 export const RECAP_TRIGGER_TYPES = new Set(["concept", "code", "diagram", "reveal"]);
 
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
 const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
-
-/**
- * Short label for the concept a card is about: the card's substantive text
- * (bet prompt, headline, title, setup) — never the eyebrow first, which the
- * writer fills with stylistic labels ("hot take", "the footgun") that would
- * collapse every miss into one meaningless "concept".
- */
-export function conceptOf(card: Card): string {
-  const c = card as Record<string, unknown>;
-  const raw =
-    (typeof c.headline === "string" && c.headline.trim()) ||
-    (typeof c.prompt === "string" && c.prompt.trim()) ||
-    (typeof c.title === "string" && c.title.trim()) ||
-    (typeof c.setup === "string" && c.setup.trim()) ||
-    (typeof c.label === "string" && c.label.trim()) ||
-    (typeof c.eyebrow === "string" && c.eyebrow.trim()) ||
-    card.type;
-  const s = String(raw).replace(/\s+/g, " ").trim();
-  return s.length > 48 ? `${s.slice(0, 47).trimEnd()}…` : s;
-}
 
 export function median(xs: number[]): number {
   if (xs.length === 0) return 0;
@@ -106,22 +99,6 @@ export function missedConcepts(state: LearnerState, cap = 3): string[] {
   return dedup.slice(-cap);
 }
 
-/**
- * The finer-grained reading the level rounds off. Each scored answer pulls `ability` toward a notch
- * above what they just nailed (or a notch below what they just missed), and the pull shrinks as
- * evidence piles up — so the first answer moves it a lot and the fortieth barely at all. The level
- * ladder below is deliberately coarse and slow; this is the number that remembers the detail.
- */
-function nudgeAbility(next: LearnerState, card: Card, correct: boolean): void {
-  const difficulty = typeof (card as { difficulty?: unknown }).difficulty === "number"
-    ? clamp((card as { difficulty: number }).difficulty, 1, 5)
-    : next.level;
-  const target = clamp(difficulty + (correct ? 1 : -1), 1, 5);
-  const weight = 1 / (next.abilityItems + 3);
-  next.ability = clamp(Math.round((next.ability + (target - next.ability) * weight) * 100) / 100, 1, 5);
-  next.abilityItems += 1;
-}
-
 /** Where `level` is allowed to sit: within LEVEL_DRIFT of the dial, and always inside 1..5. */
 function levelBounds(state: LearnerState): [number, number] {
   return [clamp(state.globalLevel - LEVEL_DRIFT, 1, 5), clamp(state.globalLevel + LEVEL_DRIFT, 1, 5)];
@@ -136,15 +113,14 @@ function setLevel(next: LearnerState, value: number): void {
   next.levelSetAt = Date.now();
 }
 
-/** Recompute level/pace/scaffold from the rolling windows. */
+/** Recompute pace/scaffold from the rolling windows. `level` comes from the ability estimate. */
 function recomputeDirectives(next: LearnerState, opts: { scored: boolean }): void {
   const d = next.directives;
   const last10 = next.rolling.last10Interactive;
   if (opts.scored && last10.length >= MIN_SAMPLES) {
+    // the hit rate only decides whether the writer re-angles what they missed — `level` is the
+    // ability estimate's call, and a rate over a 10-card window is far too jumpy to make it
     const rate = last10.filter(Boolean).length / last10.length;
-    if (rate > HIT_RATE_HIGH) setLevel(next, next.level + 1);
-    else if (rate < HIT_RATE_LOW) setLevel(next, next.level - 1);
-    else if (next.level !== next.globalLevel) setLevel(next, next.level + (next.level > next.globalLevel ? -1 : 1));
     d.scaffoldNext = rate < HIT_RATE_LOW ? missedConcepts(next) : [];
   }
   const dw = next.rolling.dwellMs;
@@ -160,7 +136,13 @@ export function applyInteraction(state: LearnerState, ev: InteractionEvent): Lea
 
   if (scored) {
     const correct = interaction.correct === true;
-    nudgeAbility(next, card, correct);
+    if (!next.prefs.chillMode) {
+      // chill mode is the setting for reading, not for being measured — nothing it does moves the dial
+      const read = abilityAfter(next, card, creditFor(interaction));
+      next.ability = read.ability;
+      next.abilityItems = read.abilityItems;
+      setLevel(next, read.level);
+    }
     const node = next.perNode[card.topicNodeId] ?? {
       attempts: 0, hits: 0, lastMissConcepts: [], consecutiveMisses: 0,
     };
@@ -196,9 +178,15 @@ export function applyInteraction(state: LearnerState, ev: InteractionEvent): Lea
         avgDwellMs: Math.round(dwellMs.reduce((a, b) => a + b, 0) / dwellMs.length),
       };
     }
+    // outside the repeat-visit guard on purpose: a dwell split by a lock/resume still adds up to
+    // someone who has been sitting on this one card, and that is the whole signal.
     if (dwell > LONG_DWELL_MS && RECAP_TRIGGER_TYPES.has(card.type)) next.directives.recapDue = concept;
   }
-  if (ev.scrollBack && RECAP_TRIGGER_TYPES.has(card.type)) next.directives.recapDue = concept;
+  if (ev.scrollBack && RECAP_TRIGGER_TYPES.has(card.type)) {
+    next.directives.recapDue = concept;
+    // they went back for this one: the schedule stops waiting and asks about it soon
+    next.directives.due = pullForward(next.directives.due, anchorOf(card));
+  }
 
   recomputeDirectives(next, { scored });
   return next;
@@ -242,9 +230,10 @@ export function clearScaffold(state: LearnerState): LearnerState {
 }
 
 /**
- * Concepts an `open` answer half-missed. A "close" verdict is still a hit — they
- * said the idea back — so the hit/miss ledger is untouched; only the writer's
- * "what wobbled" list grows, which is what steers the next batch.
+ * Concepts an `open` answer half-missed. A "close" verdict still counts as a hit in the node
+ * ledger — they said the idea back — and as half credit to the ability estimate, which is where
+ * "one piece off" actually belongs. Here only the writer's "what wobbled" list grows, which is
+ * what steers the next batch.
  */
 export function noteMissedConcepts(state: LearnerState, nodeId: string, concepts: readonly string[]): LearnerState {
   const clean = Array.from(

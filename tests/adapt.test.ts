@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   addReinforce, applyDial, applyInteraction, clearRecap, conceptOf, learnerStateHash, LEVEL_DRIFT, median,
-  missedConcepts, noteMissedConcepts,
+  missedConcepts, noteMissedConcepts, withPrefs,
 } from "@/lib/adapt/learner";
 import { defaultLearnerState, type LearnerState } from "@/lib/schemas/learner";
 import type { Card } from "@/lib/schemas/cards";
@@ -84,27 +84,42 @@ describe("learner reducer: scored cards", () => {
   });
 });
 
-describe("learner reducer: the level ladder", () => {
-  it("needs a nearly full window before level moves off the dial", () => {
-    const s = answers(defaultLearnerState(), [true, true, true, true]);
+describe("learner reducer: the notch the writer is handed", () => {
+  it("will not move on the first few answers, however lucky they were", () => {
+    const s = answers(defaultLearnerState(), [true, true, true]);
     expect(s.level).toBe(3);
     expect(s.levelSetAt).toBe(0);
+    // …the finer reading underneath has already started to move, it just isn't a notch yet
+    expect(s.abilityItems).toBe(3);
+    expect(s.ability).toBeGreaterThan(3);
   });
 
-  it("hit rate > 0.9 → +1 per scored card, capped at globalLevel + LEVEL_DRIFT", () => {
-    const s7 = answers(defaultLearnerState(), Array(7).fill(true));
-    expect(s7.level).toBe(3); // fewer than MIN_SAMPLES → no move
-    const s8 = answers(s7, [true]);
-    expect(s8.level).toBe(4);
+  it("eight straight hits on a coin-flip bet buy at most one notch, and it stays put after", () => {
+    // the ratchet this replaced saturated to globalLevel + LEVEL_DRIFT on two lucky taps: a
+    // two-option bet is half a coin, and the estimate now prices it that way
+    const s8 = answers(defaultLearnerState(), Array(8).fill(true));
+    expect(s8.level).toBeGreaterThanOrEqual(3);
+    expect(s8.level).toBeLessThanOrEqual(4);
     const s12 = answers(s8, Array(4).fill(true));
-    expect(s12.level).toBe(3 + LEVEL_DRIFT);
+    expect(s12.level).toBe(s8.level);
     expect(s12.globalLevel).toBe(3); // the dial is untouched — only the reading moved
   });
 
-  it("hit rate < 0.65 → level steps down (floor globalLevel − LEVEL_DRIFT) and scaffoldNext = missed concepts", () => {
+  it("reads the card's own difficulty — the field nothing used to look at", () => {
+    const easy = answers(defaultLearnerState(), [true], binary({ difficulty: 1 }));
+    const hard = answers(defaultLearnerState(), [true], binary({ difficulty: 5 }));
+    expect(hard.ability).toBeGreaterThan(easy.ability);
+    const missedEasy = answers(defaultLearnerState(), [false], binary({ difficulty: 1 }));
+    const missedHard = answers(defaultLearnerState(), [false], binary({ difficulty: 5 }));
+    expect(missedEasy.ability).toBeLessThan(missedHard.ability);
+  });
+
+  it("misses walk the notch down to the dial's floor, and scaffoldNext names what wobbled", () => {
+    // misses on a coin-flip bet are the unambiguous half of the evidence — you cannot accidentally
+    // miss what you knew — so the read drops fast where a hit streak crawls
     const misses = [false, false, false, true, false, false, true, false];
     const s = answers(defaultLearnerState(), misses);
-    expect(s.level).toBe(2);
+    expect(s.level).toBe(3 - LEVEL_DRIFT); // the dial is a statement: the reading never runs past it
     expect(s.directives.scaffoldNext).toEqual(["kill redis and the site dies"]);
     const s2 = answers(s, [false, false, false]);
     expect(s2.level).toBe(3 - LEVEL_DRIFT);
@@ -114,20 +129,20 @@ describe("learner reducer: the level ladder", () => {
     expect(missedConcepts(s3)).toEqual(["kill redis and the site dies", "the stampede"]);
   });
 
-  it("flow zone walks level back toward the dial, one step per card, and clears scaffolds", () => {
-    const hot = answers(defaultLearnerState(), Array(10).fill(true)); // level 5
-    expect(hot.level).toBe(5);
-    // 8/10 → in the zone, and two cards in the zone is two steps home
-    const cooled = answers(hot, [false, false]);
-    expect(cooled.level).toBe(3);
-    expect(cooled.directives.scaffoldNext).toEqual([]);
+  it("chill mode is for reading, not for being measured — the reading freezes", () => {
+    const chill = withPrefs(defaultLearnerState(), { chillMode: true });
+    const s = answers(chill, Array(12).fill(true));
+    expect(s.ability).toBe(3);
+    expect(s.abilityItems).toBe(0);
+    expect(s.level).toBe(3);
+    expect(s.levelSetAt).toBe(0);
   });
 
   it("the dial carries the earned drift with it — dialling simpler doesn't throw the measurement away", () => {
-    const hot = answers(defaultLearnerState(), Array(10).fill(true)); // globalLevel 3, level 5
+    const hot = answers(defaultLearnerState(), Array(12).fill(true));
     const simpler = applyDial(hot, "simpler");
     expect(simpler.globalLevel).toBe(2);
-    expect(simpler.level).toBe(4);
+    expect(simpler.level).toBe(hot.level - 1);
   });
 });
 
@@ -158,14 +173,28 @@ describe("learner reducer: dwell + pace", () => {
     expect(median([4, 1, 2, 3])).toBe(2.5);
   });
 
-  it("dwell > 25s → recapDue for the current concept", () => {
+  it("a long dwell on a teaching card still reads as stuck", () => {
+    // the doorbell objection does not survive contact with lib/dwell.ts: the clock pauses on
+    // visibilitychange/pagehide and caps at 60s, so 26s here is 26s of ACTIVE reading on one card.
     const s = dwells(defaultLearnerState(), [26_000]);
     expect(s.directives.recapDue).toBe("a cache is a bet on repetition");
+    expect(s.rolling.dwellMs).toEqual([26_000]);
+
+    // …and only on cards where being stuck means something. a checkpoint is a flex, not a wall.
+    const flex = applyInteraction(defaultLearnerState(), {
+      card: { id: "3f2a1c9e-9b7d-4b1e-8f4a-1c2d3e4f5a20", type: "checkpoint", topicNodeId: "n1", detourId: null, headline: "you know more than most" },
+      interaction: { dwellMs: 40_000, at },
+    });
+    expect(flex.directives.recapDue).toBeNull();
   });
 
-  it("scroll-back → recapDue for the current concept", () => {
+  it("scroll-back → recapDue for the current concept, and the idea gets asked about sooner", () => {
     const s = applyInteraction(defaultLearnerState(), { card: concept({ eyebrow: "the idea" }), interaction: { at }, scrollBack: true });
     expect(s.directives.recapDue).toBe("a cache is a bet on repetition");
+    // nobody scrolls UP in a feed by accident: the retrieval schedule stops waiting on this one
+    expect(s.directives.due).toEqual(["cache-bet-repetition"]);
+    // …and that queue is deliberately outside the frontier key, so it never re-keys the runway
+    expect(learnerStateHash(s)).toBe(learnerStateHash(applyInteraction(defaultLearnerState(), { card: concept(), interaction: { at }, scrollBack: true })));
   });
 
   it("counts dwell on a stat card, and never on an open one", () => {
@@ -216,6 +245,23 @@ describe("learner reducer: dial + reinforce + hash", () => {
     // re-asking about something already queued moves it to the front of the queue rather than duplicating
     s = addReinforce(s, "e");
     expect(s.directives.reinforce).toEqual(["f", "g", "e"]);
+  });
+
+  it("an open answer graded close is half a hit to the reading, not a whole one", () => {
+    const openCard: Card = {
+      id: "3f2a1c9e-9b7d-4b1e-8f4a-1c2d3e4f5a0a", type: "open", topicNodeId: "n1", detourId: null,
+      prompt: "in your own words — why does an empty cache hurt the db?", rubric: "r", modelAnswer: "m", difficulty: 4,
+    };
+    const s0 = defaultLearnerState();
+    const clean = applyInteraction(s0, { card: openCard, interaction: { correct: true, at, text: "…" } });
+    const close = applyInteraction(s0, {
+      card: openCard,
+      interaction: { correct: true, at, text: "…", feedback: { verdict: "close", feedback: "f", missed: ["ttl"] } },
+    });
+    expect(close.ability).toBeLessThan(clean.ability);
+    expect(close.ability).toBeGreaterThan(3);
+    // it still counts as a hit in the node ledger — they did say the idea back
+    expect(close.perNode.n1.hits).toBe(1);
   });
 
   it("noteMissedConcepts records what an open answer half-missed without touching the ledger", () => {

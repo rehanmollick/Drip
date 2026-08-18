@@ -1,6 +1,6 @@
 import { DialBody } from "@/lib/api/contract";
 import { handle, ok, parseBody } from "@/lib/api/envelope";
-import { dial, getSessionOr404 } from "@/lib/generation/engine";
+import { dial, frontierOf, getSessionOr404 } from "@/lib/generation/engine";
 import { toPublic } from "@/lib/generation/public";
 
 export const runtime = "nodejs";
@@ -14,5 +14,5 @@ export const POST = handle<Ctx>(async (req, { params }) => {
   const body = await parseBody(req, DialBody);
   await getSessionOr404(id);
   const { session, toast, removedAfter } = await dial(id, body.direction, body.currentCardId);
-  return ok({ session: toPublic(session), toast, removedAfter });
+  return ok({ session: toPublic(session, undefined, await frontierOf(id)), toast, removedAfter });
 });

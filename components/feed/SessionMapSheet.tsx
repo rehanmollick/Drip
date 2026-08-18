@@ -3,7 +3,7 @@ import { motion } from "framer-motion";
 import { BottomSheet } from "@/components/home/BottomSheet";
 import { GhostButton } from "@/components/ui/GhostButton";
 import { useTheme } from "@/components/theme/ThemeRoot";
-import type { MapTopic } from "@/lib/feed/map";
+import type { Material, MapTopic } from "@/lib/feed/map";
 
 /**
  * THE SESSION MAP — long-press the timeline.
@@ -13,6 +13,11 @@ import type { MapTopic } from "@/lib/feed/map";
  * through to go back to it; anything still ahead is inert — the map orients you, it never skips
  * you forward past what has been written. The in-app refresh lives here too (a standalone PWA has
  * no pull-to-refresh).
+ *
+ * The dots carry the same two-state material the timeline's ghost band draws: a topic with cards
+ * WRITTEN gets the ghosted accent, one that is still only PLANNED gets the plain rule. One idea,
+ * appearing twice — so a heading the writer hasn't reached yet stops looking like a stretch of feed
+ * already waiting for you.
  *
  * No counters, no percentages, no "3 of 8". Structure only.
  */
@@ -60,6 +65,7 @@ export function SessionMapSheet({
               <Row
                 label={t.title}
                 state={t.state}
+                material={t.material}
                 reachable={t.reachable}
                 last={i === topics.length - 1 && t.detours.length === 0}
                 reduced={reduced}
@@ -88,6 +94,7 @@ export function SessionMapSheet({
 function Row({
   label,
   state,
+  material = "written",
   reachable,
   branch = false,
   last,
@@ -96,6 +103,8 @@ function Row({
 }: {
   label: string;
   state: "done" | "current" | "ahead";
+  /** a detour you took is written by definition, so only topics ever pass this */
+  material?: Material;
   reachable: boolean;
   branch?: boolean;
   last: boolean;
@@ -104,18 +113,20 @@ function Row({
 }) {
   const here = state === "current";
   const dim = state === "ahead";
+  const written = material === "written";
   const color = here ? "var(--accent)" : state === "done" ? "var(--ink)" : "var(--ink-2)";
   return (
     <motion.button
       type="button"
       data-map-row={state}
+      data-material={material}
       data-branch={branch ? "true" : undefined}
       disabled={!reachable}
       aria-current={here ? "true" : undefined}
       onClick={reachable ? onTap : undefined}
       whileTap={reduced || !reachable ? undefined : { scale: 0.985 }}
       className="flex w-full items-start gap-3 py-2 text-left"
-      style={{ paddingLeft: branch ? 22 : 0, cursor: reachable ? "pointer" : "default", opacity: dim ? 0.45 : 1 }}
+      style={{ paddingLeft: branch ? 22 : 0, cursor: reachable ? "pointer" : "default", opacity: dim ? (written ? 0.62 : 0.45) : 1 }}
     >
       <span className="relative flex w-4 shrink-0 justify-center self-stretch" aria-hidden>
         {!last && (
@@ -129,7 +140,14 @@ function Row({
           style={{
             width: here ? 9 : 7,
             height: here ? 9 : 7,
-            background: here ? "var(--accent)" : state === "done" ? "color-mix(in oklab, var(--accent) 55%, transparent)" : "var(--line)",
+            // written but not yet reached: the same ghosted accent the timeline uses for buffered
+            background: here
+              ? "var(--accent)"
+              : state === "done"
+                ? "color-mix(in oklab, var(--accent) 55%, transparent)"
+                : written
+                  ? "color-mix(in oklab, var(--accent) 35%, transparent)"
+                  : "var(--line)",
             boxShadow: here ? "0 0 0 4px var(--accent-soft)" : undefined,
           }}
         />

@@ -422,7 +422,7 @@ describe("variety in the loop", () => {
 });
 
 describe("nothing is ever inserted above the reader", () => {
-  it("a recap triggered by a dwell reported late lands ahead of the furthest card they've seen", async () => {
+  it("a recap triggered by a scroll-back reported late lands ahead of the furthest card they've seen", async () => {
     const s = await planned();
     await generateNext(s.id);
     const all = await store.listAllCards(s.id);
@@ -431,12 +431,12 @@ describe("nothing is ever inserted above the reader", () => {
     // a card that can trigger a recap (a hook can't), early in the deck
     const early = all.find((c) => c.payload.type === "concept")!;
     expect(early).toBeTruthy();
-    // the reader has walked well past it; that dwell only reaches the server now (outbox drain)
+    // the reader has walked well past it; that scroll-back only reaches the server now (outbox drain)
     for (const c of all.slice(0, 5)) await interact(c.id, { viewed: true, dwellMs: 900 });
     const furthest = all[4].idx;
-    const r = await interact(early.id, { dwellMs: 40_000 });
+    const r = await interact(early.id, { scrollBack: true });
 
-    expect(r.inserted.length, "the dwell should still produce a recap").toBeGreaterThan(0);
+    expect(r.inserted.length, "the scroll-back should still produce a recap").toBeGreaterThan(0);
     for (const row of r.inserted) {
       expect(row.idx > furthest, `recap at ${row.idx} landed behind the reader at ${furthest}`).toBe(true);
     }

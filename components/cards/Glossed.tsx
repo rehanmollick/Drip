@@ -1,9 +1,13 @@
 "use client";
 import { AnimatePresence, motion } from "framer-motion";
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import type { GlossTerm } from "@/lib/schemas/cards";
 import { useTheme } from "@/components/theme/ThemeRoot";
-import { splitGlossed } from "./helpers";
+import { cascade as cascadeVariants } from "@/lib/motion";
+import { sentenceRuns, splitGlossed } from "./helpers";
+
+/** The tags this can render, in their motion flavour (cascading copy needs one). */
+const MOTION_TAG = { p: motion.p, span: motion.span, div: motion.div, h1: motion.h1, h2: motion.h2, h3: motion.h3 };
 
 /**
  * Inline glossary. Any card copy that carries `terms` renders through this:
@@ -16,6 +20,11 @@ import { splitGlossed } from "./helpers";
  * isn't room) the tapped word, clamped inside the card so it can never push
  * layout or overflow the viewport. Dismiss: tap the word again, tap anywhere
  * else, or scroll.
+ *
+ * `cascade` makes the copy arrive a sentence at a time instead of as one slab.
+ * The pieces fade in OPACITY ONLY (lib/motion, the inline rule): the box the
+ * copy occupies is byte-identical either way, because a transform on an inline
+ * span can push a line past the edge of a 393px screen mid-flight.
  */
 export function Glossed({
   text,
@@ -24,6 +33,7 @@ export function Glossed({
   wrapStyle,
   className = "",
   as: Tag = "p",
+  cascade = false,
 }: {
   text: string;
   terms?: readonly GlossTerm[] | null;
@@ -31,10 +41,21 @@ export function Glossed({
   /** style for the positioned wrapper (the chip's containing block) */
   wrapStyle?: CSSProperties;
   className?: string;
-  as?: "p" | "span" | "div" | "h1" | "h2" | "h3";
+  as?: keyof typeof MOTION_TAG;
+  /** land the copy a sentence at a time (rides the card's entry, once) */
+  cascade?: boolean;
 }) {
   const { spring, reduced } = useTheme();
   const segments = splitGlossed(text, terms ?? undefined);
+  // runs of segments, one per sentence; `pieces` is the flat order the chip indexes into
+  const runs = useMemo(() => (cascade ? sentenceRuns(segments) : null), [cascade, text, terms]); // eslint-disable-line react-hooks/exhaustive-deps
+  const pieces = runs ? runs.flat() : segments;
+  const beats = useMemo(() => cascadeVariants(reduced, 60, runs?.length ?? 1), [reduced, runs?.length]);
+  // where each run starts in `pieces`, so a tapped term still knows which gloss is its own
+  const runStarts = useMemo(() => {
+    let n = 0;
+    return (runs ?? []).map((run) => { const at = n; n += run.length; return at; });
+  }, [runs]);
   const wrapRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState<number | null>(null);
   const [pos, setPos] = useState<{ left: number; top?: number; bottom?: number; width: number } | null>(null);
@@ -85,48 +106,65 @@ export function Glossed({
     [open, close, place],
   );
 
-  const openSeg = open != null ? segments[open] : null;
+  const openSeg = open != null ? pieces[open] : null;
+
+  const seg = (s: (typeof pieces)[number], i: number) =>
+    s.gloss ? (
+      // a <span>, not a <button>: a real button is inline-block, so a two-word term would
+      // become its own centred box mid-sentence instead of flowing with the copy
+      <span
+        key={i}
+        role="button"
+        tabIndex={0}
+        data-gloss-term={s.term}
+        aria-expanded={open === i}
+        onClick={(e) => toggle(i, e.currentTarget)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            toggle(i, e.currentTarget);
+          }
+        }}
+        style={{
+          background: open === i ? "var(--accent-soft)" : "transparent",
+          borderRadius: 4,
+          cursor: "pointer",
+          textDecoration: "underline",
+          textDecorationStyle: "dotted",
+          textDecorationColor: "var(--accent)",
+          textDecorationThickness: "1.5px",
+          textUnderlineOffset: "0.22em",
+          WebkitTapHighlightColor: "transparent",
+          touchAction: "manipulation",
+        }}
+      >
+        {s.text}
+      </span>
+    ) : (
+      <span key={i}>{s.text}</span>
+    );
+
+  const MTag = MOTION_TAG[Tag] as typeof motion.p;
 
   return (
     <div ref={wrapRef} style={{ position: "relative", minWidth: 0, ...wrapStyle }}>
-      <Tag className={className} style={style}>
-        {segments.map((s, i) =>
-          s.gloss ? (
-            // a <span>, not a <button>: a real button is inline-block, so a two-word term would
-            // become its own centred box mid-sentence instead of flowing with the copy
-            <span
-              key={i}
-              role="button"
-              tabIndex={0}
-              data-gloss-term={s.term}
-              aria-expanded={open === i}
-              onClick={(e) => toggle(i, e.currentTarget)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  toggle(i, e.currentTarget);
-                }
-              }}
-              style={{
-                background: open === i ? "var(--accent-soft)" : "transparent",
-                borderRadius: 4,
-                cursor: "pointer",
-                textDecoration: "underline",
-                textDecorationStyle: "dotted",
-                textDecorationColor: "var(--accent)",
-                textDecorationThickness: "1.5px",
-                textUnderlineOffset: "0.22em",
-                WebkitTapHighlightColor: "transparent",
-                touchAction: "manipulation",
-              }}
-            >
-              {s.text}
-            </span>
-          ) : (
-            <span key={i}>{s.text}</span>
-          ),
-        )}
-      </Tag>
+      {runs ? (
+        <MTag className={className} style={style} variants={beats.container}>
+          {runs.map((run, r) => {
+            const start = runStarts[r];
+            return (
+              // inline, opacity only: the line box is identical to the un-cascaded one
+              <motion.span key={r} data-beat={r} variants={beats.item} style={{ display: "inline" }}>
+                {run.map((s, k) => seg(s, start + k))}
+              </motion.span>
+            );
+          })}
+        </MTag>
+      ) : (
+        <Tag className={className} style={style}>
+          {pieces.map(seg)}
+        </Tag>
+      )}
       <AnimatePresence>
         {openSeg?.gloss && pos && (
           <motion.span

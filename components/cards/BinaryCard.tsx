@@ -6,6 +6,7 @@ import type { CardViewProps } from "./types";
 import { CardFrame, Rise, bodyStyle, headlineStyle } from "./CardFrame";
 import { Eyebrow } from "@/components/ui/Eyebrow";
 import { OptionButton, type OptionState } from "@/components/ui/OptionButton";
+import { Glossed, GlossHint, hasTerms } from "./Glossed";
 import { Shake } from "@/components/ui/Shake";
 import { useTheme } from "@/components/theme/ThemeRoot";
 import { ticks } from "@/lib/audio/ticks";
@@ -13,7 +14,9 @@ import { fitFontSize, reserveHeight } from "./helpers";
 
 /**
  * binary — two big options under a hot take. Correct → accent flash + local
- * confetti; wrong → shake + the reveal slides in. Both end with revealCopy.
+ * confetti; wrong → shake + the reveal slides in. Both end with revealCopy,
+ * which carries the inline glossary. The reveal slot is reserved (hint line
+ * included) so the options never jump when the payoff lands.
  * A prior `interaction` renders the answered state with no animation.
  */
 export function BinaryView({ card, entered, interaction, onInteract, onAskAbout }: CardViewProps<BinaryCardT>) {
@@ -51,6 +54,7 @@ export function BinaryView({ card, entered, interaction, onInteract, onAskAbout 
   const wasWrong = answered && picked !== card.correctIndex;
   const promptFs = fitFontSize(card.prompt, [[60, 32], [100, 28], [Infinity, 25]]);
   const revealFs = fitFontSize(card.revealCopy, [[160, 17.5], [Infinity, 16.5]]);
+  const glossed = hasTerms(card.revealCopy, card.terms);
 
   return (
     <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} align="center" gap={18}>
@@ -77,7 +81,7 @@ export function BinaryView({ card, entered, interaction, onInteract, onAskAbout 
         </Shake>
       </Rise>
       {/* reserved slot: the payoff lands here without shifting the options */}
-      <div style={{ minHeight: reserveHeight(card.revealCopy, revealFs, 40) }}>
+      <div style={{ minHeight: reserveHeight(card.revealCopy, revealFs, 40) + (glossed ? 24 : 0) }}>
       <AnimatePresence initial={live}>
         {answered && (
           <motion.div
@@ -92,7 +96,14 @@ export function BinaryView({ card, entered, interaction, onInteract, onAskAbout 
               aria-hidden
               style={{ width: 3, alignSelf: "stretch", borderRadius: 2, background: wasWrong ? "var(--state-wrong)" : "var(--state-correct)", flexShrink: 0, opacity: 0.9 }}
             />
-            <p style={{ ...bodyStyle(revealFs), color: "var(--ink)" }}>{card.revealCopy}</p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
+              <Glossed
+                text={card.revealCopy}
+                terms={card.terms}
+                style={{ ...bodyStyle(revealFs), color: "var(--ink)" }}
+              />
+              {glossed && <GlossHint text={card.revealCopy} terms={card.terms} />}
+            </div>
           </motion.div>
         )}
       </AnimatePresence>
