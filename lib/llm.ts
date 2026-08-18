@@ -270,12 +270,65 @@ export function clampEyebrows(cards: unknown): unknown {
   return cards.map((c) => (c && typeof c === "object" && "eyebrow" in (c as object) ? { ...(c as Record<string, unknown>), eyebrow: softClamp((c as Record<string, unknown>).eyebrow, 28) } : c));
 }
 
-type Validation<T> = { ok: true; value: T } | { ok: false; error: string };
+type Validation<T> = { ok: true; value: T } | { ok: false; error: string; issues: z.ZodError };
 
 function validate<T>(schema: z.ZodType<T>, parsed: unknown): Validation<T> {
   const r = schema.safeParse(parsed);
-  if (!r.success) return { ok: false, error: `schema validation failed:\n${formatIssues(r.error)}` };
+  if (!r.success) return { ok: false, error: `schema validation failed:\n${formatIssues(r.error)}`, issues: r.error };
   return { ok: true, value: r.data };
+}
+
+/**
+ * Trim one over-long string back to a sentence boundary. Returns null when that would cost
+ * too much of the text (a single long sentence) — the caller then retries rather than
+ * publishing a stump. Cutting after "…the whole game." reads like the writer stopped there;
+ * cutting mid-clause reads broken, which is why this never hard-truncates on-screen copy.
+ */
+export function trimToSentence(text: string, max: number): string | null {
+  if (text.length <= max) return text;
+  const head = text.slice(0, max + 1);
+  const end = Math.max(head.lastIndexOf(". "), head.lastIndexOf("! "), head.lastIndexOf("? "), head.lastIndexOf("… "));
+  // a terminator at the very end of the window counts too (no trailing space to find)
+  const tail = /[.!?…]$/.test(head.slice(0, max)) ? max - 1 : -1;
+  const cut = Math.max(end, tail);
+  if (cut < 0) return null;
+  const out = text.slice(0, cut + 1).trimEnd();
+  return out.length >= Math.floor(max * 0.55) ? out : null;
+}
+
+type PathKey = string | number | symbol;
+function atPath(root: unknown, path: readonly PathKey[]): { parent: Record<PathKey, unknown>; key: PathKey } | null {
+  let cur: unknown = root;
+  for (const k of path.slice(0, -1)) {
+    if (cur === null || typeof cur !== "object") return null;
+    cur = (cur as Record<PathKey, unknown>)[k];
+  }
+  if (cur === null || typeof cur !== "object") return null;
+  return { parent: cur as Record<PathKey, unknown>, key: path[path.length - 1] };
+}
+
+/**
+ * The writer overshoots a character cap on a meaningful share of batches (Haiku cannot count
+ * characters). Rather than spend a whole retry on it, trim exactly the fields Zod flagged back
+ * to a sentence boundary and re-validate. Anything that can't be trimmed cleanly still retries.
+ */
+export function trimTooBig(value: unknown, err: z.ZodError): { value: unknown; trimmed: string[] } | null {
+  const tooBig = err.issues.filter((i) => i.code === "too_big" && typeof (i as { maximum?: unknown }).maximum === "number" && i.path.length);
+  if (!tooBig.length) return null;
+  const next = JSON.parse(JSON.stringify(value)) as unknown;
+  const trimmed: string[] = [];
+  for (const issue of tooBig) {
+    const max = Number((issue as unknown as { maximum: number }).maximum);
+    const slot = atPath(next, issue.path);
+    if (!slot) continue;
+    const cur = slot.parent[slot.key];
+    if (typeof cur !== "string") continue;
+    const out = trimToSentence(cur, max);
+    if (out === null) continue;
+    slot.parent[slot.key] = out;
+    trimmed.push(issue.path.join("."));
+  }
+  return trimmed.length ? { value: next, trimmed } : null;
 }
 
 /**
@@ -522,6 +575,18 @@ async function generate<T>(o: GenerateOpts<T>): Promise<LlmResult<T>> {
       if (!problem) {
         const normalized = o.normalize ? o.normalize(parsed) : parsed;
         let v = validate(o.schema, normalized);
+        if (!v.ok) {
+          // Haiku can't count characters; trim what Zod flagged back to a sentence boundary
+          // rather than spend a retry on copy that is otherwise good.
+          const t = trimTooBig(normalized, v.issues);
+          if (t) {
+            const retried = validate(o.schema, t.value);
+            if (retried.ok) {
+              console.warn(`[llm] ${o.purpose}: trimmed over-long ${t.trimmed.join(", ")} to a sentence boundary`);
+              v = retried;
+            }
+          }
+        }
         if (!v.ok && o.salvageWant !== undefined) {
           // one over-long string shouldn't cost three good cards and a retry
           const s = salvageCards(normalized, o.schema as unknown as z.ZodType<{ cards: Card[] }>, o.salvageWant);
