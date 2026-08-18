@@ -1,0 +1,26 @@
+import { chromium, devices } from "@playwright/test";
+const out = "/private/tmp/claude-501/-Users-rehan-Documents-Drip/bb5feee4-6208-4b54-84d3-20ddd51e7068/scratchpad/shots";
+const browser = await chromium.launch();
+const ctx = await browser.newContext({ ...devices["iPhone 14 Pro"], viewport: { width: 393, height: 852 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+const page = await ctx.newPage();
+const errors = [];
+page.on("pageerror", (e) => errors.push(e.message));
+await page.goto("http://localhost:3300/s/some-session-id", { waitUntil: "networkidle" });
+console.log("redirected to:", new URL(page.url()).pathname + new URL(page.url()).search);
+await page.screenshot({ path: `${out}/gate-locked.png` });
+await page.getByLabel("passphrase").fill("wrong one");
+await page.getByRole("button", { name: /let me in/i }).click();
+await page.waitForTimeout(1200);
+console.log("after wrong:", await page.getByText(/not it/i).isVisible());
+await page.screenshot({ path: `${out}/gate-wrong.png` });
+await page.getByLabel("passphrase").fill("tide pools");
+await page.getByRole("button", { name: /let me in/i }).click();
+await page.waitForURL((u) => !u.pathname.startsWith("/unlock"), { timeout: 15000 });
+console.log("unlocked →", new URL(page.url()).pathname);
+// the cookie must survive a fresh launch (the PWA relaunches constantly)
+const page2 = await ctx.newPage();
+await page2.goto("http://localhost:3300/", { waitUntil: "networkidle" });
+console.log("relaunch lands on:", new URL(page2.url()).pathname);
+await page2.screenshot({ path: `${out}/gate-in.png` });
+console.log("errors:", errors.length ? errors : "none");
+await browser.close();

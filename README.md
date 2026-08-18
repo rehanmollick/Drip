@@ -29,4 +29,6 @@ Real-device checks (standalone PWA scroll feel, offline, lock-screen dwell) live
 
 ## Deploy
 
-Vercel: import the repo, set the env vars, deploy. Open the preview URL on an iPhone → Share → Add to Home Screen.
+Vercel: import the repo, set the env vars, deploy. Open the URL on an iPhone → Share → Add to Home Screen.
+
+There are no accounts (spec §14), so set `DRIP_PASSPHRASE` on any deployment that isn't purely local: the first visit on each device asks for that one phrase, then a year-long cookie. It's a door lock in front of a personal app — it keeps a leaked URL from reading your feeds or spending your API budget. The cookie holds an HMAC of the phrase, never the phrase.
