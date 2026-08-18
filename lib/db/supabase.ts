@@ -77,6 +77,7 @@ export function rowToSession(r: Row): Session {
     learnerState: parseLearnerState(r.learner_state, r.id),
     progress: parseProgress(r.progress, r.id),
     clarifierAnswers: obj<Record<string, string>>(r.clarifier_answers, {}),
+    storyline: (r.storyline ?? null) as Session["storyline"],
     status: str(r.status, "planning") as Session["status"],
     error: (r.error as string | null) ?? null,
     position: num(r.position),
@@ -88,7 +89,7 @@ export function rowToSession(r: Row): Session {
 const SESSION_COLS: Record<keyof Session, string> = {
   id: "id", title: "title", sourceKind: "source_kind", sourceMeta: "source_meta", sourceText: "source_text",
   theme: "theme", persona: "persona", outline: "outline", settings: "settings", learnerState: "learner_state",
-  progress: "progress", clarifierAnswers: "clarifier_answers", status: "status", error: "error",
+  progress: "progress", clarifierAnswers: "clarifier_answers", storyline: "storyline", status: "status", error: "error",
   position: "position", createdAt: "created_at", lastOpenedAt: "last_opened_at",
 };
 

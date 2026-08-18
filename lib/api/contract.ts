@@ -100,9 +100,24 @@ export const AskData = z.discriminatedUnion("kind", [
 ]);
 export type AskData = z.infer<typeof AskData>;
 
+// ── POST /api/sessions/:id/choose  (crossroads: the feed asks before running on) ─────────────
+export const ChooseBody = z.object({
+  cardId: z.string(),
+  choice: z.enum(["continue", "deeper", "ask", "wrap"]),
+});
+export type ChooseBody = z.infer<typeof ChooseBody>;
+export const ChooseData = z.object({
+  session: SessionPublicSchema,
+  /** Cards produced by the choice (the wrap card, or the first of the next stretch). May be empty — the runway fills normally after. */
+  cards: z.array(CardRowSchema),
+});
+export type ChooseData = z.infer<typeof ChooseData>;
+
 // ── POST /api/cards/:id/interact ─────────────────────────────────────────────
 export const InteractBody = z.object({
   viewed: z.boolean().optional(),
+  /** `open` cards: what they typed. The reply is written against this, not a canned answer. */
+  text: z.string().max(1200).optional(),
   choice: z.union([z.number(), z.string(), z.array(z.string())]).optional(),
   correct: z.boolean().optional(),
   dwellMs: z.number().min(0).max(60_000).optional(),   // client hard-caps at 60s; server clamps too
@@ -110,8 +125,17 @@ export const InteractBody = z.object({
   scrollBack: z.boolean().optional(),                  // user scrolled back up to this card
 });
 export type InteractBody = z.infer<typeof InteractBody>;
+export const OpenFeedbackSchema = z.object({
+  verdict: z.enum(["got_it", "close", "not_yet"]),
+  feedback: z.string(),
+  missed: z.array(z.string()).default([]),
+});
+export type OpenFeedback = z.infer<typeof OpenFeedbackSchema>;
+
 export const InteractData = z.object({
   card: CardRowSchema,
+  /** `open` cards only: the reply to what they wrote. */
+  feedback: OpenFeedbackSchema.nullable().default(null),
   learnerState: LearnerStateSchema,
   inserted: z.array(CardRowSchema),                     // e.g. an auto-inserted recap card after the current one
 });

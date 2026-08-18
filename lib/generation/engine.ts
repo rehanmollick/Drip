@@ -315,6 +315,7 @@ export async function createSession(body: CreateSessionBody): Promise<Session> {
     learnerState: defaultLearnerState(settings),
     progress: ProgressSchema.parse({}),
     clarifierAnswers: {},
+    storyline: null,
     status: "planning",
     error: null,
     position: 0,

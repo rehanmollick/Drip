@@ -87,6 +87,9 @@ function fakeLlm(): Fake {
     async dialToast({ direction }) {
       return direction === "simpler" ? "say less." : "bet.";
     },
+    async evaluateOpen() { return { ok: false as const, code: "api" as const, error: "n/a" }; },
+    async updateStoryline() { return { ok: false as const, code: "api" as const, error: "n/a" }; },
+    async writeWrap() { return { ok: false as const, code: "api" as const, error: "n/a" }; },
   };
   return f;
 }

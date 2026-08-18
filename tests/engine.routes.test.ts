@@ -47,6 +47,9 @@ const llm: LlmApi = {
   async triage() { return okR({ kind: "inline" as const, answer: "yep." }); },
   async writeDetour(ctx) { return okR(Array.from({ length: ctx.cardCount }, (_, i) => concept(`d${i}`))); },
   async dialToast() { return "say less."; },
+  async evaluateOpen() { return { ok: false as const, code: "api" as const, error: "n/a" }; },
+  async updateStoryline() { return { ok: false as const, code: "api" as const, error: "n/a" }; },
+  async writeWrap() { return { ok: false as const, code: "api" as const, error: "n/a" }; },
 };
 
 const json = (method: string, url: string, body?: unknown) =>

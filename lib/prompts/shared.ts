@@ -3,7 +3,7 @@ import { BANNED_WORDS } from "@/lib/copy/banned";
 import {
   BinaryCard, CheckpointCard, ClarifyCard, CodeCard, ConceptCard, DetourMarkerCard, DiagramCard,
   FallbackCard, HookCard, NoticeCard, PredictCard, RecapCard, RevealCard, SequenceCard, SliderCard,
-  type CardType,
+  type CardType, StatCard, OpenCard, CrossroadsCard, WrapCard,
 } from "@/lib/schemas/cards";
 import type { LearnerState } from "@/lib/schemas/learner";
 import type { Persona } from "@/lib/schemas/plan";
@@ -119,10 +119,18 @@ const CARD_ZOD: Record<CardType, z.ZodType> = {
   fallback: FallbackCard,
   notice: NoticeCard,
   clarify: ClarifyCard,
+  stat: StatCard,
+  open: OpenCard,
+  crossroads: CrossroadsCard,
+  wrap: WrapCard,
 };
 
 /** Craft notes per type — what makes each card GOOD, beyond what the schema enforces. */
 export const CARD_NOTES: Record<CardType, string> = {
+  stat: `ONE number, rendered huge. "value" is the number as it should read ("80%", "3ms", "1.2M"); "label" says what it is; "context" is the single line that makes it mean something ("that's 10x fewer db reads, not 10% fewer"). optional "compare" gives the number something to sit next to. use this instead of a paragraph whenever the point IS a quantity.`,
+  open: `they answer in their own words. "prompt" asks something a person can actually say out loud in a sentence ("in your own words: why does the cache restart hurt?"). "rubric" is for the grader only and never shown — list what a good answer contains. "modelAnswer" is what they see if they'd rather not type. keep it to one honest question, not an interrogation.`,
+  crossroads: `never write this — the app inserts it at topic boundaries.`,
+  wrap: `never write this unless asked for a wrap — the whole thread in 3–5 beats, each ≤ 120 chars, the way you'd summarise it to a friend who walked in late. "openThread" is the one thing still unexplored, phrased as an invitation.`,
   hook: `one bold claim or question in huge type (headline ≤ 90 chars). optional sub. sets up the next 2–3 cards. no explanation here — tension only.`,
   concept: `ONE idea. body ≤ 320 chars (~55 words). headline is the idea in ≤ 64 chars. optional visual: {kind:"stat",value,label} for a number that lands, {kind:"icon",icon} from the icon list, {kind:"ascii",lines} for a tiny text sketch, {kind:"spark",values} for a trend.`,
   code: `real, runnable-looking code, ≤ ~14 short lines, ≤ 1200 chars, "lang" is a highlighter id (ts, js, python, bash, sql, go, rust, json...). annotations point at 1-based lines and say what that line is doing and why it matters. tapping a line reveals its note.`,

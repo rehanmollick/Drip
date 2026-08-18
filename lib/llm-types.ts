@@ -1,7 +1,7 @@
 import type { Card, CardType } from "@/lib/schemas/cards";
 import type { LearnerState, SessionSettings } from "@/lib/schemas/learner";
 import type { OutlineNode, Persona, PlanOutput, TriageOutput } from "@/lib/schemas/plan";
-import type { SourceKind } from "@/lib/schemas/session";
+import type { SourceKind, Storyline } from "@/lib/schemas/session";
 import type { Theme } from "@/lib/schemas/theme";
 
 /**
@@ -51,6 +51,10 @@ export type WriteMode =
   | "scaffold";     // one concept re-angle card before the next interactive on a missed concept
 
 export type WriteContext = {
+  /** The session's through-line (spine / covered / next) — keeps a card 40 slides deep on-story. */
+  storyline?: Storyline | null;
+  /** Types used by the last few cards, so the writer stops reaching for `concept` every time. */
+  recentTypes?: CardType[];
   sessionId: string;
   mode: WriteMode;
   persona: Persona;
@@ -86,6 +90,45 @@ export type DetourContext = Omit<WriteContext, "mode" | "node"> & {
   detourId: string;
 };
 
+export type OpenVerdict = "got_it" | "close" | "not_yet";
+export type OpenEvaluation = {
+  verdict: OpenVerdict;
+  /** Speaks to what THEY wrote — names what they got, then adds the missing piece. Persona voice. */
+  feedback: string;
+  /** Concepts they missed, for the learner state. */
+  missed: string[];
+};
+
+export type EvaluateOpenInput = {
+  sessionId: string;
+  prompt: string;
+  rubric: string;
+  modelAnswer: string;
+  answer: string;
+  persona: Persona;
+  corpusSlice: string;
+};
+
+export type StorylineInput = {
+  sessionId: string;
+  prev: Storyline | null;
+  title: string;
+  outline: OutlineNode[];
+  nodeIdx: number;
+  recent: CardSummary[];
+  corpusSlice: string;
+};
+
+export type WrapContext = {
+  sessionId: string;
+  persona: Persona;
+  theme: Pick<Theme, "name" | "mood" | "signature">;
+  storyline: Storyline | null;
+  outline: OutlineNode[];
+  covered: CardSummary[];
+  learnerState: LearnerState;
+};
+
 export interface LlmApi {
   plan(input: PlanInput): Promise<LlmResult<PlanOutput>>;
   writeBatch(ctx: WriteContext): Promise<LlmResult<Card[]>>;
@@ -93,4 +136,10 @@ export interface LlmApi {
   writeDetour(ctx: DetourContext): Promise<LlmResult<Card[]>>;
   /** Cheap dial toast in the persona's voice ("say less. rewinding the jargon."). Never fails: falls back to canned copy. */
   dialToast(input: { sessionId: string; persona: Persona; direction: "simpler" | "deeper" }): Promise<string>;
+  /** Grade a typed answer against the card's rubric and reply to what they actually wrote. */
+  evaluateOpen(input: EvaluateOpenInput): Promise<LlmResult<OpenEvaluation>>;
+  /** Refresh the session's through-line as topics complete; cheap, and it keeps long sessions coherent. */
+  updateStoryline(input: StorylineInput): Promise<LlmResult<Storyline>>;
+  /** The ending, when the reader asks to wrap: the whole thread in a few beats. */
+  writeWrap(ctx: WrapContext): Promise<LlmResult<Card>>;
 }

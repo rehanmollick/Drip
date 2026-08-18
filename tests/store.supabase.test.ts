@@ -21,7 +21,8 @@ const session: Session = {
   outline: [{ id: "n1", title: "one", estCards: 4, dependsOn: [] }],
   settings: { chillMode: true, depthPreset: "deep", soundOn: false },
   learnerState: defaultLearnerState(),
-  progress: { nodeIdx: 1, cardsInNode: 2, totalGenerated: 6, exhausted: false, extensions: 0, lastIdx: "a3", epoch: 0, pendingReplan: false },
+  progress: { nodeIdx: 1, cardsInNode: 2, totalGenerated: 6, exhausted: false, extensions: 0, lastIdx: "a3", epoch: 0, pendingReplan: false, awaitingChoice: false, deeperCards: 0 },
+  storyline: null,
   clarifierAnswers: { audience: "me" },
   status: "active",
   error: null,
@@ -63,7 +64,7 @@ describe("supabase row mapping", () => {
     expect(back.learnerState).toEqual(defaultLearnerState());
     expect(back.learnerState.rolling.last10Interactive).toEqual([]);
     expect(back.settings).toEqual({ chillMode: false, depthPreset: "standard", soundOn: false });
-    expect(back.progress).toEqual({ nodeIdx: 0, cardsInNode: 0, totalGenerated: 0, exhausted: false, extensions: 0, lastIdx: null, epoch: 0, pendingReplan: false });
+    expect(back.progress).toEqual({ nodeIdx: 0, cardsInNode: 0, totalGenerated: 0, exhausted: false, extensions: 0, lastIdx: null, epoch: 0, pendingReplan: false, awaitingChoice: false, deeperCards: 0 });
     // missing columns entirely (older migration) → same defaults, no throw
     const bare = rowToSession({ id: session.id, title: "x", status: "active" });
     expect(bare.learnerState.directives.pace).toBe("normal");

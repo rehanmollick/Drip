@@ -25,8 +25,28 @@ export const ProgressSchema = z.object({
   epoch: z.number().int().default(0),
   /** True while a re-plan (after clarifier answers) is running; the client waits for it to clear before re-syncing. */
   pendingReplan: z.boolean().default(false),
+  /**
+   * Set when a `crossroads` card is the frontier: generation STOPS until the reader picks a
+   * direction. The feed asks rather than running on forever.
+   */
+  awaitingChoice: z.boolean().default(false),
+  /** Extra cards granted for the current node by a "go deeper" choice at a crossroads. */
+  deeperCards: z.number().int().default(0),
 });
 export type Progress = z.infer<typeof ProgressSchema>;
+
+/**
+ * The through-line, carried across every writer call. "Last 6 cards" keeps local continuity but
+ * loses the plot over a long session; this is what the session is ABOUT, what has actually landed
+ * so far, and where it is heading — so a card 40 slides deep still belongs to the same story.
+ */
+export const StorylineSchema = z.object({
+  spine: z.string().max(280),            // what this session is really about, one or two sentences
+  covered: z.array(z.string().max(80)).max(12),  // beats that have actually landed, in order
+  next: z.string().max(120),             // where it is heading next
+  updatedAtIdx: z.string().nullable().default(null), // card idx this was last refreshed at
+});
+export type Storyline = z.infer<typeof StorylineSchema>;
 
 export const SessionSchema = z.object({
   id: z.uuid(),
@@ -41,6 +61,7 @@ export const SessionSchema = z.object({
   learnerState: LearnerStateSchema,
   progress: ProgressSchema.prefault({}),
   clarifierAnswers: z.record(z.string(), z.string()).default({}),
+  storyline: StorylineSchema.nullable(),
   status: SessionStatus,
   error: z.string().nullable().default(null),
   position: z.number().int().default(0),          // last viewed card ordinal
@@ -51,6 +72,13 @@ export type Session = z.infer<typeof SessionSchema>;
 
 export const InteractionSchema = z.object({
   choice: z.union([z.number(), z.string(), z.array(z.string())]).optional(),
+  /** `open` cards: what they typed, and how it was graded — replayed when scrolling back. */
+  text: z.string().optional(),
+  feedback: z.object({
+    verdict: z.enum(["got_it", "close", "not_yet"]),
+    feedback: z.string(),
+    missed: z.array(z.string()).default([]),
+  }).optional(),
   correct: z.boolean().optional(),
   dwellMs: z.number().optional(),
   value: z.number().optional(),                    // slider

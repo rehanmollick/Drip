@@ -778,5 +778,11 @@ async function dialToast(input: { sessionId: string; persona: Persona; direction
   }
 }
 
-export const llm: LlmApi = { plan, writeBatch, triage, writeDetour, dialToast };
-export { plan, writeBatch, triage, writeDetour, dialToast };
+/** TODO(open-answers): real implementations land with the open-card work; callers degrade gracefully. */
+const notImplemented = async () => ({ ok: false as const, code: "api" as const, error: "not implemented yet" });
+const evaluateOpen: LlmApi["evaluateOpen"] = notImplemented;
+const updateStoryline: LlmApi["updateStoryline"] = notImplemented;
+const writeWrap: LlmApi["writeWrap"] = notImplemented;
+
+export const llm: LlmApi = { plan, writeBatch, triage, writeDetour, dialToast, evaluateOpen, updateStoryline, writeWrap };
+export { plan, writeBatch, triage, writeDetour, dialToast, evaluateOpen, updateStoryline, writeWrap };
