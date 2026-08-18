@@ -7,30 +7,37 @@ import type { InteractResult, Slide } from "@/components/cards/types";
 import { ThemeRoot } from "@/components/theme/ThemeRoot";
 import { api, ApiClientError } from "@/lib/api/client";
 import type { z } from "zod";
-import type { AskData, InteractBody, InteractData, SessionPublic } from "@/lib/api/contract";
-import type { DialData as DialDataSchema, GetSessionData as GetSessionDataSchema, RetrySessionData as RetrySessionDataSchema } from "@/lib/api/contract";
+import type { AskData, InteractBody, InteractData, OpenFeedback, SessionPublic } from "@/lib/api/contract";
+import type { ChooseData as ChooseDataSchema, DialData as DialDataSchema, GetSessionData as GetSessionDataSchema, RetrySessionData as RetrySessionDataSchema } from "@/lib/api/contract";
 import { ticks } from "@/lib/audio/ticks";
 import { DwellClock } from "@/lib/dwell";
-import { pseudoSlide, type PseudoKind } from "@/lib/feed/notices";
+import { sessionMap } from "@/lib/feed/map";
+import type { PseudoKind } from "@/lib/feed/notices";
 import { Outbox } from "@/lib/feed/outbox";
-import { streakBefore, topicProgress } from "@/lib/feed/progress";
+import { buildSlides, isPseudoKey, nextPin, runwayAhead, type Pin } from "@/lib/feed/placeholder";
+import { streakBefore } from "@/lib/feed/progress";
 import { dropUnviewedAfter, isRowSlide, isTodayUtc, ordinalOf, toSlides } from "@/lib/feed/slides";
+import { timelineModel } from "@/lib/feed/timeline";
 import type { Card } from "@/lib/schemas/cards";
 import type { CardRow } from "@/lib/schemas/session";
 import { SHELL_THEME } from "@/lib/theme/defaults";
 import { AskPill, BackChevron } from "./Chrome";
-import { FeedSlide, type SlideHandlers } from "./FeedSlide";
-import { ProgressHairline } from "./ProgressHairline";
+import { FeedSlide, type CrossroadsChoice, type SlideHandlers } from "./FeedSlide";
+import { SessionMapSheet } from "./SessionMapSheet";
+import { SwipeNudge } from "./SwipeNudge";
+import { Timeline } from "./Timeline";
 import { Toast } from "./Toast";
 import { useFeedCards } from "./useFeedCards";
 
 type GetSessionData = z.infer<typeof GetSessionDataSchema>;
 type DialData = z.infer<typeof DialDataSchema>;
 type RetrySessionData = z.infer<typeof RetrySessionDataSchema>;
+type ChooseData = z.infer<typeof ChooseDataSchema>;
 
 const RUNWAY_TARGET_LOW = 4;   // request the next batch at or below this
 const WINDOW = 3;              // slides rendered on either side of the active one
 const CHROME_REST_MS = 400;
+const TOPIC_LABEL_MS = 2_000;  // "now: <topic>" fades in and back out over ~2s
 const TOAST_MS = 2_200;
 const POSITION_THROTTLE_MS = 1_000;
 const PLANNING_POLL_MS = 1_500;
@@ -78,6 +85,9 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
   const session = sessionQuery.data ?? initialSession;
   const status = session.status;
   const active = status === "active" || status === "archived";
+  // a crossroads card is the frontier: generation stops dead until the reader picks a direction.
+  // No pump, no "catching up" tail — the deck ends here on purpose (their ask: stop autogenerating).
+  const awaitingChoice = !!session.progress?.awaitingChoice;
 
   // ── cards + generation loop ─────────────────────────────────────────────
   const syncBeforeGenerate = useRef<() => Promise<void>>(async () => {});
@@ -86,7 +96,7 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
     sessionId,
     initialCards,
     initialHasMore: initialCards.length < (initialSession.cardCount ?? 0),
-    enabled: active,
+    enabled: active && !awaitingChoice,
     staticMode,
     beforeGenerate: () => syncBeforeGenerate.current(),
     onRunwayFull: () => landViewedUpToHere.current(),
@@ -160,17 +170,35 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
   const rowSlides = useMemo(() => toSlides(replanning ? cards.filter((c) => c.viewedAt !== null) : cards), [cards, replanning]);
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const [entered, setEntered] = useState<Set<string>>(() => new Set());
+  const [scrolling, setScrolling] = useState(false);
+  const scrollingRef = useRef(false);
 
-  const headCount = (status === "planning" ? 1 : 0) + (status === "error" ? 1 : 0);
   const activeIndexRef = useRef(0);
-  // real-card slides still ahead of the active position (pseudo tail active → 0; head notice active → all)
+  const slidesRef = useRef<Slide[]>([]);
+
+  // ── the pin (bug 5) ──────────────────────────────────────────────────────
+  // Whatever pseudo the reader is standing on keeps its key AND its slot until they scroll off it
+  // and the scroll settles. Cards that land while they wait go after it — whatever idx they carry —
+  // and nothing is ever swapped into the slot under their thumb.
+  const pinRef = useRef<Pin | null>(null);
+  pinRef.current = nextPin(pinRef.current, { activeKey, slides: slidesRef.current, settled: !scrolling });
+  const pin = pinRef.current;
+
+  // the head placeholder is "reading your stuff…" for the whole wait: it stays until real cards are
+  // actually in hand, so status flipping to active mid-wait can never swap it for "catching up…".
+  const everPlanned = useRef(initialSession.status === "planning");
+  if (status === "planning") everPlanned.current = true;
+  const head: PseudoKind | null =
+    status === "planning" ? "planning"
+    : status === "error" ? "error"
+    : !replanning && active && everPlanned.current && rowSlides.length === 0 ? "planning"
+    : null;
+
+  // real-card slides still ahead of the reader (measured from the pin when they're on a placeholder)
   const runway = useMemo(() => {
-    if (!activeKey) return rowSlides.length;
-    if (activeKey.startsWith("pseudo:")) return activeKey === "pseudo:planning" || activeKey === "pseudo:error" ? rowSlides.length : 0;
-    const i = rowSlides.findIndex((s) => s.key === activeKey);
-    if (i >= 0) return rowSlides.length - 1 - i;
-    return Math.max(0, rowSlides.length - 1 - (activeIndexRef.current - headCount));
-  }, [rowSlides, activeKey, headCount]);
+    const n = runwayAhead({ rowSlides, activeKey, pin });
+    return n ?? Math.max(0, rowSlides.length - 1 - activeIndexRef.current);
+  }, [rowSlides, activeKey, pin]);
 
   // today's budget notice at the end of the deck means nothing more is coming until midnight —
   // no "on its way" tail behind it (the notice itself says when it resets)
@@ -184,21 +212,15 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
   const tail: PseudoKind | null = useMemo(() => {
     if (!active || staticMode) return null;
     if (replanning) return "replanning";
+    if (awaitingChoice) return null;   // the crossroads IS the end of the deck until they pick
+    if (head === "planning") return null; // one placeholder at a time — never two waits in a row
     if (runway > 0) return null;
     if (!online) return "offline";
     if (budgetCapped) return null;
     return "catching_up"; // a generate is pending / scheduled — never an error string
-  }, [active, staticMode, replanning, runway, online, budgetCapped]);
+  }, [active, staticMode, replanning, awaitingChoice, head, runway, online, budgetCapped]);
 
-  const slides: Slide[] = useMemo(() => {
-    const out: Slide[] = [];
-    if (status === "planning") out.push(pseudoSlide("planning"));
-    if (status === "error") out.push(pseudoSlide("error"));
-    out.push(...rowSlides);
-    if (tail) out.push(pseudoSlide(tail));
-    return out;
-  }, [status, rowSlides, tail]);
-  const slidesRef = useRef(slides);
+  const slides: Slide[] = useMemo(() => buildSlides({ head, rowSlides, tail, pin }), [head, rowSlides, tail, pin]);
   slidesRef.current = slides;
 
   // If the active key vanished (a pseudo tail replaced by real cards) keep the last index: never jump.
@@ -216,8 +238,8 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
   const rowCount = rowSlides.length;
   useEffect(() => {
     if (!active || staticMode) return;
-    setWantMore(!replanning && runway <= RUNWAY_TARGET_LOW);
-  }, [runway, rowCount, replanning, active, staticMode, setWantMore]);
+    setWantMore(!replanning && !awaitingChoice && runway <= RUNWAY_TARGET_LOW);
+  }, [runway, rowCount, replanning, awaitingChoice, active, staticMode, setWantMore]);
 
   // ── visibility: IntersectionObserver @ 0.6 ──────────────────────────────
   const containerRef = useRef<HTMLDivElement>(null);
@@ -273,8 +295,6 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
   }, []);
 
   // ── scroll helpers ──────────────────────────────────────────────────────
-  const [scrolling, setScrolling] = useState(false);
-  const scrollingRef = useRef(false);
   const restTimer = useRef<number | null>(null);
   const [bubble, setBubble] = useState<string | null>(null);
   const scrollToIndex = useCallback((i: number, smooth: boolean) => {
@@ -301,18 +321,22 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
     }
   }, [staticMode, active, initialSession.position, scrollToIndex]);
 
-  // Keep the active slide under the thumb if slides get spliced above it (the container has
-  // overflow-anchor: none, so the browser never does this for us). A pseudo tail is the exception:
-  // when real cards land they push the tail down and the first new card is now under the thumb —
-  // hand the active key over to it so runway/dwell continue without waiting on the observer.
+  // Keep THE SAME SLIDE under the thumb whenever the list changes shape (the container has
+  // overflow-anchor: none, so the browser never does this for us). Cards landing above the active
+  // slide, the pin being released above it — the reader must not feel any of it. Never while a
+  // scroll is in flight: we'd be yanking a moving thumb.
   const lastActiveIndex = useRef(activeIndex);
   useLayoutEffect(() => {
     const root = containerRef.current;
-    if (root && foundIndex < 0 && activeKey?.startsWith("pseudo:") && !scrollingRef.current) {
-      // the pseudo slide we were on vanished (re-plan landed, tail replaced): the slide now at our
-      // index is under the thumb — hand the active key over so dwell/runway continue
+    if (!root || scrollingRef.current) {
+      lastActiveIndex.current = activeIndex;
+      return;
+    }
+    if (foundIndex < 0 && isPseudoKey(activeKey)) {
+      // safety net: a pinned pseudo should never vanish under the reader, but if it somehow does,
+      // adopt whatever now sits at that index rather than teleporting them somewhere else
       const landed = slides[activeIndex];
-      if (landed && isRowSlide(landed)) {
+      if (landed) {
         setActiveKey(landed.key);
         setEntered((p) => (p.has(landed.key) ? p : new Set(p).add(landed.key)));
         root.scrollTo({ top: activeIndex * root.clientHeight });
@@ -320,18 +344,8 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
       lastActiveIndex.current = activeIndex;
       return;
     }
-    if (root && foundIndex >= 0 && lastActiveIndex.current !== foundIndex && !scrollingRef.current) {
-      if (activeKey?.startsWith("pseudo:") && foundIndex > lastActiveIndex.current) {
-        const landed = slides[lastActiveIndex.current];
-        if (landed && isRowSlide(landed)) {
-          setActiveKey(landed.key);
-          setEntered((p) => (p.has(landed.key) ? p : new Set(p).add(landed.key)));
-          root.scrollTo({ top: lastActiveIndex.current * root.clientHeight });
-          return;
-        }
-      }
-      const expected = foundIndex * root.clientHeight;
-      if (Math.abs(root.scrollTop - expected) > root.clientHeight * 0.5) root.scrollTo({ top: expected });
+    if (foundIndex >= 0 && lastActiveIndex.current !== foundIndex) {
+      root.scrollTo({ top: foundIndex * root.clientHeight });
     }
     lastActiveIndex.current = activeIndex;
   }, [activeIndex, foundIndex, activeKey, slides]);
@@ -587,6 +601,8 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
   const [askOpen, setAskOpen] = useState(false);
   const [askAbout, setAskAbout] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [mapOpen, setMapOpen] = useState(false);
+  const [topicLabel, setTopicLabel] = useState<string | null>(null);
 
   const onInteract = useCallback(
     (rowId: string, r: InteractResult) => {
@@ -654,8 +670,6 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
     setAskAbout(false);
     setAskOpen(true);
   }, []);
-  const closeAsk = useCallback(() => setAskOpen(false), []);
-
   const onAsk = useCallback(
     async (question: string) => {
       const rowId = activeRowId;
@@ -682,6 +696,99 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
     [activeRowId, staticMode, sessionId, mergeIn, activeKey, scrollToIndex],
   );
 
+  /** optimistic gate on the crossroads: flip it locally so the runway resumes/stops without a round trip. */
+  const setAwaitingChoice = useCallback(
+    (v: boolean) => {
+      qc.setQueryData<SessionPublic>(["session", sessionId], (s) => (s ? { ...s, progress: { ...s.progress, awaitingChoice: v } } : s));
+    },
+    [qc, sessionId],
+  );
+
+  /** Record a crossroads pick and let the runway go again. Optimistic — never a spinner on a fork. */
+  const postChoice = useCallback(
+    async (rowId: string, kind: CrossroadsChoice) => {
+      const row = cardsRef.current.find((c) => c.id === rowId);
+      const now = new Date().toISOString();
+      patchCard(rowId, { interaction: { ...(row?.interaction ?? {}), choice: kind, at: now }, viewedAt: row?.viewedAt ?? now });
+      setAwaitingChoice(false);
+      if (staticMode) return;
+      try {
+        const res = await api.post<ChooseData>(`/api/sessions/${sessionId}/choose`, { cardId: rowId, choice: kind });
+        seenEpoch.current = Math.max(seenEpoch.current, res.session.progress?.epoch ?? 0);
+        qc.setQueryData(["session", sessionId], res.session);
+        if (res.cards.length) mergeIn(res.cards);
+        pump();
+      } catch {
+        setAwaitingChoice(true); // the fork is still there — nothing was generated behind their back
+        showToast("that didn't take. tap it again?");
+      }
+    },
+    [patchCard, setAwaitingChoice, staticMode, sessionId, qc, mergeIn, pump, showToast],
+  );
+
+  /**
+   * Crossroads (their ask: "ask before generating more"). The card is the end of the deck until the
+   * reader picks. "ask" opens the ask sheet instead of posting; the fork is settled when that sheet
+   * closes, asked or not, so the feed can never park itself on an unanswered question.
+   */
+  const crossroadsAsk = useRef<string | null>(null);
+  const onChoose = useCallback(
+    (rowId: string, kind: CrossroadsChoice) => {
+      if (kind === "ask") {
+        crossroadsAsk.current = rowId;
+        setAskAbout(false);
+        setAskOpen(true);
+        return;
+      }
+      void postChoice(rowId, kind);
+    },
+    [postChoice],
+  );
+
+  const closeAsk = useCallback(() => {
+    setAskOpen(false);
+    const rowId = crossroadsAsk.current;
+    crossroadsAsk.current = null;
+    if (rowId) void postChoice(rowId, "ask");
+  }, [postChoice]);
+
+  /** `open` card: what they typed goes up, the reply comes back written against it. */
+  const onAnswer = useCallback(
+    async (rowId: string, text: string): Promise<OpenFeedback | null> => {
+      const row = cardsRef.current.find((c) => c.id === rowId);
+      const now = new Date().toISOString();
+      const base = { ...(row?.interaction ?? {}), text, at: now };
+      patchCard(rowId, { interaction: base, viewedAt: row?.viewedAt ?? now });
+      if (staticMode) return null;
+      viewedSent.current.add(rowId);
+      try {
+        await drainOutbox().catch(() => {}); // keep report order for this row
+        const res = await api.post<InteractData>(`/api/cards/${rowId}/interact`, { text, viewed: true });
+        viewedConfirmed.current.add(rowId);
+        if (res.feedback) patchCard(rowId, { interaction: { ...base, feedback: res.feedback } });
+        if (res.inserted?.length) mergeIn(res.inserted);
+        return res.feedback ?? null;
+      } catch {
+        showToast("couldn't get a reply on that one. give it a sec.");
+        return null;
+      }
+    },
+    [patchCard, staticMode, drainOutbox, mergeIn, showToast],
+  );
+
+  /** Session map: jump back to a topic (or detour) the reader has already been through. */
+  const onGoTo = useCallback(
+    (rowId: string) => {
+      const i = slidesRef.current.findIndex((s) => isRowSlide(s) && s.rowId === rowId);
+      if (i < 0) return;
+      const key = slidesRef.current[i].key;
+      setActiveKey(key);
+      setEntered((p) => (p.has(key) ? p : new Set(p).add(key)));
+      scrollToIndex(i, false);
+    },
+    [scrollToIndex],
+  );
+
   const onRetrySession = useCallback(async () => {
     const res = await post<RetrySessionData>(`/api/sessions/${sessionId}/retry`, {}).catch(() => null);
     if (res) qc.setQueryData(["session", sessionId], res.session);
@@ -701,15 +808,43 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
 
   // ── derived UI bits ─────────────────────────────────────────────────────
   const rowsById = useMemo(() => new Map(cards.map((c) => [c.id, c])), [cards]);
-  // hairline: position within the topic node (outline estimate as the floor of the denominator);
-  // never retracts while the user stands still on a card because a batch landed behind them
-  const lastProgress = useRef<{ rowId: string | null; frac: number }>({ rowId: null, frac: 0 });
-  let progress = activeRowId ? topicProgress(cards, activeRowId, session.outline) : lastProgress.current.frac;
-  if (activeRowId && activeRowId === lastProgress.current.rowId) progress = Math.max(progress, lastProgress.current.frac);
-  lastProgress.current = { rowId: activeRowId ?? lastProgress.current.rowId, frac: progress };
+
+  // the timeline reads from the last REAL card the reader stood on: standing on a placeholder
+  // must not blank the bar out from under them
+  const anchorRowId = useRef<string | null>(null);
+  if (activeRowId) anchorRowId.current = activeRowId;
+  const anchor = anchorRowId.current;
+  const timeline = useMemo(() => timelineModel(cards, session.outline, anchor), [cards, session.outline, anchor]);
+  const mapTopics = useMemo(() => (mapOpen ? sessionMap(cards, session.outline, anchor) : []), [mapOpen, cards, session.outline, anchor]);
+
+  // ── topic transitions: "now: why pods get evicted" for ~2s when the topic changes ────────
+  // This is what stops a long session feeling like the same topic forever.
+  const lastTopic = useRef<{ nodeId: string | null; detour: boolean } | null>(null);
+  useEffect(() => {
+    if (!activeRowId || !timeline.nodeId || !timeline.title) return;
+    const prev = lastTopic.current;
+    lastTopic.current = { nodeId: timeline.nodeId, detour: timeline.detour };
+    if (prev && prev.nodeId === timeline.nodeId && prev.detour === timeline.detour) return;
+    // stepping onto a detour: the marker card already says where you went, and a stale
+    // "now: <topic>" over it would be a lie
+    if (timeline.detour) {
+      setTopicLabel(null);
+      return;
+    }
+    const back = !!prev && prev.nodeId === timeline.nodeId && prev.detour;
+    setTopicLabel(`${back ? "back to" : "now"}: ${timeline.title}`);
+  }, [activeRowId, timeline.nodeId, timeline.title, timeline.detour]);
+  // …and it always fades back out on its own clock, whatever happens above
+  useEffect(() => {
+    if (!topicLabel) return;
+    const t = window.setTimeout(() => setTopicLabel(null), TOPIC_LABEL_MS);
+    return () => window.clearTimeout(t);
+  }, [topicLabel]);
 
   const chromeHidden = scrolling || askOpen;
   const showAsk = !!activeRowId && status !== "planning";
+  // standing on a placeholder that already has real cards below it: nudge them, never yank them
+  const nudgeSwipe = isPseudoKey(activeKey) && !!pin && pin.key === activeKey && runway > 0;
 
   const handlersFor = useCallback(
     (slide: Slide): SlideHandlers | undefined => {
@@ -727,14 +862,23 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
         onAskAbout,
         onRetry: () => onRetryFrom(rowId),
         onAction: pump,
+        onChoose: (kind) => void onChoose(rowId, kind),
+        onAnswer: (text) => onAnswer(rowId, text),
       };
     },
-    [onInteract, onDial, onAskAbout, onRetryFrom, pump, onRetrySession],
+    [onInteract, onDial, onAskAbout, onRetryFrom, pump, onRetrySession, onChoose, onAnswer],
   );
 
   return (
     <ThemeRoot theme={session.theme ?? SHELL_THEME} className="feed-root app-shell" data-status={status}>
-      <ProgressHairline fraction={progress} onRefresh={() => void onRefresh()} refreshing={refreshing} />
+      <Timeline
+        model={timeline}
+        pulseKey={activeKey}
+        scrolling={scrolling}
+        label={topicLabel}
+        onOpenMap={() => setMapOpen(true)}
+        refreshing={refreshing}
+      />
       <div ref={containerRef} className="feed relative z-[1]" style={{ overflowAnchor: "none" }} onScroll={onScroll} data-testid="feed">
         {slides.map((slide, i) => {
           const near = Math.abs(i - activeIndex) <= WINDOW;
@@ -751,6 +895,7 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
               interaction={row?.interaction ?? null}
               streak={streak}
               handlers={near ? handlersFor(slide) : undefined}
+              overlay={nudgeSwipe && slide.key === activeKey ? <SwipeNudge /> : undefined}
             />
           );
         })}
@@ -760,6 +905,14 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
       <InlineBubble text={bubble} onDismiss={() => setBubble(null)} />
       <Toast text={toast} />
       <AskSheet open={askOpen} aboutCard={askAbout} onClose={closeAsk} onSubmit={onAsk} />
+      <SessionMapSheet
+        open={mapOpen}
+        onClose={() => setMapOpen(false)}
+        topics={mapTopics}
+        onGoTo={onGoTo}
+        onRefresh={() => void onRefresh()}
+        refreshing={refreshing}
+      />
     </ThemeRoot>
   );
 }

@@ -3,9 +3,12 @@ import { memo, useEffect, useRef, type ReactNode } from "react";
 import type { Slide } from "@/components/cards/types";
 import { CardView, PredictRevealView } from "@/components/cards/CardRenderer";
 import type { InteractResult } from "@/components/cards/types";
-import type { FallbackCard } from "@/lib/schemas/cards";
+import type { OpenFeedback } from "@/lib/api/contract";
+import type { CROSSROADS_CHOICES, FallbackCard } from "@/lib/schemas/cards";
 import type { Interaction } from "@/lib/schemas/session";
 import { SafeCard } from "./CardErrorBoundary";
+
+export type CrossroadsChoice = (typeof CROSSROADS_CHOICES)[number];
 
 const FALLBACK: FallbackCard = {
   id: "00000000-0000-4000-8000-0000000000fb",
@@ -22,6 +25,10 @@ export type SlideHandlers = {
   onAskAbout?: () => void;
   onRetry?: () => void;
   onAction?: () => void;
+  /** crossroads card: the reader picked a direction (or asked for the ask sheet). */
+  onChoose?: (kind: CrossroadsChoice) => void;
+  /** open card: what they typed → the reply written against it (null when it couldn't be graded). */
+  onAnswer?: (text: string) => Promise<OpenFeedback | null>;
 };
 
 /**
@@ -58,6 +65,7 @@ export const FeedSlide = memo(function FeedSlide({
     return () => observe(null, slide.key);
   }, [observe, slide.key]);
 
+
   // Safe-area padding + the detour left-border tag live in the card views (CardFrame); the slide is a bare snap unit.
   return (
     <section
@@ -83,6 +91,8 @@ export const FeedSlide = memo(function FeedSlide({
                 onAskAbout={handlers?.onAskAbout}
                 onRetry={handlers?.onRetry}
                 onAction={handlers?.onAction}
+                onChoose={handlers?.onChoose}
+                onAnswer={handlers?.onAnswer}
                 streak={streak}
               />
             )}
