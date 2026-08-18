@@ -46,8 +46,17 @@ export type InteractionEvent = {
   repeatVisit?: boolean;
 };
 
-/** Content cards whose dwell means something for pace. */
-const DWELL_TYPES = new Set(["hook", "concept", "code", "diagram", "reveal", "checkpoint", "recap"]);
+/**
+ * Content cards whose dwell means something for pace — i.e. cards the reader
+ * READS. `stat` was added to the deck in schema v2 and never added here, so the
+ * single fastest-growing card type contributed nothing to the pace signal.
+ *
+ * `open` is deliberately NOT here even though it is also new: its dwell is
+ * dominated by typing an answer, not by reading, so counting it would read a
+ * thoughtful reply as a slow reader and trigger compression on someone who is
+ * doing exactly what we asked.
+ */
+const DWELL_TYPES = new Set(["hook", "concept", "code", "diagram", "reveal", "checkpoint", "recap", "stat"]);
 /** Teaching cards where a long dwell / scroll-back means "stuck" → recap. Recap/checkpoint/hook never re-trigger. */
 export const RECAP_TRIGGER_TYPES = new Set(["concept", "code", "diagram", "reveal"]);
 
@@ -243,16 +252,24 @@ export function withPrefs(state: LearnerState, prefs: Partial<Pick<LearnerState[
 
 /**
  * Short stable hash of the parts of learner state that change what the writer
- * produces (level, prefs, directives, per-node calibration). Rolling windows
- * are excluded so ordinary dwell reports don't churn the generation frontier.
+ * produces. This hash is part of the generation frontier key
+ * (`frontierKeyFor`), so anything in here that moves on an ordinary tap splits
+ * the frontier: an in-flight batch and the next request claim two different
+ * keys for the SAME runway slot, and the model gets paid twice to write it.
+ *
+ * So the rule is narrow and mechanical: hash ONLY what the writer prompt
+ * actually reads and what persists. `perNode`'s raw counters used to be in
+ * here, and they move on every single scored answer — while
+ * `lib/prompts/shared.ts` never reads `perNode` at all. Their real influence
+ * reaches the writer as `directives.scaffoldNext`, which is hashed, so nothing
+ * is lost by dropping them.
+ *
+ * Rolling windows are excluded for the same reason (a dwell report is not a
+ * new frontier), which does mean `rolling.last10Interactive` reaches the prompt
+ * without reaching the key — deliberate: it is noise that would otherwise
+ * re-key the runway on every card.
  */
 export function learnerStateHash(state: LearnerState): string {
-  const perNode = Object.keys(state.perNode)
-    .sort()
-    .map((k) => {
-      const n = state.perNode[k];
-      return [k, n.level, n.attempts, n.hits, n.consecutiveMisses, ...n.lastMissConcepts];
-    });
   const key = JSON.stringify([
     state.version,
     state.globalLevel,
@@ -265,7 +282,6 @@ export function learnerStateHash(state: LearnerState): string {
     state.directives.scaffoldNext,
     state.directives.recapDue,
     state.directives.reinforce,
-    perNode,
   ]);
   return createHash("sha1").update(key).digest("hex").slice(0, 10);
 }

@@ -158,6 +158,26 @@ describe("learner reducer: dwell + pace", () => {
     expect(s.directives.recapDue).toBe("a cache is a bet on repetition");
   });
 
+  it("counts dwell on a stat card, and never on an open one", () => {
+    // `stat` arrived with schema v2 and was never added to DWELL_TYPES — so the type that replaced
+    // the prose slabs contributed nothing to the pace signal.
+    const statCard: Card = {
+      id: "3f2a1c9e-9b7d-4b1e-8f4a-1c2d3e4f5a09", type: "stat", topicNodeId: "n1", detourId: null,
+      value: "10x", label: "fewer db reads", context: "not 10% fewer.",
+    };
+    const s = applyInteraction(defaultLearnerState(), { card: statCard, interaction: { dwellMs: 2200, at } });
+    expect(s.rolling.dwellMs).toEqual([2200]);
+
+    // `open` stays out on purpose: its dwell is typing time, not reading time, so counting it would
+    // read a thoughtful answer as a slow reader and compress the deck under someone doing the work.
+    const openCard: Card = {
+      id: "3f2a1c9e-9b7d-4b1e-8f4a-1c2d3e4f5a0a", type: "open", topicNodeId: "n1", detourId: null,
+      prompt: "in your own words — why does an empty cache hurt the db?", rubric: "r", modelAnswer: "m", difficulty: 2,
+    };
+    const typed = applyInteraction(defaultLearnerState(), { card: openCard, interaction: { dwellMs: 41_000, at } });
+    expect(typed.rolling.dwellMs).toEqual([]);
+  });
+
   it("ignores dwell on non-content cards", () => {
     const notice: Card = { id: "3f2a1c9e-9b7d-4b1e-8f4a-1c2d3e4f5a16", type: "notice", topicNodeId: "system", detourId: null, kind: "budget", headline: "h" };
     const s = applyInteraction(defaultLearnerState(), { card: notice, interaction: { dwellMs: 30_000, at } });
@@ -209,17 +229,29 @@ describe("learner reducer: dial + reinforce + hash", () => {
     // long labels are trimmed so they stay readable in a prompt
     const long = noteMissedConcepts(s0, "n1", ["x".repeat(90)]);
     expect(long.perNode.n1.lastMissConcepts[0].length).toBeLessThanOrEqual(48);
-    // and it changes what the writer sees next
-    expect(learnerStateHash(s1)).not.toBe(learnerStateHash(s0));
+    // …but recording it does NOT re-key the generation frontier. `perNode` is a ledger, not a
+    // directive: the writer never reads it (lib/prompts/shared.ts reads level/prefs/directives
+    // only), and its influence reaches the writer as `directives.scaffoldNext`, which IS hashed.
+    // Keeping the raw counters in the key meant every scored tap split the frontier and paid the
+    // model twice for the same runway slot.
+    expect(learnerStateHash(s1)).toBe(learnerStateHash(s0));
   });
 
-  it("learnerStateHash is stable, short, and ignores rolling dwell noise", () => {
+  it("learnerStateHash moves only on directives — never on ordinary reading or answering", () => {
     const s0 = defaultLearnerState();
     const h0 = learnerStateHash(s0);
     expect(h0).toMatch(/^[0-9a-f]{10}$/);
     expect(learnerStateHash(defaultLearnerState())).toBe(h0);
-    expect(learnerStateHash(dwells(s0, [3000]))).toBe(h0);
+
+    // This hash is half of the generation frontier key (engine.frontierKeyFor). Anything in it
+    // that moves on an ordinary tap splits the frontier: the in-flight batch and the next request
+    // claim different keys for the same slot, and the runway gets written twice.
+    expect(learnerStateHash(dwells(s0, [3000])), "a dwell report re-keyed the frontier").toBe(h0);
+    expect(learnerStateHash(answers(s0, [true])), "a correct answer re-keyed the frontier").toBe(h0);
+    expect(learnerStateHash(answers(s0, [true, true, true])), "a hit streak re-keyed the frontier").toBe(h0);
+
+    // …while the things that genuinely change what the writer is told still move it
     expect(learnerStateHash(applyDial(s0, "deeper"))).not.toBe(h0);
-    expect(learnerStateHash(answers(s0, [false]))).not.toBe(h0);
+    expect(learnerStateHash(addReinforce(s0, "eviction"))).not.toBe(h0);
   });
 });
