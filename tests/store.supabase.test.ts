@@ -5,7 +5,7 @@ import path from "path";
 import { generateNKeysBetween } from "fractional-indexing";
 import {
   batchToRow, cardToRow, createSupabaseStore, detourToRow, isDefinite, isTransient, llmCallToRow, rowToBatch, rowToCard,
-  rowToDetour, rowToLlmCall, rowToSession, sessionToRow, isSchemaMissing, SupabaseStoreError,
+  rowToDetour, rowToLlmCall, rowToSession, sessionToRow, isSchemaMissing, SupabaseStoreError, missingColumn, withoutColumn,
 } from "@/lib/db/supabase";
 import type { Batch, CardRow, Detour, LlmCall, Session } from "@/lib/schemas/session";
 import { defaultLearnerState } from "@/lib/schemas/learner";
@@ -327,5 +327,27 @@ describe("un-migrated project", () => {
     expect(e.message).toMatch(/DRIP_STORE=local/);
     expect(isSchemaMissing({ code: "42P01", message: 'relation "sessions" does not exist' })).toBe(true);
     expect(isSchemaMissing({ code: "23505", message: "duplicate key" })).toBe(false);
+  });
+});
+
+describe("a deploy that lands before its migration", () => {
+  it("tells the difference between no tables and a column added later", () => {
+    const noTables = { code: "PGRST205", message: "Could not find the table 'public.sessions' in the schema cache" };
+    const newCol = { code: "PGRST204", message: "Could not find the 'storyline' column of 'sessions' in the schema cache" };
+    expect(isSchemaMissing(noTables)).toBe(true);
+    expect(isSchemaMissing(newCol)).toBe(false);
+    expect(missingColumn(newCol)).toBe("storyline");
+    expect(missingColumn(noTables)).toBeNull();
+    expect(missingColumn({ code: "23505", message: "duplicate key" })).toBeNull();
+  });
+
+  it("drops only a known-optional column, and never anything else", () => {
+    const row = { id: "s1", title: "t", storyline: '{"spine":"x"}' };
+    const trimmed = withoutColumn(row, "storyline")!;
+    expect(trimmed).toEqual({ id: "s1", title: "t" });
+    expect(row.storyline, "the caller's row is not mutated").toBeTruthy();
+    // a column we don't know is optional must NOT be silently dropped — that would lose real data
+    expect(withoutColumn(row, "title")).toBeNull();
+    expect(withoutColumn(row, "nope")).toBeNull();
   });
 });

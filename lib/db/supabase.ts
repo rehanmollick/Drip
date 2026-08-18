@@ -201,8 +201,41 @@ type Res<T> = { data: T; error: PgError; count?: number | null };
 /** PostgREST reports an un-migrated project as "Could not find the table ... in the schema cache". */
 export function isSchemaMissing(e: { code?: string; message?: string } | null | undefined): boolean {
   if (!e) return false;
+  if (missingColumn(e)) return false; // a column added by a later migration is not "no tables"
   if (String(e.code) === "PGRST205" || String(e.code) === "42P01") return true;
   return /schema cache|does not exist/i.test(e.message ?? "");
+}
+
+/**
+ * A column this build writes that the database doesn't have yet — i.e. a deploy landed before its
+ * migration. Returns the column name. The app must NOT fall over in that window: a new optional
+ * column costs the reader the feature it powers, not their session.
+ */
+export function missingColumn(e: { code?: string; message?: string } | null | undefined): string | null {
+  if (!e) return null;
+  const m = /(?:could not find|column)\s+(?:the\s+)?'?"?([a-z_][a-z0-9_]*)'?"?\s+column|column\s+"?([a-z_][a-z0-9_]*)"?\s+of\s+relation/i.exec(e.message ?? "");
+  const name = m?.[1] ?? m?.[2] ?? null;
+  if (!name) return null;
+  return String(e.code) === "PGRST204" || /schema cache|does not exist/i.test(e.message ?? "") ? name : null;
+}
+
+/** Columns this build can write but an older database may lack. Dropped (loudly) rather than failing the write. */
+const OPTIONAL_COLS = new Set(["storyline"]);
+const warnedCols = new Set<string>();
+
+/** Retry a write once without a column the database doesn't have yet. Returns null when it can't help. */
+export function withoutColumn<T extends Record<string, unknown>>(row: T, col: string): T | null {
+  if (!OPTIONAL_COLS.has(col) || !(col in row)) return null;
+  if (!warnedCols.has(col)) {
+    warnedCols.add(col);
+    console.warn(
+      `[supabase] this database has no "${col}" column yet — writing without it. ` +
+        "Run the pending migration in supabase/migrations to turn the feature on; nothing else is affected.",
+    );
+  }
+  const { [col]: _dropped, ...rest } = row;
+  void _dropped;
+  return rest as T;
 }
 
 const MIGRATION_HINT =
@@ -280,6 +313,23 @@ export function createSupabaseStore(opts: { url?: string; key?: string; client?:
       throw e;
     }
   }
+  /**
+   * Run a session write; if the database is missing an optional column this build knows about
+   * (a deploy that landed before its migration), drop that column and try once more. The reader
+   * loses the feature the column powers until the migration runs — not their session.
+   */
+  async function writeSessionRow<T>(op: string, row: Row, run: (r: Row) => Promise<T>): Promise<T> {
+    try {
+      return await run(row);
+    } catch (e) {
+      const col = missingColumn(e as { code?: string; message?: string });
+      const trimmed = col ? withoutColumn(row, col) : null;
+      if (!trimmed) throw e;
+      void op;
+      return run(trimmed);
+    }
+  }
+
   /** Insert rows; the retry is an upsert that ignores rows already committed by a first attempt whose response was lost. */
   const insertRows = (op: string, table: string, rows: Row[]) =>
     q<Row[] | null>(
@@ -308,7 +358,7 @@ export function createSupabaseStore(opts: { url?: string; key?: string; client?:
   const store: Store = {
     // ── sessions ──────────────────────────────────────────────────────────
     async createSession(s) {
-      const data = await insertRows("createSession", "sessions", [sessionToRow(s)]);
+      const data = await writeSessionRow("createSession", sessionToRow(s), (row) => insertRows("createSession", "sessions", [row]));
       const r = rows(data)[0];
       return r ? rowToSession(r) : s;
     },
@@ -332,8 +382,8 @@ export function createSupabaseStore(opts: { url?: string; key?: string; client?:
         if (!cur) throw notFound();
         return cur;
       }
-      const data = await qLookup<Row | null>("updateSession", () =>
-        client.from("sessions").update(row).eq("id", id).select().maybeSingle(),
+      const data = await writeSessionRow("updateSession", row, (r) =>
+        qLookup<Row | null>("updateSession", () => client.from("sessions").update(r).eq("id", id).select().maybeSingle()),
       );
       if (!data) throw notFound();
       return rowToSession(data);
