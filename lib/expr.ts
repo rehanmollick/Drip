@@ -213,6 +213,34 @@ export function evaluate(expr: string, x: number): number {
   try { return f(x); } catch { return NaN; }
 }
 
+/**
+ * `n` points along `expr` across [min, max], normalised into a unit box: x runs
+ * 0→1 left to right, y 0→1 from the lowest sample to the highest (flip y for
+ * SVG). A flat curve sits at 0.5.
+ *
+ * null the moment the curve isn't drawable — bad formula, a divide by zero
+ * inside the range, an infinity, a range with no width. A card would rather
+ * draw no curve than a shape that isn't the formula.
+ */
+export function sampleCurve(expr: string, min: number, max: number, n: number): { x: number; y: number }[] | null {
+  if (!Number.isFinite(min) || !Number.isFinite(max) || min === max) return null;
+  if (!Number.isFinite(n) || n < 2 || n > 512) return null;
+  const count = Math.floor(n);
+  const f = compile(expr);
+  if (!f) return null;
+  const ys: number[] = [];
+  for (let i = 0; i < count; i++) {
+    const x = min + ((max - min) * i) / (count - 1);
+    let v: number;
+    try { v = f(x); } catch { return null; }
+    if (!Number.isFinite(v)) return null;
+    ys.push(v);
+  }
+  const lo = Math.min(...ys);
+  const span = Math.max(...ys) - lo;
+  return ys.map((v, i) => ({ x: i / (count - 1), y: span === 0 ? 0.5 : (v - lo) / span }));
+}
+
 const fmtNum = (n: number, maxFrac: number) =>
   n.toLocaleString("en-US", { maximumFractionDigits: maxFrac });
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compile, evaluate, formatOutput, parse, tokenize } from "@/lib/expr";
+import { compile, evaluate, formatOutput, parse, sampleCurve, tokenize } from "@/lib/expr";
 
 describe("expr: tokenize/parse", () => {
   it("tokenizes numbers, identifiers, operators", () => {
@@ -115,5 +115,48 @@ describe("expr: formatOutput", () => {
     expect(formatOutput(12, "int", "ms")).toBe("12ms");
     expect(formatOutput(12, "int", "%")).toBe("12%");
     expect(formatOutput(12, "int", "users")).toBe("12 users");
+  });
+});
+
+describe("expr: sampleCurve", () => {
+  it("walks the range and normalises into a unit box", () => {
+    const pts = sampleCurve("x", 0, 100, 5)!;
+    expect(pts).toHaveLength(5);
+    expect(pts[0]).toEqual({ x: 0, y: 0 });
+    expect(pts[4]).toEqual({ x: 1, y: 1 });
+    expect(pts[2].x).toBeCloseTo(0.5);
+    expect(pts[2].y).toBeCloseTo(0.5);
+  });
+  it("normalises against the samples, not the raw numbers", () => {
+    const pts = sampleCurve("1000 - 10 * x", 0, 100, 3)!;
+    expect(pts.map((p) => p.y)).toEqual([1, 0.5, 0]);
+  });
+  it("puts a flat curve down the middle", () => {
+    expect(sampleCurve("7", 0, 10, 4)!.map((p) => p.y)).toEqual([0.5, 0.5, 0.5, 0.5]);
+  });
+  it("returns null instead of throwing, whatever the writer wrote", () => {
+    expect(sampleCurve("y + 1", 0, 10, 8)).toBeNull();          // unparseable
+    expect(sampleCurve("window.alert(1)", 0, 10, 8)).toBeNull();
+    expect(sampleCurve("1 / x", 0, 10, 8)).toBeNull();          // divide by zero inside the range
+    expect(sampleCurve("1 / (x - 5)", 0, 10, 11)).toBeNull();
+    expect(sampleCurve("ln(x)", 0, 10, 8)).toBeNull();          // -Infinity at the edge
+    expect(sampleCurve("sqrt(x)", -10, 10, 8)).toBeNull();      // NaN inside the range
+    expect(sampleCurve("x", 5, 5, 8)).toBeNull();               // no width
+    expect(sampleCurve("x", 0, Infinity, 8)).toBeNull();
+    expect(sampleCurve("x", Number.NaN, 10, 8)).toBeNull();
+    expect(sampleCurve("x", 0, 10, 1)).toBeNull();
+    expect(sampleCurve("x", 0, 10, 0)).toBeNull();
+    expect(sampleCurve("x", 0, 10, -4)).toBeNull();
+    expect(sampleCurve("x", 0, 10, 10_000)).toBeNull();
+    expect(sampleCurve("x", 0, 10, Number.NaN)).toBeNull();
+  });
+  it("handles a descending range and the slider's own formula", () => {
+    const down = sampleCurve("x", 100, 0, 3)!;
+    expect(down.map((p) => p.y)).toEqual([1, 0.5, 0]);
+    const qps = sampleCurve("10000 * (1 - x / 100)", 0, 100, 6)!;
+    expect(qps).toHaveLength(6);
+    expect(qps[0].y).toBe(1);
+    expect(qps[5].y).toBe(0);
+    qps.forEach((p) => { expect(p.x).toBeGreaterThanOrEqual(0); expect(p.y).toBeLessThanOrEqual(1); });
   });
 });

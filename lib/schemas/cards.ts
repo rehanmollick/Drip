@@ -14,13 +14,15 @@ import { VisualSpec } from "./visual";
  * of every cache key (`cardbatch:v{N}:...`) so stale batches can never be
  * replayed against a renderer that doesn't understand them.
  */
-export const CARD_SCHEMA_VERSION = 2;
+export const CARD_SCHEMA_VERSION = 3;
 
 export const CARD_TYPES = [
   "hook", "concept", "code", "diagram", "binary", "predict", "sequence",
   "slider", "reveal", "checkpoint", "detour_marker", "recap", "fallback",
   "stat",       // one number, huge, with the line that makes it mean something
   "open",       // answer in your own words; the reply speaks to what YOU said
+  "scrub",      // drag a meter through a few frames and watch the thing change
+  "spot",       // find the one piece that's wrong
   // internal additions (not written by the batch writer unless asked):
   "notice",     // budget / offline / catching-up / planning messages, themed, in-feed
   "clarify",    // tap-to-answer setup question when the input sentence is ambiguous
@@ -32,23 +34,23 @@ export type CardType = (typeof CARD_TYPES)[number];
 /** Card types the writer may produce in a normal batch. */
 export const WRITER_CARD_TYPES = [
   "hook", "concept", "code", "diagram", "binary", "predict", "sequence",
-  "slider", "reveal", "checkpoint", "recap", "stat", "open",
+  "slider", "reveal", "checkpoint", "recap", "stat", "open", "scrub", "spot",
 ] as const;
 
 /**
  * Types that carry their idea through something other than a paragraph. Every batch needs one:
  * a deck of headline-plus-prose reads like a wall no matter how good the prose is.
  */
-export const VISUAL_CARD_TYPES = ["diagram", "code", "slider", "sequence", "stat"] as const;
+export const VISUAL_CARD_TYPES = ["diagram", "code", "slider", "sequence", "stat", "scrub", "spot"] as const;
 
 /** Prose-forward types — at most two per batch, never two in a row (see lib/generation/variety.ts). */
 export const PROSE_CARD_TYPES = ["concept", "recap"] as const;
 
-/** Interactive types excluded in chill mode. */
-export const CHILL_EXCLUDED_TYPES = ["binary", "predict", "sequence", "slider", "open"] as const;
+/** Interactive types excluded in chill mode. `scrub` stays: there is nothing to get wrong on it. */
+export const CHILL_EXCLUDED_TYPES = ["binary", "predict", "sequence", "slider", "open", "spot"] as const;
 
 /** Types whose result feeds calibration (hit/miss). */
-export const SCORED_TYPES = ["binary", "predict", "sequence", "open"] as const;
+export const SCORED_TYPES = ["binary", "predict", "sequence", "open", "spot"] as const;
 
 const Difficulty = z.number().min(1).max(5);
 
@@ -69,6 +71,13 @@ export const BaseCard = z.object({
   topicNodeId: z.string(),          // which outline node this serves ("clarify" / "system" for non-outline cards)
   detourId: z.string().nullable(),  // non-null inside a question detour
   eyebrow: z.string().max(28).optional(), // tiny label, e.g. "the footgun"
+  /**
+   * The idea this card is about, as a slug the writer reuses. NEVER rendered — it is the join
+   * between the card that teaches something and the card 26 slides later that bets on it, which is
+   * how the feed can call back to an idea instead of re-teaching it. Optional on purpose: a model
+   * that forgets it costs us nothing, where a required field would cost a validation retry.
+   */
+  anchor: z.string().max(40).regex(/^[a-z0-9]+(-[a-z0-9]+){0,3}$/).optional(),
 });
 
 export const HookCard = BaseCard.extend({
@@ -76,6 +85,7 @@ export const HookCard = BaseCard.extend({
   headline: z.string().max(90),     // one bold claim/question, huge type
   sub: z.string().max(120).optional(),
   visual: VisualSpec.optional(),
+  terms: Terms.optional(),
 });
 
 export const ConceptCard = BaseCard.extend({
@@ -100,6 +110,7 @@ export const CodeCard = BaseCard.extend({
     note: z.string().max(160),
   })).max(8),
   highlighted: z.array(HighlightedLine).optional(), // filled by lib/highlight.ts, never by the AI
+  terms: Terms.optional(),
 });
 
 export const DIAGRAM_VARIANTS = ["flow", "boxes", "timeline", "compare", "cycle", "layers"] as const;
@@ -120,6 +131,7 @@ export const DiagramCard = BaseCard.extend({
     label: z.string().max(20).optional(),
   })).max(12),
   tapNotes: z.record(z.string(), z.string().max(160)).optional(), // nodeId -> note
+  terms: Terms.optional(),
 });
 
 export const BinaryCard = BaseCard.extend({
@@ -129,6 +141,7 @@ export const BinaryCard = BaseCard.extend({
   correctIndex: z.union([z.literal(0), z.literal(1)]),
   revealCopy: z.string().max(240),  // the payoff after tapping (wrong tap still teaches)
   difficulty: Difficulty,
+  terms: Terms.optional(),
 });
 
 export const PredictCard = BaseCard.extend({
@@ -139,6 +152,7 @@ export const PredictCard = BaseCard.extend({
   revealHeadline: z.string().max(64),   // shown on the NEXT slide
   revealBody: z.string().max(240),
   difficulty: Difficulty,
+  terms: Terms.optional(),
 });
 
 export const SequenceCard = BaseCard.extend({
@@ -147,6 +161,7 @@ export const SequenceCard = BaseCard.extend({
   items: z.array(z.object({ id: z.string(), label: z.string().max(40) })).min(3).max(6), // in CORRECT order; client shuffles
   revealCopy: z.string().max(240),
   difficulty: Difficulty,
+  terms: Terms.optional(),
 });
 
 export const SliderCard = BaseCard.extend({
@@ -165,6 +180,7 @@ export const SliderCard = BaseCard.extend({
   outputUnit: z.string().max(12).optional(),
   outputFormat: z.enum(["number", "int", "percent", "currency", "ms", "compact"]).default("number"),
   insight: z.string().max(200).optional(), // one line that reframes what the user just felt
+  terms: Terms.optional(),
 });
 
 export const RevealCard = BaseCard.extend({
@@ -181,6 +197,7 @@ export const CheckpointCard = BaseCard.extend({
   sub: z.string().max(160).optional(),
   stat: z.object({ value: z.string().max(12), label: z.string().max(40) }).optional(),
   visual: VisualSpec.optional(),
+  terms: Terms.optional(),
 });
 
 export const DetourMarkerCard = BaseCard.extend({
@@ -195,6 +212,7 @@ export const RecapCard = BaseCard.extend({
   headline: z.string().max(64),
   beats: z.tuple([z.string().max(120), z.string().max(120), z.string().max(120)]),
   metaphor: z.string().max(80).optional(), // the NEW metaphor used (never repeat a prior one)
+  terms: Terms.optional(),
 });
 
 export const StatCard = BaseCard.extend({
@@ -222,6 +240,48 @@ export const OpenCard = BaseCard.extend({
   rubric: z.string().max(240),
   /** Shown if they'd rather not type — the answer they can compare against. */
   modelAnswer: z.string().max(280),
+  difficulty: Difficulty,
+  terms: Terms.optional(),
+});
+
+/**
+ * Drag a meter and watch the thing change. No right answer, no score — the payoff is feeling the
+ * shape of a relationship, which a paragraph about it never gives you. The frames are written in
+ * order and the meter snaps between them, so the reader never lands between two captions.
+ */
+export const ScrubCard = BaseCard.extend({
+  type: z.literal("scrub"),
+  title: z.string().max(48),
+  meterLabel: z.string().max(28),     // what the meter IS ("temperature", "how much you cache")
+  frames: z.array(z.object({
+    label: z.string().max(20),        // the stop, in its own words ("0°C", "everything")
+    caption: z.string().max(100),     // what's true at this stop
+    level: z.number().min(0).max(100),// where the meter sits on this stop, 0..100
+  })).min(3).max(6),
+  insight: z.string().max(160).optional(), // the line that reframes what they just felt
+  terms: Terms.optional(),
+});
+
+/**
+ * Find the one piece that's wrong. Reads like "spot the lie", not like a bet with four options —
+ * the pieces ARE the content, so a wrong tap still leaves them having read the whole thing.
+ */
+export const SpotCard = BaseCard.extend({
+  type: z.literal("spot"),
+  prompt: z.string().max(110),
+  // 6 x 44 is the fit ceiling, not a taste call: seven 48-char rows plus a 110-char prompt
+  // overflow 393x852 even after the renderer steps the type down, and a card that has to shrink
+  // to 10px to fit is a wall of text — the exact shape this type exists to replace.
+  pieces: z.array(z.object({
+    text: z.string().max(44),
+    hit: z.boolean().default(false),  // the piece(s) they're hunting for
+    note: z.string().max(120).optional(), // why this one is (or isn't) it, shown after the tap
+  })).min(3).max(6).refine(
+    (p) => { const h = p.filter((x) => x.hit).length; return h >= 1 && h <= 2; },
+    "exactly one or two pieces are the hit",
+  ),
+  mono: z.boolean().default(false),   // pieces are code-ish — render in the mono face
+  revealCopy: z.string().max(200),
   difficulty: Difficulty,
   terms: Terms.optional(),
 });
@@ -276,7 +336,7 @@ export const CardSchema = z.discriminatedUnion("type", [
   HookCard, ConceptCard, CodeCard, DiagramCard, BinaryCard, PredictCard,
   SequenceCard, SliderCard, RevealCard, CheckpointCard, DetourMarkerCard,
   RecapCard, FallbackCard, NoticeCard, ClarifyCard,
-  StatCard, OpenCard, CrossroadsCard, WrapCard,
+  StatCard, OpenCard, ScrubCard, SpotCard, CrossroadsCard, WrapCard,
 ]);
 export type Card = z.infer<typeof CardSchema>;
 export type CardOf<T extends CardType> = Extract<Card, { type: T }>;
@@ -298,16 +358,22 @@ export type NoticeCard = z.infer<typeof NoticeCard>;
 export type ClarifyCard = z.infer<typeof ClarifyCard>;
 export type StatCard = z.infer<typeof StatCard>;
 export type OpenCard = z.infer<typeof OpenCard>;
+export type ScrubCard = z.infer<typeof ScrubCard>;
+export type SpotCard = z.infer<typeof SpotCard>;
 export type CrossroadsCard = z.infer<typeof CrossroadsCard>;
 export type WrapCard = z.infer<typeof WrapCard>;
 export type GlossTerm = z.infer<typeof GlossTerm>;
+
+/** Types the reader does something to. Scored ones are a subset; `slider`/`scrub` have no answer. */
+const INTERACTIVE = new Set<string>([...SCORED_TYPES, "slider", "scrub"]);
+const SCORED = new Set<string>(SCORED_TYPES);
 
 /** The writer returns a batch of cards; we validate the array as a whole. */
 export const CardBatchSchema = z.object({ cards: z.array(CardSchema).min(1).max(8) });
 
 export function isInteractive(card: Card): boolean {
-  return card.type === "binary" || card.type === "predict" || card.type === "sequence" || card.type === "slider" || card.type === "open";
+  return INTERACTIVE.has(card.type);
 }
 export function isScored(card: Card): boolean {
-  return card.type === "binary" || card.type === "predict" || card.type === "sequence" || card.type === "open";
+  return SCORED.has(card.type);
 }

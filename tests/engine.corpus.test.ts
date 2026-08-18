@@ -99,7 +99,8 @@ describe("misc engine helpers", () => {
   it("directiveLines renders learner directives as writer-facing lines", () => {
     const st = defaultLearnerState();
     expect(directiveLines(st)).toEqual([]);
-    st.directives = { ...st.directives, difficultyDelta: 1, pace: "compress", reinforce: ["ttl"] };
+    st.level = st.globalLevel + 1;
+    st.directives = { ...st.directives, pace: "compress", reinforce: ["ttl"] };
     const lines = directiveLines(st);
     expect(lines.some((l) => /difficulty \+1/.test(l))).toBe(true);
     expect(lines.some((l) => /compress/.test(l))).toBe(true);

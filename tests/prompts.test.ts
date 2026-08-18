@@ -120,10 +120,10 @@ describe("prompt files", () => {
     expect(chill.system).not.toContain("### binary");
     expect(chill.system).toContain("### reveal");
 
-    const up = write.buildWritePrompt(writeCtx({ learnerState: { ...state, directives: { ...state.directives, difficultyDelta: 1 } } }));
+    const up = write.buildWritePrompt(writeCtx({ learnerState: { ...state, level: 4 } }));
     expect(up.user).toContain("difficulty 4");
     expect(up.user).toMatch(/curveball/);
-    const down = write.buildWritePrompt(writeCtx({ learnerState: { ...state, globalLevel: 2, directives: { ...state.directives, difficultyDelta: -1, pace: "compress" } } }));
+    const down = write.buildWritePrompt(writeCtx({ learnerState: { ...state, globalLevel: 2, level: 1, directives: { ...state.directives, pace: "compress" } } }));
     expect(down.user).toContain("difficulty 1");
     expect(down.user).toContain("compress");
 
@@ -356,11 +356,11 @@ describe("shared helpers", () => {
     expect(shared.sampleHeadings("# A\nplain sentence here.\n## B\nAnother Heading Line\n1. Numbered thing")).toEqual(["A", "B", "Another Heading Line", "1. Numbered thing"]);
   });
 
-  it("difficultyFor clamps globalLevel + delta into 1..5", () => {
+  it("difficultyFor hands the writer `level` — the dial and what they earned, already folded together", () => {
     const s = defaultLearnerState();
     expect(shared.difficultyFor(s)).toBe(3);
-    expect(shared.difficultyFor({ ...s, globalLevel: 5, directives: { ...s.directives, difficultyDelta: 2 } })).toBe(5);
-    expect(shared.difficultyFor({ ...s, globalLevel: 1, directives: { ...s.directives, difficultyDelta: -2 } })).toBe(1);
+    expect(shared.difficultyFor({ ...s, globalLevel: 5, level: 5 })).toBe(5);
+    expect(shared.difficultyFor({ ...s, globalLevel: 1, level: 1 })).toBe(1);
   });
 
   it("learnerSummary reports hit rate and directives", () => {

@@ -259,3 +259,104 @@ export function statFontSize(value: string, unit?: string): number {
     [2, 140], [3, 124], [4, 108], [5, 94], [6, 82], [7, 74], [8, 66], [10, 56], [12, 47], [Infinity, 42],
   ]);
 }
+
+// ── sentence pieces (prose that arrives a beat at a time) ───────────────────
+
+/**
+ * Words that end in a period and keep going. Deliberately short: a missed split
+ * just means a longer piece, while splitting "e.g. redis" mid-thought reads
+ * like a stutter.
+ */
+const ABBREV = new Set([
+  "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "vs", "etc", "eg", "ie",
+  "approx", "fig", "vol", "est", "cf", "al", "inc", "ltd", "dept", "aka", "ca",
+]);
+
+const TERMINATOR = /[.!?…]/;
+const TRAILING = /[.!?…"'”’)\]]/;
+
+/** Whether the terminator at `i` really ends a sentence (vs "3.5", "e.g.", "U.S."). */
+function endsSentence(text: string, i: number): boolean {
+  if (text[i] !== ".") return true;
+  const before = text.slice(0, i);
+  const word = /([A-Za-z]+)$/.exec(before);
+  if (word) {
+    const w = word[1].toLowerCase();
+    if (ABBREV.has(w)) return false;
+    // a lone letter before the dot is an initial ("e.g", "U.S", "a. big") — but
+    // "1.2M." is a number wearing a letter, and that really can end a sentence
+    if (w.length === 1) {
+      const prev = before[before.length - 2];
+      if (prev === undefined || prev === "." || /\s/.test(prev)) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Split prose into sentence pieces for a cascade. LOSSLESS: the pieces rejoin
+ * to the input byte for byte (`splitSentences(t).join("") === t`), so nothing
+ * the writer wrote can go missing between the schema and the screen. Trailing
+ * whitespace rides with the piece it follows; no piece is ever empty.
+ */
+export function splitSentences(text: string): string[] {
+  if (!text) return [];
+  const out: string[] = [];
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    if (!TERMINATOR.test(text[i])) continue;
+    let end = i;
+    while (end + 1 < text.length && TRAILING.test(text[end + 1])) end++;
+    const after = text[end + 1];
+    if (after !== undefined && !/\s/.test(after)) { i = end; continue; }
+    if (!endsSentence(text, i)) { i = end; continue; }
+    let cut = end + 1;
+    while (cut < text.length && /\s/.test(text[cut])) cut++;
+    out.push(text.slice(start, cut));
+    start = cut;
+    i = cut - 1;
+  }
+  if (start < text.length) out.push(text.slice(start));
+  return out;
+}
+
+// ── counting up to an authored value (components/ui/Odometer) ───────────────
+
+export type Countable = {
+  /** the magnitude the count travels to */
+  to: number;
+  /** what to paint at `n` — exactly the authored string once it lands */
+  at: (n: number) => string;
+};
+
+/**
+ * Plan a count-up for an authored value ("1.2M", "$0.02", "80%"). Only the
+ * digits move: the prefix, the unit and the writer's own thousands separators
+ * ride along verbatim, so the number that lands is byte for byte the number the
+ * card claims.
+ *
+ * null when there is nothing honest to count to — an approximation ("~3"), a
+ * bound ("<1ms"), a range, a zero, or any shape we can't reproduce exactly.
+ * Those render at once instead of rolling.
+ */
+export function countTo(raw: string): Countable | null {
+  const m = /^(-?[$€£¥]?)([\d,]*\d(?:\.\d+)?)(\s*)([a-zA-Z%µ/]*)$/.exec(raw.trim());
+  if (!m) return null;
+  const [, prefix, digits, gap, suffix] = m;
+  if (!parseStatValue(raw)) return null;
+  const to = Number(digits.replace(/,/g, ""));
+  const decimals = (digits.split(".")[1] ?? "").length;
+  if (!Number.isFinite(to) || to === 0 || decimals > 20) return null;
+  const grouped = digits.includes(",");
+  const frame = (n: number) =>
+    n.toLocaleString("en-US", { minimumFractionDigits: decimals, maximumFractionDigits: decimals, useGrouping: grouped });
+  // can't reproduce the writer's own digits → no business animating them
+  if (frame(to) !== digits) return null;
+  return {
+    to,
+    at: (n) => {
+      const s = frame(Math.max(0, Math.min(n, to)));
+      return s === digits ? raw : `${prefix}${s}${gap}${suffix}`;
+    },
+  };
+}

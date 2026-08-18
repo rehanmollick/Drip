@@ -196,8 +196,9 @@ function currentNode(session: Session): OutlineNode | null {
 export function directiveLines(state: LearnerState): string[] {
   const out: string[] = [];
   const d = state.directives;
-  if (d.difficultyDelta > 0) out.push(`difficulty +${d.difficultyDelta}: raise the bar — plausible-wrong options, "which one is the lie" bets, curveballs`);
-  if (d.difficultyDelta < 0) out.push(`difficulty ${d.difficultyDelta}: lower the bar — concrete before abstract, one idea per card`);
+  const drift = state.level - state.globalLevel;
+  if (drift > 0) out.push(`difficulty +${drift}: raise the bar — plausible-wrong options, "which one is the lie" bets, curveballs`);
+  if (drift < 0) out.push(`difficulty ${drift}: lower the bar — concrete before abstract, one idea per card`);
   if (d.pace === "compress") out.push("pace: compress — bigger claims, fewer cards per idea, no throat-clearing");
   if (d.reinforce.length) out.push(`reinforce (asked about in detours): ${d.reinforce.join(", ")}`);
   if (state.prefs.simplerTaps > state.prefs.deeperTaps) out.push("the learner tapped 'simpler' — plain words, everyday metaphors");

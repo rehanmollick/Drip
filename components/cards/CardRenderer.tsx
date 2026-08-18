@@ -3,7 +3,7 @@ import { Component, type ReactNode } from "react";
 import type {
   BinaryCard, CheckpointCard, ClarifyCard, CodeCard, ConceptCard, CrossroadsCard, DetourMarkerCard, DiagramCard,
   FallbackCard, HookCard, NoticeCard, OpenCard, PredictCard, RecapCard, RevealCard, SequenceCard, SliderCard,
-  StatCard, WrapCard,
+  ScrubCard, SpotCard, StatCard, WrapCard,
 } from "@/lib/schemas/cards";
 import type { CardViewProps } from "./types";
 import { HookView } from "./HookCard";
@@ -25,6 +25,8 @@ import { StatView } from "./StatCard";
 import { OpenView } from "./OpenCard";
 import { CrossroadsView } from "./CrossroadsCard";
 import { WrapView } from "./WrapCard";
+import { ScrubView } from "./ScrubCard";
+import { SpotView } from "./SpotCard";
 
 export { PredictRevealView };
 export type { CardViewProps, InteractResult, Slide } from "./types";
@@ -64,6 +66,8 @@ function CardSwitch(props: CardViewProps) {
     case "open": return <OpenView {...(props as CardViewProps<OpenCard>)} />;
     case "crossroads": return <CrossroadsView {...(props as CardViewProps<CrossroadsCard>)} />;
     case "wrap": return <WrapView {...(props as CardViewProps<WrapCard>)} />;
+    case "scrub": return <ScrubView {...(props as CardViewProps<ScrubCard>)} />;
+    case "spot": return <SpotView {...(props as CardViewProps<SpotCard>)} />;
     case "fallback":
     default:
       return <FallbackView {...(props as CardViewProps<FallbackCard>)} />;

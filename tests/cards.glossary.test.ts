@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { splitGlossed } from "@/components/cards/helpers";
+import { CARD_SCHEMA_VERSION, CardSchema, WRITER_CARD_TYPES } from "@/lib/schemas/cards";
 import { SAMPLE_CARDS_V2 } from "@/lib/feed/dev";
 import { WORST_CARDS } from "@/lib/feed/worst";
 
@@ -75,6 +76,10 @@ describe("inline glossary: splitGlossed", () => {
       : c.type === "reveal" ? String(c.payoff)
       : c.type === "stat" ? String(c.context)
       : c.type === "open" ? `${String(c.prompt)} ${String(c.modelAnswer)}`
+      // scrub underlines inside the frame captions, spot inside the payoff — those are the
+      // strings the views actually run through <Glossed>, so those are the ones a term must land in
+      : c.type === "scrub" ? (c.frames as { caption: string }[]).map((f) => f.caption).join(" ")
+      : c.type === "spot" ? String(c.revealCopy)
       : "";
     const carriers = [...SAMPLE_CARDS_V2, ...WORST_CARDS].filter(
       (c) => "terms" in c && Array.isArray((c as { terms?: unknown[] }).terms) && (c as { terms: unknown[] }).terms.length > 0,
@@ -86,5 +91,48 @@ describe("inline glossary: splitGlossed", () => {
       const hit = splitGlossed(text, terms).filter((s) => s.gloss).length;
       expect(hit, `${c.type} ${c.id}: no term matched its copy`).toBe(terms.length);
     }
+  });
+});
+
+describe("inline glossary: the schema actually keeps terms", () => {
+  const id = "00000000-0000-4000-8000-0000000000";
+  const terms = [{ term: "eviction", gloss: "throwing something out to make room" }];
+
+  /**
+   * The prompt has always told the writer to fill "terms" on any card that uses a word a newcomer
+   * wouldn't have. Zod only kept it on four types and silently dropped it everywhere else, so most
+   * of the glossary the model wrote never reached a screen. These are the two that hurt most.
+   */
+  it("a diagram card round-trips with its terms intact", () => {
+    const card = CardSchema.parse({
+      id: `${id}01`, type: "diagram", topicNodeId: "n1", detourId: null,
+      variant: "flow", title: "what a write does",
+      nodes: [{ id: "a", label: "write" }, { id: "b", label: "store" }],
+      edges: [{ from: "a", to: "b" }],
+      terms,
+    });
+    expect(card.type === "diagram" && card.terms).toEqual(terms);
+  });
+
+  it("a binary card round-trips with its terms intact", () => {
+    const card = CardSchema.parse({
+      id: `${id}02`, type: "binary", topicNodeId: "n1", detourId: null,
+      prompt: "eviction and expiry are the same thing", options: ["nah", "yeah"],
+      correctIndex: 0, revealCopy: "one is the clock, one is the landlord.", difficulty: 3,
+      terms,
+    });
+    expect(card.type === "binary" && card.terms).toEqual(terms);
+  });
+
+  it("every type the writer can produce accepts terms", () => {
+    for (const t of WRITER_CARD_TYPES) {
+      const shape = CardSchema.options.find((o) => o.shape.type.value === t);
+      expect(shape, `${t} is not in CardSchema`).toBeTruthy();
+      expect("terms" in shape!.shape, `${t} would silently drop the glossary`).toBe(true);
+    }
+  });
+
+  it("the schema version was bumped so no stale batch can be replayed", () => {
+    expect(CARD_SCHEMA_VERSION).toBe(3);
   });
 });

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { findBannedInValue, findBannedWord } from "@/lib/copy/banned";
+import { findBannedInValue, findBannedWord, scrubBannedValue } from "@/lib/copy/banned";
 import { SAMPLE_CARDS } from "@/lib/sample/cards";
 import { DEV_CARDS, SAMPLE_CARDS_V2 } from "@/lib/feed/dev";
 import { WORST_CARDS } from "@/lib/feed/worst";
@@ -24,13 +24,19 @@ function walk(dir: string): string[] {
 /** Every string literal / template chunk / JSX text in a source file. Comments are stripped first. */
 function stringLiterals(src: string): string[] {
   const noComments = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:"'`])\/\/.*$/gm, "$1");
+  // regex literals go first: a backtick inside one (helpers.ts matches code spans) otherwise opens
+  // a template literal that swallows the next hundred lines of source and reports them as copy.
+  const noRegex = noComments.replace(
+    /(^|[=(,:[!&|?+\-*%^~{};]|\breturn\b|\btypeof\b)(\s*)\/(?![*/])(?:\\.|\[(?:\\.|[^\]\\])*\]|[^/\\\n])+\/[gimsuyd]*/g,
+    '$1$2""',
+  );
   const out: string[] = [];
   const re = /"((?:[^"\\\n]|\\.)*)"|'((?:[^'\\\n]|\\.)*)'|`((?:[^`\\]|\\.)*)`/g;
   let m: RegExpExecArray | null;
-  while ((m = re.exec(noComments))) out.push(m[1] ?? m[2] ?? m[3] ?? "");
+  while ((m = re.exec(noRegex))) out.push(m[1] ?? m[2] ?? m[3] ?? "");
   // JSX text nodes: >text<
   const jsx = />([^<>{}]+)</g;
-  while ((m = jsx.exec(noComments))) out.push(m[1]);
+  while ((m = jsx.exec(noRegex))) out.push(m[1]);
   return out;
 }
 
@@ -82,6 +88,20 @@ describe("banned words (Prime Directive rule 1)", () => {
     };
     const offenders = [...DEV_CARDS, ...WORST_CARDS].flatMap((c) => scan(c, `${c.type} ${c.id}`));
     expect(offenders, offenders.join("\n")).toEqual([]);
+  });
+
+  /**
+   * `anchor` is the slug that joins a card teaching an idea to a card 26 slides later betting on
+   * it. Scrubbing it would leave two cards that look linked and aren't, so it is a non-copy key.
+   */
+  it("an anchor is never scanned or rewritten, however school-ish it reads", () => {
+    const card = {
+      id: "00000000-0000-4000-8000-000000000001", type: "concept", topicNodeId: "n1", detourId: null,
+      anchor: "write-through-test-path", headline: "the write path", body: "it goes to both.",
+    };
+    expect(findBannedInValue(card)).toBeNull();
+    expect(scrubBannedValue(card)).toEqual(card);
+    expect(scrubBannedValue(card).anchor).toBe("write-through-test-path");
   });
 
   it("no UI component string literal contains a banned word", () => {

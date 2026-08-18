@@ -21,6 +21,7 @@ export const NON_COPY_KEYS: ReadonlySet<string> = new Set([
   "from", "to", // diagram edges reference node ids
   "idx",
   "rubric",     // `open` cards: the grader's checklist, never rendered ("a good test of X" is fine there)
+  "anchor",     // the idea slug cards join on — a rewritten key silently unlinks a callback
 ]);
 
 const re = new RegExp(`\\b(${BANNED_WORDS.join("|")})(s|es)?\\b`, "i");

@@ -209,6 +209,31 @@ export const WORST_CARDS: Card[] = [
     body: `${GT[0]} ${GT[1]} ${GT[2]} ${exact(218, "and the rest of the body copy runs to the cap around them so the underlines have to survive a full wall of text")}`,
     terms: GLOSS,
   },
+  {
+    id: id(21), type: "scrub", topicNodeId: N, detourId: null, eyebrow: exact(28),
+    title: exact(48, "what the cache is actually worth hour by hour"),
+    meterLabel: exact(28, "asks answered from memory"),
+    frames: Array.from({ length: 6 }, (_, i) => ({
+      label: exact(20, `stop ${i} of the day`),
+      caption: exact(100, `${GT[i] ?? "at this stop the meter"} sits here because the same asks keep arriving and the slow thing rests`),
+      level: [8, 34, 61, 92, 5, 77][i],
+    })),
+    insight: exact(160, "the cache is worth the most at exactly the moment losing it hurts the most and that is the whole trade"),
+    terms: GLOSS,
+  },
+  {
+    id: id(22), type: "spot", topicNodeId: N, detourId: null, eyebrow: exact(28),
+    prompt: `${GT[1]} — ${exact(75, "one line here quietly serves the wrong answer forever so which one is it")}`,
+    pieces: Array.from({ length: 6 }, (_, i) => ({
+      text: exact(44, `await redis.set(key${i}, { keepalive: true })`),
+      hit: i === 3,
+      note: exact(120, `line ${i} is here because the miss path has to write the answer back before it returns it to the reader who waited`),
+    })),
+    mono: true,
+    revealCopy: `${GT[0]} ${GT[1]} ${GT[2]} ${exact(101, "is why a set with no expiry is a promise you cannot keep once the row underneath it changes")}`,
+    difficulty: 3,
+    terms: GLOSS,
+  },
 ];
 
 export function worstRows(sessionId = DEV_SESSION_ID): CardRow[] {

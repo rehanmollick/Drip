@@ -9,6 +9,13 @@ export const PersonaSchema = z.object({
   humor: z.string().max(60),                                 // humor register
   neverDoes: z.string().max(80),                             // one thing it never does
   voiceSample: z.string().max(160).optional(),
+  /** the one world this voice reaches into for comparisons ("pit lane", "a bad kitchen shift").
+   *  named once so 40 cards of metaphors come from the same place instead of a new one per batch. */
+  analogyWorld: z.string().max(60).optional(),
+  /** one whole concept card, in voice, about THIS subject — same caps as ConceptCard.
+   *  three traits and two tics DESCRIBE a voice; the writer still has to guess what it sounds
+   *  like, alone, every batch. a demonstration it can imitate beats the description. */
+  sampleCard: z.object({ headline: z.string().max(64), body: z.string().max(320) }).optional(),
 });
 export type Persona = z.infer<typeof PersonaSchema>;
 

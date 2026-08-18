@@ -8,9 +8,10 @@ import type { Interaction } from "@/lib/schemas/session";
  * never mutates its input (JSONB mutation gotcha, spec §12.9).
  *
  * Signals → directives:
- *   - hit rate over last 10 scored cards (≥8 samples): >0.9 → difficultyDelta
- *     steps up (cap +2); <0.65 → steps down (cap −2) + scaffoldNext = missed
- *     concepts; in the flow zone the delta relaxes one step toward 0.
+ *   - hit rate over last 10 scored cards (≥8 samples): >0.9 → `level` steps up;
+ *     <0.65 → steps down + scaffoldNext = missed concepts; in the flow zone it
+ *     relaxes one step back toward the level they dialled. It never wanders more
+ *     than LEVEL_DRIFT off `globalLevel` — the dial is a statement, not a hint.
  *   - two consecutive misses on one node → recapDue = that concept (the node
  *     is the concept granularity the schema knows; the label is the missed
  *     card's gist so the writer knows WHAT to recap).
@@ -30,6 +31,8 @@ export const MIN_SAMPLES = 8;
 export const MIN_DWELL_SAMPLES = 5;
 export const COMPRESS_MEDIAN_MS = 1800;
 export const LONG_DWELL_MS = 25_000;
+/** How far the measured level may drift from the level the reader dialled, in either direction. */
+export const LEVEL_DRIFT = 2;
 const KEEP_INTERACTIVE = 10;
 const KEEP_DWELL = 8;
 const KEEP_MISSES = 5;
@@ -103,15 +106,45 @@ export function missedConcepts(state: LearnerState, cap = 3): string[] {
   return dedup.slice(-cap);
 }
 
-/** Recompute the difficulty/pace/scaffold directives from the rolling windows. */
+/**
+ * The finer-grained reading the level rounds off. Each scored answer pulls `ability` toward a notch
+ * above what they just nailed (or a notch below what they just missed), and the pull shrinks as
+ * evidence piles up — so the first answer moves it a lot and the fortieth barely at all. The level
+ * ladder below is deliberately coarse and slow; this is the number that remembers the detail.
+ */
+function nudgeAbility(next: LearnerState, card: Card, correct: boolean): void {
+  const difficulty = typeof (card as { difficulty?: unknown }).difficulty === "number"
+    ? clamp((card as { difficulty: number }).difficulty, 1, 5)
+    : next.level;
+  const target = clamp(difficulty + (correct ? 1 : -1), 1, 5);
+  const weight = 1 / (next.abilityItems + 3);
+  next.ability = clamp(Math.round((next.ability + (target - next.ability) * weight) * 100) / 100, 1, 5);
+  next.abilityItems += 1;
+}
+
+/** Where `level` is allowed to sit: within LEVEL_DRIFT of the dial, and always inside 1..5. */
+function levelBounds(state: LearnerState): [number, number] {
+  return [clamp(state.globalLevel - LEVEL_DRIFT, 1, 5), clamp(state.globalLevel + LEVEL_DRIFT, 1, 5)];
+}
+
+/** Move `level` and stamp when it moved. The stamp is what later steps read to avoid yo-yoing. */
+function setLevel(next: LearnerState, value: number): void {
+  const [lo, hi] = levelBounds(next);
+  const v = clamp(Math.round(value), lo, hi);
+  if (v === next.level) return;
+  next.level = v;
+  next.levelSetAt = Date.now();
+}
+
+/** Recompute level/pace/scaffold from the rolling windows. */
 function recomputeDirectives(next: LearnerState, opts: { scored: boolean }): void {
   const d = next.directives;
   const last10 = next.rolling.last10Interactive;
   if (opts.scored && last10.length >= MIN_SAMPLES) {
     const rate = last10.filter(Boolean).length / last10.length;
-    if (rate > HIT_RATE_HIGH) d.difficultyDelta = clamp(d.difficultyDelta + 1, -2, 2);
-    else if (rate < HIT_RATE_LOW) d.difficultyDelta = clamp(d.difficultyDelta - 1, -2, 2);
-    else if (d.difficultyDelta !== 0) d.difficultyDelta += d.difficultyDelta > 0 ? -1 : 1;
+    if (rate > HIT_RATE_HIGH) setLevel(next, next.level + 1);
+    else if (rate < HIT_RATE_LOW) setLevel(next, next.level - 1);
+    else if (next.level !== next.globalLevel) setLevel(next, next.level + (next.level > next.globalLevel ? -1 : 1));
     d.scaffoldNext = rate < HIT_RATE_LOW ? missedConcepts(next) : [];
   }
   const dw = next.rolling.dwellMs;
@@ -127,8 +160,9 @@ export function applyInteraction(state: LearnerState, ev: InteractionEvent): Lea
 
   if (scored) {
     const correct = interaction.correct === true;
+    nudgeAbility(next, card, correct);
     const node = next.perNode[card.topicNodeId] ?? {
-      level: next.globalLevel, attempts: 0, hits: 0, lastMissConcepts: [], consecutiveMisses: 0,
+      attempts: 0, hits: 0, lastMissConcepts: [], consecutiveMisses: 0,
     };
     const lastMiss = correct ? node.lastMissConcepts : pushKeep(node.lastMissConcepts.filter((c) => c !== concept), concept, KEEP_MISSES);
     const consecutiveMisses = correct ? 0 : (node.consecutiveMisses ?? 0) + 1;
@@ -172,7 +206,11 @@ export function applyInteraction(state: LearnerState, ev: InteractionEvent): Lea
 
 export function applyDial(state: LearnerState, direction: "simpler" | "deeper"): LearnerState {
   const next = clone(state);
+  // the dial moves what they asked for; the measured offset they've earned rides along with it
+  const drift = next.level - next.globalLevel;
   next.globalLevel = clamp(next.globalLevel + (direction === "simpler" ? -1 : 1), 1, 5);
+  next.level = clamp(next.globalLevel + drift, 1, 5);
+  next.levelSetAt = Date.now();
   next.prefs = {
     ...next.prefs,
     simplerTaps: next.prefs.simplerTaps + (direction === "simpler" ? 1 : 0),
@@ -219,7 +257,7 @@ export function noteMissedConcepts(state: LearnerState, nodeId: string, concepts
   );
   if (clean.length === 0) return state;
   const next = clone(state);
-  const node = next.perNode[nodeId] ?? { level: next.globalLevel, attempts: 0, hits: 0, lastMissConcepts: [], consecutiveMisses: 0 };
+  const node = next.perNode[nodeId] ?? { attempts: 0, hits: 0, lastMissConcepts: [], consecutiveMisses: 0 };
   let list = node.lastMissConcepts;
   for (const c of clean) list = pushKeep(list.filter((x) => x !== c), c, KEEP_MISSES);
   next.perNode = { ...next.perNode, [nodeId]: { ...node, lastMissConcepts: list } };
@@ -268,16 +306,21 @@ export function withPrefs(state: LearnerState, prefs: Partial<Pick<LearnerState[
  * new frontier), which does mean `rolling.last10Interactive` reaches the prompt
  * without reaching the key — deliberate: it is noise that would otherwise
  * re-key the runway on every card.
+ *
+ * v2 added `ability`, `abilityItems` and `ledger`, and `directives.due` is a
+ * projection of the ledger — all four move on ordinary cards, so all four stay
+ * out. What they're for reaches the writer through `level`, which is hashed and
+ * only steps when the reading genuinely changed.
  */
 export function learnerStateHash(state: LearnerState): string {
   const key = JSON.stringify([
     state.version,
     state.globalLevel,
+    state.level,
     state.prefs.chillMode,
     state.prefs.depthPreset,
     state.prefs.simplerTaps,
     state.prefs.deeperTaps,
-    state.directives.difficultyDelta,
     state.directives.pace,
     state.directives.scaffoldNext,
     state.directives.recapDue,

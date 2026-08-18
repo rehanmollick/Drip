@@ -9,10 +9,33 @@ import { CardSchema } from "@/lib/schemas/cards";
  * Client (lib/api/client.ts) and server (app/api/**) both import from here.
  */
 
+/**
+ * Where generation actually is, counted from rows that exist rather than from what the plan hoped
+ * for. `estCards` is a guess the writer routinely overshoots or undershoots, so nobody downstream
+ * can derive any of this from the outline — the server has to say it out loud.
+ */
+export const FrontierPublicSchema = z.object({
+  written: z.record(z.string(), z.number().int()).default({}),  // outline node id → main-thread cards that EXIST for it
+  beyond: z.number().int().default(0),                          // cards written past the end of the outline
+  nodeIdx: z.number().int().default(0),                         // outline index the writer is working in
+  deeper: z.record(z.string(), z.number().int()).default({}),   // node id → extra cards "one more layer here" bought there
+  /** node ids the writer has finished. a node closes when it carries a crossroads row, whatever estCards guessed. */
+  closed: z.array(z.string()).default([]),
+  /** parked on the reader: an unanswered crossroads, or the wrap that ended the thread. null = still moving. */
+  gate: z.enum(["crossroads", "wrap"]).nullable().default(null),
+  /** a batch is in flight RIGHT NOW — the difference between "nothing is coming" and "wait a beat". */
+  live: z.object({ nodeIdx: z.number().int(), startedAt: z.string() }).nullable().default(null),
+  epoch: z.number().int().default(0),                           // runway epoch this was counted against; older = stale
+  halted: z.boolean().default(false),                           // stopped for something scrolling can't clear (spend cap, dead session)
+});
+export type FrontierPublic = z.infer<typeof FrontierPublicSchema>;
+
 /** Session as sent to the browser: no full corpus, just its size. */
 export const SessionPublicSchema = SessionSchema.omit({ sourceText: true }).extend({
   sourceChars: z.number().int(),
   cardCount: z.number().int().default(0),
+  /** absent on responses that didn't count it, and on every session stored before it existed. */
+  frontier: FrontierPublicSchema.nullish(),
 });
 export type SessionPublic = z.infer<typeof SessionPublicSchema>;
 
@@ -75,6 +98,8 @@ export const GenerateData = z.object({
     reason: z.string().optional(),
   }),
   cards: z.array(CardRowSchema),              // the batch's cards when done (may include a single fallback/notice card)
+  /** where the writer stands after this batch — so the client never has to guess from card counts. */
+  frontier: FrontierPublicSchema.nullish(),
 });
 export type GenerateData = z.infer<typeof GenerateData>;
 

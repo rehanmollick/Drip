@@ -381,6 +381,37 @@ function makeCard(type: CardType, c: Ctx, i: number): Card {
       };
       return card;
     }
+    case "scrub":
+      return {
+        ...base(c, "scrub", i, "drag it"),
+        type: "scrub",
+        title: clampStr(`what ${s} does as the day fills up`, 48),
+        meterLabel: clampStr("traffic", 28),
+        frames: [
+          { label: "3am", caption: clampStr(`almost nothing is asked twice, so ${s} is mostly empty.`, 100), level: 12 },
+          { label: "9am", caption: clampStr("the same handful of asks start repeating and the fast path starts earning its keep.", 100), level: 48 },
+          { label: "noon", caption: clampStr("nearly every ask is one that already has an answer sitting in memory.", 100), level: 86 },
+          { label: "restart", caption: clampStr("memory is wiped and every one of those asks lands on the slow thing at once.", 100), level: 4 },
+        ],
+        insight: clampStr(`${s} is worth the most at exactly the moment losing it hurts the most.`, 160),
+        ...(terms ? { terms } : {}),
+      };
+    case "spot":
+      return {
+        ...base(c, "spot", i, "spot it"),
+        type: "spot",
+        prompt: clampStr(`one line here quietly breaks ${s}. which one?`, 110),
+        pieces: [
+          { text: "const hit = await fast.get(key)", hit: false, note: "asking the fast thing first is the whole pattern." },
+          { text: "if (hit) return hit", hit: false, note: "a hit returns straight away. nothing to fix here." },
+          { text: "await fast.set(key, row)", hit: true, note: "no ttl. this answer never expires, so it can be wrong forever." },
+          { text: "return row", hit: false, note: "fine — the write already happened above it." },
+        ],
+        mono: true,
+        revealCopy: clampStr("a set with no ttl is a promise you can't keep. the answer stops matching reality and nothing ever tells it to go.", 200),
+        difficulty: diff,
+        ...(terms ? { terms } : {}),
+      };
     default:
       // internal types are never written by the mock; fall back to a concept.
       return makeCard("concept", c, i);

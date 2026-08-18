@@ -80,6 +80,37 @@ export const SAMPLE_CARDS_V2: Card[] = [
     stat: { value: "100×", label: "memory vs disk, on a good day" },
     openThread: "we never touched what happens when two servers hold different answers for the same key.",
   },
+  {
+    id: "5c1a2b3d-0000-4000-8000-00000000c007",
+    type: "scrub", topicNodeId: N, detourId: null, eyebrow: "drag it",
+    title: "what the cache is worth, hour by hour",
+    meterLabel: "asks answered from memory",
+    frames: [
+      { label: "3am", caption: "barely anything repeats, so almost every ask goes the long way round.", level: 14 },
+      { label: "9am", caption: "the same few pages start getting asked for over and over.", level: 52 },
+      { label: "noon", caption: "nearly every ask already has its answer sitting in memory.", level: 88 },
+      { label: "the restart", caption: "memory is wiped. every one of those asks lands on the database in the same second.", level: 3 },
+      { label: "a minute later", caption: "the popular answers are back. the quiet ones never come back at all.", level: 74 },
+    ],
+    insight: "the cache is worth the most at exactly the moment losing it hurts the most.",
+    terms: [{ term: "memory", gloss: "RAM — fast and forgetful. a restart wipes it, which is why the drop is a cliff and not a slope." }],
+  },
+  {
+    id: "5c1a2b3d-0000-4000-8000-00000000c008",
+    type: "spot", topicNodeId: N, detourId: null, eyebrow: "one of these bites",
+    prompt: "one line here quietly serves the wrong answer forever. which one?",
+    pieces: [
+      { text: "const hit = await redis.get(key)", hit: false, note: "asking the fast thing first is the whole pattern." },
+      { text: "if (hit) return JSON.parse(hit)", hit: false, note: "a hit returns straight away. nothing wrong here." },
+      { text: "const row = await db.users.find(id)", hit: false, note: "the miss path. slow, but only for the first reader." },
+      { text: "await redis.set(key, row)", hit: true, note: "no TTL. this answer never expires, so it can be wrong until someone restarts the box." },
+      { text: "return row", hit: false, note: "fine — the write already happened on the line above." },
+    ],
+    mono: true,
+    revealCopy: "a set with no TTL is a promise you can't keep. the row changes, the cached copy doesn't, and nothing ever tells it to go.",
+    difficulty: 2,
+    terms: [{ term: "TTL", gloss: "time to live — the countdown on a stored answer. at zero it's dropped and the next reader gets a fresh one." }],
+  },
 ];
 
 for (const c of SAMPLE_CARDS_V2) CardSchema.parse(c);

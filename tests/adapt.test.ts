@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  addReinforce, applyDial, applyInteraction, clearRecap, conceptOf, learnerStateHash, median, missedConcepts,
-  noteMissedConcepts,
+  addReinforce, applyDial, applyInteraction, clearRecap, conceptOf, learnerStateHash, LEVEL_DRIFT, median,
+  missedConcepts, noteMissedConcepts,
 } from "@/lib/adapt/learner";
 import { defaultLearnerState, type LearnerState } from "@/lib/schemas/learner";
 import type { Card } from "@/lib/schemas/cards";
@@ -84,40 +84,50 @@ describe("learner reducer: scored cards", () => {
   });
 });
 
-describe("learner reducer: difficulty directives", () => {
-  it("needs ≥5 samples before moving difficulty", () => {
+describe("learner reducer: the level ladder", () => {
+  it("needs a nearly full window before level moves off the dial", () => {
     const s = answers(defaultLearnerState(), [true, true, true, true]);
-    expect(s.directives.difficultyDelta).toBe(0);
+    expect(s.level).toBe(3);
+    expect(s.levelSetAt).toBe(0);
   });
 
-  it("hit rate > 0.9 → +1 per scored card, capped at +2 (needs a real window first)", () => {
+  it("hit rate > 0.9 → +1 per scored card, capped at globalLevel + LEVEL_DRIFT", () => {
     const s7 = answers(defaultLearnerState(), Array(7).fill(true));
-    expect(s7.directives.difficultyDelta).toBe(0); // fewer than MIN_SAMPLES → no move
+    expect(s7.level).toBe(3); // fewer than MIN_SAMPLES → no move
     const s8 = answers(s7, [true]);
-    expect(s8.directives.difficultyDelta).toBe(1);
+    expect(s8.level).toBe(4);
     const s12 = answers(s8, Array(4).fill(true));
-    expect(s12.directives.difficultyDelta).toBe(2);
+    expect(s12.level).toBe(3 + LEVEL_DRIFT);
+    expect(s12.globalLevel).toBe(3); // the dial is untouched — only the reading moved
   });
 
-  it("hit rate < 0.65 → −1 (cap −2) and scaffoldNext = missed concepts", () => {
+  it("hit rate < 0.65 → level steps down (floor globalLevel − LEVEL_DRIFT) and scaffoldNext = missed concepts", () => {
     const misses = [false, false, false, true, false, false, true, false];
     const s = answers(defaultLearnerState(), misses);
-    expect(s.directives.difficultyDelta).toBe(-1);
+    expect(s.level).toBe(2);
     expect(s.directives.scaffoldNext).toEqual(["kill redis and the site dies"]);
     const s2 = answers(s, [false, false, false]);
-    expect(s2.directives.difficultyDelta).toBe(-2);
+    expect(s2.level).toBe(3 - LEVEL_DRIFT);
     // a different missed concept shows up too, most recent last
     const s3 = answers(s2, [false], binary({ prompt: "the stampede", topicNodeId: "n2" }));
     expect(s3.directives.scaffoldNext).toEqual(["kill redis and the site dies", "the stampede"]);
     expect(missedConcepts(s3)).toEqual(["kill redis and the site dies", "the stampede"]);
   });
 
-  it("flow zone relaxes the delta one step toward zero and clears scaffolds", () => {
-    const hot = answers(defaultLearnerState(), Array(10).fill(true)); // +2
-    // 8/10 → in zone
+  it("flow zone walks level back toward the dial, one step per card, and clears scaffolds", () => {
+    const hot = answers(defaultLearnerState(), Array(10).fill(true)); // level 5
+    expect(hot.level).toBe(5);
+    // 8/10 → in the zone, and two cards in the zone is two steps home
     const cooled = answers(hot, [false, false]);
-    expect(cooled.directives.difficultyDelta).toBe(0);
+    expect(cooled.level).toBe(3);
     expect(cooled.directives.scaffoldNext).toEqual([]);
+  });
+
+  it("the dial carries the earned drift with it — dialling simpler doesn't throw the measurement away", () => {
+    const hot = answers(defaultLearnerState(), Array(10).fill(true)); // globalLevel 3, level 5
+    const simpler = applyDial(hot, "simpler");
+    expect(simpler.globalLevel).toBe(2);
+    expect(simpler.level).toBe(4);
   });
 });
 

@@ -3,7 +3,7 @@ import { BANNED_WORDS } from "@/lib/copy/banned";
 import {
   BinaryCard, CheckpointCard, ClarifyCard, CodeCard, ConceptCard, DetourMarkerCard, DiagramCard,
   FallbackCard, HookCard, NoticeCard, PredictCard, RecapCard, RevealCard, SequenceCard, SliderCard,
-  type CardType, StatCard, OpenCard, CrossroadsCard, WrapCard,
+  type CardType, StatCard, OpenCard, ScrubCard, SpotCard, CrossroadsCard, WrapCard,
 } from "@/lib/schemas/cards";
 import type { LearnerState } from "@/lib/schemas/learner";
 import type { Persona } from "@/lib/schemas/plan";
@@ -180,6 +180,8 @@ const CARD_ZOD: Record<CardType, z.ZodType> = {
   clarify: ClarifyCard,
   stat: StatCard,
   open: OpenCard,
+  scrub: ScrubCard,
+  spot: SpotCard,
   crossroads: CrossroadsCard,
   wrap: WrapCard,
 };
@@ -194,6 +196,17 @@ example: {"type":"stat","eyebrow":"the math nobody does","value":"10x","label":"
 "rubric" (≤ 240) is for the grader only and NEVER on screen: the 2–3 things a good answer contains, written as a checklist fragment.
 "modelAnswer" (≤ 280) is what they can reveal if they'd rather not type — a real answer in your voice, not a rubric restated.
 example: {"type":"open","eyebrow":"say it back","prompt":"in your own words — why does an empty cache hurt the database?","placeholder":"however you'd say it","rubric":"every request becomes a miss; all misses land on the db at once; the db was never sized for that","modelAnswer":"nothing is in memory, so every single ask goes to the database at the same moment — and it was only ever sized for the misses.","difficulty":2}`,
+  scrub: `they drag a meter across a few moments and watch the thing change. no right answer and no score — the payoff is FEELING the shape of a relationship, which a paragraph about it never gives you. reach for it whenever the point is "as X goes up, Y does this".
+"title" (\u2264 48) names what they're dragging through. "meterLabel" (\u2264 28) is what the meter IS ("asks answered from memory", "temperature").
+"frames" are 3\u20136 stops IN ORDER, and the SHAPE of their "level" (0\u2013100) is the whole point \u2014 make it rise, crash, or double back for a reason. each stop has a "label" (\u2264 20, in its own words: "3am", "the restart") and a "caption" (\u2264 100) saying what is true there. a flat line teaches nothing.
+"insight" (\u2264 160) is the one line that reframes what they just felt.
+example: {"type":"scrub","eyebrow":"drag it","title":"what the cache is worth, hour by hour","meterLabel":"asks answered from memory","frames":[{"label":"3am","caption":"barely anything repeats, so almost every ask goes the long way round.","level":14},{"label":"noon","caption":"nearly every ask already has its answer sitting in memory.","level":88},{"label":"the restart","caption":"memory is wiped and all of it lands on the database in one second.","level":3}],"insight":"it is worth the most at exactly the moment losing it hurts the most."}`,
+  spot: `find the one line that matters inside real material. reads like "spot the lie", not like a bet with four options \u2014 and because the pieces ARE the content, a wrong tap still leaves them having read the whole thing.
+"prompt" (\u2264 110) says what they're hunting ("one line here quietly serves the wrong answer forever. which one?").
+"pieces" are 3\u20137 rows shown in order, each "text" \u2264 48 chars. EXACTLY one or two carry "hit": true. every piece should earn a "note" (\u2264 120) \u2014 why it is, or is not, the one \u2014 because that note is what a miss teaches.
+set "mono": true when the pieces are code, config or log lines (they render in the mono face). the wrong pieces must be plausible: a row nobody would ever tap is a wasted row.
+"revealCopy" (\u2264 200) is the payoff once every hit is found. difficulty 1\u20135.
+example: {"type":"spot","eyebrow":"one of these bites","prompt":"one line here quietly serves the wrong answer forever. which one?","pieces":[{"text":"const hit = await redis.get(key)","hit":false,"note":"asking the fast thing first is the whole pattern."},{"text":"await redis.set(key, row)","hit":true,"note":"no TTL. this answer never expires, so it can be wrong until someone restarts the box."},{"text":"return row","hit":false,"note":"fine \u2014 the write already happened above it."}],"mono":true,"revealCopy":"a set with no TTL is a promise you can't keep. the row changes, the copy doesn't, and nothing tells it to go.","difficulty":2}`,
   crossroads: `never write this — the app inserts it at topic boundaries.`,
   wrap: `the ending, only when asked for: the whole thread in 3–5 beats, each ≤ 120 chars, the way you'd catch up a friend who walked in late. beats are in order and each one is a claim, not a topic name ("a cache is a bet on repetition" — not "we covered caching"). optional "stat" is a flex, never progress. "openThread" (≤ 140) is the one thing still unexplored, phrased as an invitation to come back.`,
   hook: `one bold claim or question in huge type (headline ≤ 90 chars). optional sub. sets up the next 2–3 cards. no explanation here — tension only.`,
@@ -262,8 +275,9 @@ export function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, n));
 }
 
+/** The one number the writer is handed. `level` already carries the dial and what they've earned. */
 export function difficultyFor(state: LearnerState): number {
-  return clamp(state.globalLevel + state.directives.difficultyDelta, 1, 5);
+  return clamp(state.level, 1, 5);
 }
 
 export function learnerSummary(state: LearnerState): string {
@@ -272,7 +286,7 @@ export function learnerSummary(state: LearnerState): string {
   const rate = last.length ? Math.round((hits / last.length) * 100) : null;
   const d = state.directives;
   const lines = [
-    `level ${state.globalLevel}/5 (1 = total beginner, 5 = practitioner). difficulty delta ${d.difficultyDelta >= 0 ? "+" : ""}${d.difficultyDelta} → write interactives at difficulty ${difficultyFor(state)}.`,
+    `they dialled ${state.globalLevel}/5 (1 = total beginner, 5 = practitioner); their answers read ${difficultyFor(state)}/5 → write interactives at difficulty ${difficultyFor(state)}.`,
     rate === null ? `no interactive results yet.` : `recent bets: ${hits}/${last.length} landed (${rate}%).`,
     state.rolling.avgDwellMs ? `avg dwell ${Math.round(state.rolling.avgDwellMs / 100) / 10}s per card.` : ``,
     `pace: ${d.pace}${d.pace === "compress" ? " → they're skimming: bigger claims, fewer words, fewer cards per idea." : "."}`,
@@ -285,8 +299,8 @@ export function learnerSummary(state: LearnerState): string {
 }
 
 export function difficultyDirective(state: LearnerState): string {
-  const delta = state.directives.difficultyDelta;
   const diff = difficultyFor(state);
+  const delta = diff - state.globalLevel;
   if (delta > 0) {
     return `difficulty directive: they're cruising (>90% recently). write interactives at difficulty ${diff} and add curveballs: plausible-wrong options, "which is the LIE" formats, edge cases the source actually covers.`;
   }

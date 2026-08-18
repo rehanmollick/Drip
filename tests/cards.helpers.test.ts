@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   codeFontSize, estimateCodeRows, estimateLines, fitFontSize, fraction, hashString, hexAddress,
-  reserveHeight, sameOrder, seededRandom, shuffleDeterministic, sparkPoints,
+  reserveHeight, sameOrder, seededRandom, shuffleDeterministic, sparkPoints, splitSentences,
 } from "@/components/cards/helpers";
+import { WORST_CARDS } from "@/lib/feed/worst";
 
 describe("cards helpers: deterministic shuffle", () => {
   const ids = ["a", "b", "c", "d"];
@@ -74,5 +75,103 @@ describe("cards helpers: sizing", () => {
     expect(pts[2].x).toBe(98);
     expect(pts[1].y).toBe(2);       // max at the top
     expect(pts[0].y).toBe(30);      // min at the bottom
+  });
+});
+
+// ── sentence pieces ─────────────────────────────────────────────────────────
+
+/** Every string the schema-max rulers carry, at any depth. */
+function stringsIn(value: unknown, out: string[] = []): string[] {
+  if (typeof value === "string") out.push(value);
+  else if (Array.isArray(value)) for (const v of value) stringsIn(v, out);
+  else if (value && typeof value === "object") for (const v of Object.values(value)) stringsIn(v, out);
+  return out;
+}
+
+const FIXTURES = [
+  "",
+  " ",
+  "   ",
+  "hello",
+  "hello.",
+  "hello. ",
+  "hello.  ",
+  " hello. there",
+  "one. two.",
+  "one.two",
+  "one!two",
+  "no! yes? maybe.",
+  "it caches. that is the whole trick.",
+  "we hit today's budget. resets at midnight. go touch grass, legend.",
+  "e.g. redis answers before postgres wakes up.",
+  "pick one, e.g. redis. then measure it.",
+  "i.e. the answer was already there.",
+  "redis vs. postgres is the wrong fight.",
+  "3.5ms is not fast. 0.2ms is.",
+  "it costs 1.2M requests a day.",
+  "the U.S. market opened flat.",
+  "Dr. Smith shipped it on a Friday.",
+  "approx. nine minutes of nothing.",
+  "wait... really?",
+  "wait… really?",
+  "he said \"stop.\" then left.",
+  "she asked (why?) and nobody answered.",
+  "one sentence with a trailing space ",
+  "\nleading newline. and a second one.\n",
+  "two\nlines. same idea.",
+  "a. big deal",
+  "the answer is A. the question was worse.",
+  "cache hit rate went to 99.9%. the pager stayed quiet.",
+  "why? because the answer was already warm.",
+  "!!!",
+  "...",
+  ". ",
+  " . ",
+  "`code. inside` a span. then more.",
+  "ends with an ellipsis…",
+  "ends with an exclamation!",
+  "ends with a question?",
+  "1,234,567 requests. every second.",
+  "$0.02 per call. that is the whole bill.",
+  "et al. wrote it up in 1998.",
+  "no. that is not what happened.",
+  "emoji 🔥 still splits. right here.",
+  "über. straße. done.",
+];
+
+describe("cards helpers: splitSentences", () => {
+  const all = [...FIXTURES, ...stringsIn(WORST_CARDS)];
+
+  it("rejoins byte for byte and never emits an empty piece", () => {
+    expect(all.length).toBeGreaterThan(40);
+    for (const text of all) {
+      const pieces = splitSentences(text);
+      expect(pieces.join(""), JSON.stringify(text)).toBe(text);
+      for (const p of pieces) expect(p.length, JSON.stringify(text)).toBeGreaterThan(0);
+      if (text.length === 0) expect(pieces).toEqual([]);
+      else expect(pieces.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("splits on sentence ends, whitespace and all", () => {
+    expect(splitSentences("one. two.")).toEqual(["one. ", "two."]);
+    expect(splitSentences("no! yes? maybe.")).toEqual(["no! ", "yes? ", "maybe."]);
+    expect(splitSentences("it caches. that is the whole trick.")).toEqual(["it caches. ", "that is the whole trick."]);
+    expect(splitSentences("one sentence with a trailing space ")).toEqual(["one sentence with a trailing space "]);
+    expect(splitSentences("two\nlines. same idea.")).toEqual(["two\nlines. ", "same idea."]);
+  });
+
+  it("does not break mid-thought on abbreviations, initialisms or decimals", () => {
+    expect(splitSentences("pick one, e.g. redis. then measure it.")).toEqual(["pick one, e.g. redis. ", "then measure it."]);
+    expect(splitSentences("redis vs. postgres is the wrong fight.")).toHaveLength(1);
+    expect(splitSentences("the U.S. market opened flat.")).toHaveLength(1);
+    expect(splitSentences("Dr. Smith shipped it on a Friday.")).toHaveLength(1);
+    expect(splitSentences("3.5ms is not fast. 0.2ms is.")).toEqual(["3.5ms is not fast. ", "0.2ms is."]);
+    expect(splitSentences("cache hit rate went to 99.9%. the pager stayed quiet.")).toHaveLength(2);
+  });
+
+  it("keeps the closing punctuation with its sentence", () => {
+    expect(splitSentences("he said \"stop.\" then left.")).toEqual(["he said \"stop.\" ", "then left."]);
+    expect(splitSentences("wait... really?")).toEqual(["wait... ", "really?"]);
   });
 });
