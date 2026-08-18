@@ -9,7 +9,12 @@ Setup: push a branch → Vercel preview URL (HTTPS is required for the service w
 - [ ] Add to Home Screen → launches standalone, no Safari chrome, splash themed dark
 - [ ] Airplane mode mid-feed: viewed cards readable, one graceful "back online soon" frontier card, recovers on reconnect
 - [ ] Lock the phone for 5 minutes mid-card → recorded dwell ≤ 60s (check `cards.interaction.dwellMs`), no recap spam on return
-- [ ] Long-press the 2px progress hairline → refresh works (pull-to-refresh doesn't exist standalone)
+- [ ] Long-press the timeline hairline → the thread sheet opens; refresh works from it (pull-to-refresh doesn't exist standalone)
+- [ ] Timeline: segments fill as you scroll, a detour reads as off the main thread, crossing into a new topic names it then gets out of the way — and nothing anywhere is a counter
+- [ ] Thread sheet: a topic you've been through takes you back to it; one still ahead is inert
+- [ ] At a topic boundary the feed STOPS and asks (keep going / one more layer / ask something / wrap it up) — it must not keep generating past the fork
+- [ ] Open card: the keyboard doesn't shove the card off-screen, the answer posts, and the grade reads as written against what you typed
+- [ ] Scroll to the end of the deck, stop on the "catching up" card and wait — it must keep its place and its identity; new cards arrive BELOW it, never above
 - [ ] Sequence cards: drag-reorder chips with a thumb feels right (no accidental page scroll)
 - [ ] Slider cards: thumb is grabbable, output updates live, no page scroll while dragging
 - [ ] Tap feedback: buttons scale to 0.97 with a spring; correct → local confetti (never full-screen); wrong → shake ±6px ×3
@@ -25,6 +30,6 @@ Setup: push a branch → Vercel preview URL (HTTPS is required for the service w
 
 ## Before the first real deploy
 
-- [ ] Apply the schema: open the Supabase SQL editor and run `supabase/migrations/0001_init.sql`, then `0002_idx_collation.sql` (`pnpm db:migrate` prints them). Until that's done every route answers `schema_missing` with instructions — that's expected, not a bug.
+- [ ] Apply the schema: open the Supabase SQL editor and run `supabase/migrations/0001_init.sql`, then `0002_idx_collation.sql`, then `0003_storyline.sql` (`pnpm db:migrate` prints them). Until 0001/0002 are done every route answers `schema_missing` with instructions — that's expected, not a bug. `0003` is different: without it the app runs normally and only the storyline stays null, so a deploy can land ahead of it safely.
 - [ ] Set `ANTHROPIC_API_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` in the Vercel project (never `NEXT_PUBLIC_*`), leave `LLM_MODE` empty, and confirm the first session creates a row in `sessions`.
 - [ ] Watch `llm_calls` after the first real session: `ok=false` rows tell you which prompt is overshooting a cap, and the daily cap (500) is computed from this table.
