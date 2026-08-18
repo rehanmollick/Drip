@@ -134,6 +134,22 @@ describe("crossroads card", () => {
     expect(CardSchema.safeParse(c).success).toBe(true);
   });
 
+  it("won't wear a whole sentence as a noun — a planner's clause title gets a headline of its own", () => {
+    // planners write story-shaped titles, and "that's sound is pressure, and pressure c…" reads like
+    // a glitch. The card names the finished topic in its own badge, so the headline can stand alone.
+    const clause = buildCrossroadsCard({ finished: "sound is pressure, and pressure can be undone", upNext: "phase", nodeId: "n1", seed: 0 });
+    expect(clause.headline).not.toContain("sound is pressure");
+    expect(clause.headline).toBe("that's the stretch. where to?");
+    expect(clause.finished).toContain("sound is pressure"); // still named, just not inside the sentence
+    expect(CardSchema.safeParse(clause).success).toBe(true);
+
+    // …while a title that ends on its verb is a noun clause, and belongs in the sentence
+    expect(crossroadsHeadline("what a cache is", 0)).toBe("that's what a cache is. where to?");
+    expect(crossroadsHeadline("why evictions happen", 0)).toBe("that's why evictions happen. where to?");
+    // a bare claim is not
+    expect(crossroadsHeadline("caches are hard", 0)).toBe("that's the stretch. where to?");
+  });
+
   it("fits the schema caps with the longest titles a planner can write, and rotates its wording", () => {
     const seen = new Set<string>();
     for (let seed = 0; seed < 5; seed++) {

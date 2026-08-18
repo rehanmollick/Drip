@@ -50,10 +50,25 @@ const STANDALONE_HEADLINES: string[] = [
   "that lands. what now?",
 ];
 
-/** A title only reads inside "that's ___" when it's a short noun phrase — no clause, no list. */
+/** Opens a noun clause: "that's WHAT a cache is" names a thing, even though it ends in a verb. */
+const WH_OPENER = /^(what|why|how|when|where|who|which)\b/i;
+/** A verb that, with content on both sides of it, makes the title a sentence rather than a name. */
+const FINITE_VERB = /\b(is|are|was|were|can|will|does|do|has|have|becomes?|means?)\b/i;
+
+/**
+ * A title only reads inside "that's ___" when it names a thing rather than states one.
+ *
+ * "that's what a cache is." — fine, a noun clause. "that's sound is pressure" — broken, two
+ * sentences wearing one coat. The tell isn't the verb itself but what sits after it: a finite verb
+ * with content on both sides is a claim, and a claim can't be the object of "that's".
+ */
 export function fitsInSentence(title: string): boolean {
   const t = title.trim();
-  return t.length <= HEADLINE_TITLE_CHARS && !/[,;:.!?]/.test(t) && !/\b(is|are|was|were|can|will|does|do|has|have)\b/i.test(t);
+  if (!t || t.length > HEADLINE_TITLE_CHARS) return false;
+  if (/[,;:.!?]/.test(t)) return false; // a list or a second clause never fits one phone line
+  if (WH_OPENER.test(t)) return true;
+  const verb = FINITE_VERB.exec(t);
+  return !verb || t.slice(verb.index + verb[0].length).trim().length === 0;
 }
 
 export function crossroadsHeadline(finished: string, seed = 0): string {
