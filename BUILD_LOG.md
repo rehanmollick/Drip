@@ -65,3 +65,38 @@ Six things the reader named, plus the bug they hit. Verified against the real mo
 Also: a fork headline no longer wears a whole sentence as a noun (planner titles are clauses — `"that's sound is pressure, and pressure c…"` reached the screen); and **a deploy that lands before its migration no longer takes the app down** — a column the database doesn't have yet is told apart from an un-migrated project, and the write retries without it. That distinction was found the hard way: pushing v2 broke the live app and blamed the wrong thing ("the tables are missing" — they weren't).
 
 Verified: 616 unit tests, 23 Playwright e2e (WebKit, 393×852) green twice back to back including on a dirty store, typecheck, lint, `pnpm build`. Live session on production after deploy: session active, 6-topic outline, cards landing, `storyline` null pending the migration. Cost ≈ $0.086/session.
+
+## v3 — the prose baseline, captured before any prompt was touched
+
+`DRIP_LIVE_WRITE=1 pnpm exec vitest run tests/write.live.test.ts` — three real batches, three
+subject families that share no vocabulary, `claude-haiku-4-5`, prompt `write.v4+shared.v3.3157015f`.
+Nothing in this repo had ever looked at a sentence of real card prose before this; all 748 unit tests
+and 35 e2e run against canned mock output, which made every claim about writing quality
+unfalsifiable — including the ones v3 is about to make.
+
+**technical** (git's object model) and **science** both passed: each batch carried at least one card
+whose idea is a shape, zero banned words, every card inside its caps.
+
+**humanities** (free indirect style — deliberately the hard case: no numbers, no mechanism, nothing
+to draw) FAILED, and the failure is the finding:
+
+- The batch came back `reveal → open`. **0 of 2 cards carry a shape.** A wall of prose — exactly the
+  reader's original complaint, surviving every v2 mitigation, on the material where it matters most.
+- It asked for 4 cards and **2 were dropped by the salvage pass** for overshooting caps
+  (`revealCopy` 200, `predict.prompt` 140, two `options` at 40, `revealCopy` 240). Literary prose runs
+  long, so the abstract subjects are also the ones that lose cards — the thinning and the prose-slab
+  are the same failure.
+- The prose itself is *good*: "those words are emma's, sitting in the narrator's mouth. the grammar
+  stays third person. the diction defects to her." Voice, nuance, no jargon, glossary terms carrying
+  `diction` and `deixis`. **The sentences were never the problem. The routing is.**
+
+The diagnosis: every visual route in `SHOW_DONT_TELL` presupposes something concrete — a quantity
+(stat), a mechanism (diagram), real code (code), a formula (slider), a series (scrub). Hand the
+writer a subject with none of those and it has nowhere to go but prose, so it writes prose and the
+governor can only watch. `spot` — added this cycle — is the missing route for text: *find the line
+where the narrator's voice slips into the character's* is the mechanic for free indirect style. It
+needs a routing line that does not mention numbers.
+
+One thing that did NOT go wrong, and was worth checking: "caching vocabulary from the prompt's gold
+examples: none". All three gold examples in `SHOW_DONT_TELL` are caching, and none of it leaked into
+a literature session.
