@@ -9,7 +9,7 @@ import { ThemeRoot, useTheme } from "@/components/theme/ThemeRoot";
 import { HowItWorksSheet } from "./HowItWorksSheet";
 import { NewSessionSheet } from "./NewSessionSheet";
 import { SessionMenuSheet } from "./SessionMenuSheet";
-import { SessionTile, sortShelf } from "./SessionTile";
+import { CoverTextureBoost, SessionTile, sortShelf } from "./SessionTile";
 import { Splash } from "./Splash";
 import { daySeed, suggestionsAt } from "./suggestions";
 
@@ -91,6 +91,7 @@ function HomeInner() {
           </div>
         ) : (
           <div className="grid grid-cols-2 gap-3 px-4">
+            <CoverTextureBoost />
             {sessions.map((s) => (
               <SessionTile key={s.id} session={s} onMenu={setMenuFor} />
             ))}

@@ -13,9 +13,11 @@ vi.mock("next/font/google", () => {
 
 import type { SessionPublic } from "@/lib/api/contract";
 import {
-  agoLine, coverLegible, coverState, depthFraction, isWrapped, sortShelf, unviewedRunway,
+  agoLine, coverLegible, coverState, depthFraction, echoName, echoSlot, isWrapped, sortShelf, unviewedRunway,
 } from "@/components/home/SessionTile";
-import { unfurlLine, urlDomain } from "@/components/home/NewSessionSheet";
+import { DEPTH_LINES, unfurlLine, urlDomain } from "@/components/home/NewSessionSheet";
+import { ThemeSchema } from "@/lib/schemas/theme";
+import { DepthPreset } from "@/lib/schemas/learner";
 import { daySeed, SUGGESTION_SETS, suggestionsAt } from "@/components/home/suggestions";
 import { findBannedWord } from "@/lib/copy/banned";
 
@@ -125,6 +127,48 @@ describe("shelf legibility guarantee", () => {
     expect(coverLegible("#e6edf3", "#07090b")).toBe(true);   // terminal noir
     expect(coverLegible("#22261f", "#f4efe3")).toBe(true);   // field notes
     expect(coverLegible("#777777", "#6f6f6f")).toBe(false);  // ink ≈ bg → fall back to shell surface
+  });
+});
+
+describe("signature echo slots", () => {
+  it("every signature kind has a mount point on the cover", () => {
+    const kinds = ThemeSchema.shape.signatureKind.unwrap().options;
+    for (const k of kinds) {
+      expect(["above", "below", "inline", "behind"]).toContain(echoSlot(k));
+    }
+  });
+  it("the stamped/tickered theme name gets the banned-word guarantee", () => {
+    expect(echoName("terminal noir")).toBe("terminal noir");
+    expect(echoName("pop quiz nights")).toBe("drip");
+    expect(echoName(null)).toBe("drip");
+    expect(echoName("")).toBe("drip");
+  });
+  it("label-like devices sit above the title, underline-like below", () => {
+    expect(echoSlot("hex-addresses")).toBe("above");
+    expect(echoSlot("stamp")).toBe("above");
+    expect(echoSlot("ticker")).toBe("above");
+    expect(echoSlot("underline-sweep")).toBe("below");
+    expect(echoSlot("water-lines")).toBe("below");
+    expect(echoSlot("waveform")).toBe("below");
+    expect(echoSlot("brackets")).toBe("inline");
+    expect(echoSlot("cursor-blink")).toBe("inline");
+    expect(echoSlot("constellation")).toBe("behind");
+    expect(echoSlot("ruled-notes")).toBe("behind");
+  });
+});
+
+describe("depth lines (one quiet line per pill, feed voice)", () => {
+  it("covers every depth preset with a distinct line", () => {
+    const lines = DepthPreset.options.map((d) => DEPTH_LINES[d]);
+    expect(lines).toHaveLength(3);
+    expect(new Set(lines).size).toBe(3);
+  });
+  it("stays lowercase, numberless, and school-free — same voice as the chill sub-line", () => {
+    for (const line of Object.values(DEPTH_LINES)) {
+      expect(line).toBe(line.toLowerCase());
+      expect(line).not.toMatch(/\d/);
+      expect(findBannedWord(line)).toBeNull();
+    }
   });
 });
 

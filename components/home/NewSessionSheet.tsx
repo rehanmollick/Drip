@@ -16,6 +16,13 @@ const DEPTHS: { value: DepthPreset; label: string }[] = [
   { value: "deep", label: "deep" },
 ];
 
+/** one quiet line per depth, same voice as the chill sub-line — what the ride feels like, never a count */
+export const DEPTH_LINES: Record<DepthPreset, string> = {
+  skim: "the fast pass — big ideas, no digressions",
+  standard: "the full ride — ideas, bets, and the occasional detour",
+  deep: "everything, plus the layer under it — longer stay per topic",
+};
+
 /** an accidental dismiss must never eat a pasted wall of text */
 export const DRAFT_KEY = "drip:newSessionDraft";
 
@@ -254,7 +261,10 @@ export function NewSessionSheet({ open, onClose, seed }: { open: boolean; onClos
           </div>
           <Toggle on={chill} label="chill mode" onChange={setChill} />
         </div>
-        <Segmented value={depth} options={DEPTHS} label="depth" onChange={setDepth} />
+        <div className="flex flex-col gap-1.5">
+          <Segmented value={depth} options={DEPTHS} label="depth" onChange={setDepth} />
+          <p className="px-4 font-body text-xs text-ink-2">{DEPTH_LINES[depth]}</p>
+        </div>
 
         {busy && (
           <div className="flex items-center gap-3">
