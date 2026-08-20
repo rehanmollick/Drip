@@ -1,13 +1,14 @@
 "use client";
 import { motion } from "framer-motion";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiClientError } from "@/lib/api/client";
 import type { CreateSessionBody, IngestData, SessionPublic } from "@/lib/api/contract";
-import { clampTitle, INPUT_MAX, ingestPath, routeInput } from "@/lib/feed/input";
+import { clampTitle, INPUT_MAX, ingestPath, isRepoUrl, isYoutubeUrl, loneUrl, routeInput } from "@/lib/feed/input";
 import type { DepthPreset } from "@/lib/schemas/learner";
 import { useTheme } from "@/components/theme/ThemeRoot";
 import { BottomSheet, Segmented, Toggle } from "./BottomSheet";
+import { daySeed, suggestionsAt } from "./suggestions";
 
 const DEPTHS: { value: DepthPreset; label: string }[] = [
   { value: "skim", label: "skim" },
@@ -15,11 +16,31 @@ const DEPTHS: { value: DepthPreset; label: string }[] = [
   { value: "deep", label: "deep" },
 ];
 
+/** an accidental dismiss must never eat a pasted wall of text */
+export const DRAFT_KEY = "drip:newSessionDraft";
+
+function saveDraft(text: string) {
+  try {
+    if (text.trim()) localStorage.setItem(DRAFT_KEY, text.slice(0, INPUT_MAX));
+    else localStorage.removeItem(DRAFT_KEY);
+  } catch {
+    // storage full or blocked — the draft is a courtesy, never an error
+  }
+}
+function readDraft(): string {
+  try {
+    return localStorage.getItem(DRAFT_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
 /**
  * NEW SESSION (spec §2): one big textarea (sentence / wall of text / URL),
- * attach .txt/.md, chill + depth toggles, "drip it". URL inputs go through
- * /api/ingest/* first; ingest errors show in-sheet (never a hang). Then
- * POST /api/sessions and navigate straight to the feed — it handles planning.
+ * suggested starts that teach by example, drop-a-file, chill + depth toggles,
+ * "drip it". URL inputs go through /api/ingest/* first; ingest errors show
+ * in-sheet (never a hang). Then POST /api/sessions and navigate straight to
+ * the feed — it handles planning.
  */
 /** In-sheet error copy: ingest routes author lowercase sheet-voice messages (a dead link, a slow page,
  *  no captions…) at any status — show those; only truly generic failures get the generic line. */
@@ -32,7 +53,22 @@ export function sheetError(e: unknown): string {
   return e.message.toLowerCase();
 }
 
-export function NewSessionSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
+/** what the unfurl row promises for a detected link */
+export function unfurlLine(url: string): string {
+  if (isYoutubeUrl(url)) return "we'll pull the captions";
+  if (isRepoUrl(url)) return "we'll read the repo";
+  return "we'll read the page";
+}
+
+export function urlDomain(url: string): string | null {
+  try {
+    return new URL(url).hostname.replace(/^www\./i, "");
+  } catch {
+    return null;
+  }
+}
+
+export function NewSessionSheet({ open, onClose, seed }: { open: boolean; onClose: () => void; seed?: string | null }) {
   const router = useRouter();
   const { spring, reduced } = useTheme();
   const [text, setText] = useState("");
@@ -41,6 +77,7 @@ export function NewSessionSheet({ open, onClose }: { open: boolean; onClose: () 
   const [depth, setDepth] = useState<DepthPreset>("standard");
   const [busy, setBusy] = useState<null | "reading" | "brewing">(null);
   const [nudge, setNudge] = useState<string | null>(null);
+  const [rot, setRot] = useState(() => daySeed());
   const areaRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const textRef = useRef(text);
@@ -49,11 +86,24 @@ export function NewSessionSheet({ open, onClose }: { open: boolean; onClose: () 
   useEffect(() => {
     if (open) {
       setNudge(null);
+      setRot((r) => r + 1); // fresh examples each time the sheet comes up
+      // a tapped example wins; otherwise an interrupted draft comes back
+      if (seed) setText(seed.slice(0, INPUT_MAX));
+      else if (!textRef.current.trim()) {
+        const draft = readDraft();
+        if (draft) setText(draft);
+      }
       const t = window.setTimeout(() => areaRef.current?.focus(), 260);
       return () => window.clearTimeout(t);
     }
     setBusy(null);
-  }, [open]);
+  }, [open, seed]);
+
+  // persist the draft as they type — losing a pasted wall of text to a stray swipe is rage
+  useEffect(() => {
+    const t = window.setTimeout(() => saveDraft(text), 250);
+    return () => window.clearTimeout(t);
+  }, [text]);
 
   const onFile = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
@@ -77,6 +127,22 @@ export function NewSessionSheet({ open, onClose }: { open: boolean; onClose: () 
     }
   }, []);
 
+  // reads the clipboard ONLY on tap — never on open, never in the background
+  const onPasteChip = useCallback(async () => {
+    try {
+      const clip = (await navigator.clipboard.readText()).trim();
+      if (!clip) {
+        setNudge("nothing on the clipboard yet.");
+        return;
+      }
+      setText(clip.slice(0, INPUT_MAX));
+      setNudge(clip.length > INPUT_MAX ? "big one — kept the first 400k characters." : null);
+      areaRef.current?.focus();
+    } catch {
+      setNudge("couldn't reach the clipboard — paste it straight in.");
+    }
+  }, []);
+
   const submit = useCallback(async () => {
     const raw = text.trim();
     if (!raw || busy) return;
@@ -96,6 +162,7 @@ export function NewSessionSheet({ open, onClose }: { open: boolean; onClose: () 
       const res = await api.post<{ session: SessionPublic }>("/api/sessions", body);
       setText("");
       setFile(null);
+      saveDraft("");
       router.push(`/s/${res.session.id}`);
     } catch (e) {
       setBusy(null);
@@ -104,6 +171,10 @@ export function NewSessionSheet({ open, onClose }: { open: boolean; onClose: () 
   }, [text, busy, file, chill, depth, router]);
 
   const canSend = !!text.trim() && !busy;
+  const empty = !text.trim();
+  const chips = useMemo(() => suggestionsAt(rot), [rot]);
+  const url = useMemo(() => loneUrl(text), [text]);
+  const domain = url ? urlDomain(url) : null;
 
   return (
     <BottomSheet open={open} onClose={busy ? () => {} : onClose} label="new session" tall>
@@ -120,6 +191,41 @@ export function NewSessionSheet({ open, onClose }: { open: boolean; onClose: () 
           style={{ background: "var(--surface)", border: "1px solid var(--line)", minHeight: 160 }}
           disabled={!!busy}
         />
+
+        {/* a lone URL unfurls quietly: the domain plus what we'll do with it */}
+        {url && domain && !busy && (
+          <div className="flex items-center gap-2.5 rounded-2xl px-4 py-2.5" style={{ background: "var(--accent-soft)" }}>
+            <span aria-hidden className="h-2 w-2 shrink-0 rounded-full" style={{ background: "var(--accent)" }} />
+            <span className="shrink-0 font-mono text-xs" style={{ color: "var(--accent)" }}>{domain}</span>
+            <span className="truncate font-body text-xs text-ink-2">{unfurlLine(url)}</span>
+          </div>
+        )}
+
+        {/* suggested starts teach the three shapes: a question, a link, an "explain X like i'm smart" */}
+        {empty && !busy && (
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void onPasteChip()}
+              className="rounded-full px-3 py-1.5 font-body text-[13px]"
+              style={{ background: "var(--accent-soft)", color: "var(--accent)", border: "1px solid transparent" }}
+            >
+              paste what you copied
+            </button>
+            {chips.map((c) => (
+              <button
+                key={c.label}
+                type="button"
+                onClick={() => { setText(c.fill); areaRef.current?.focus(); }}
+                className="max-w-full truncate rounded-full px-3 py-1.5 font-body text-[13px] text-ink-2"
+                style={{ background: "var(--surface)", border: "1px solid var(--line)" }}
+              >
+                {c.label}
+              </button>
+            ))}
+          </div>
+        )}
+
         <div className="flex flex-wrap items-center gap-2">
           <input ref={fileRef} type="file" accept=".txt,.md,.markdown,text/plain,text/markdown" className="hidden" onChange={(e) => void onFile(e)} />
           <button
@@ -129,7 +235,7 @@ export function NewSessionSheet({ open, onClose }: { open: boolean; onClose: () 
             className="rounded-full px-3 py-1.5 font-body text-sm text-ink-2"
             style={{ background: "var(--surface)", border: "1px solid var(--line)" }}
           >
-            + attach .txt / .md
+            drop a file in
           </button>
           {file && (
             <span className="flex items-center gap-1.5 rounded-full px-3 py-1.5 font-mono text-xs" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>
@@ -150,7 +256,14 @@ export function NewSessionSheet({ open, onClose }: { open: boolean; onClose: () 
         </div>
         <Segmented value={depth} options={DEPTHS} label="depth" onChange={setDepth} />
 
-        {busy && <div className="shimmer h-1.5 w-full rounded-full" aria-label={busy === "reading" ? "reading the link" : "brewing"} />}
+        {busy && (
+          <div className="flex items-center gap-3">
+            <div className="shimmer h-1.5 flex-1 rounded-full" aria-hidden />
+            <span className="shrink-0 font-body text-xs text-ink-2">
+              {busy === "reading" ? "reading the link…" : "lining up your first cards…"}
+            </span>
+          </div>
+        )}
         {nudge && !busy && <p className="font-body text-sm text-ink-2">{nudge}</p>}
 
         <motion.button

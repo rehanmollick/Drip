@@ -22,10 +22,13 @@ export function SessionMenuSheet({
   session,
   onClose,
   onChanged,
+  onHowItWorks,
 }: {
   session: SessionPublic | null;
   onClose: () => void;
   onChanged: () => void;
+  /** opens the "how this works" sheet (home owns it so the two sheets never stack) */
+  onHowItWorks?: () => void;
 }) {
   const router = useRouter();
   const { spring, reduced } = useTheme();
@@ -140,6 +143,17 @@ export function SessionMenuSheet({
               {busy === "delete" ? "gone…" : armed ? "sure? tap again" : "delete"}
             </motion.button>
           </div>
+
+          {onHowItWorks && (
+            <button
+              type="button"
+              onClick={onHowItWorks}
+              className="mx-auto mt-1 font-body text-sm text-ink-2"
+              style={{ textDecoration: "underline", textDecorationColor: "var(--line)", textUnderlineOffset: 4 }}
+            >
+              how this works
+            </button>
+          )}
         </div>
       )}
     </BottomSheet>
