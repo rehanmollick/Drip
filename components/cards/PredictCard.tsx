@@ -41,7 +41,7 @@ export function PredictView({ card, entered, interaction, onInteract, onAskAbout
   const size = card.options.length > 3 ? "md" : "lg";
 
   return (
-    <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} align="center" gap={18}>
+    <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} gap={16}>
       <Rise>
         <Eyebrow>{card.eyebrow ?? "call it"}</Eyebrow>
       </Rise>
@@ -49,7 +49,7 @@ export function PredictView({ card, entered, interaction, onInteract, onAskAbout
         <h2 style={headlineStyle(promptFs, 1.08)}>{card.prompt}</h2>
       </Rise>
       <Rise>
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {card.options.map((label, i) => (
             <OptionButton key={i} label={label} marker={MARKERS[i]} size={size} state={stateFor(i)} onTap={() => tap(i)} disabled={picked != null && i !== picked} />
           ))}
@@ -126,7 +126,7 @@ export function PredictRevealView({
   const bodyFs = fitFontSize(card.revealBody, [[160, 18.5], [Infinity, 17]]);
 
   return (
-    <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} align="center" gap={18}>
+    <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} gap={16}>
       <Rise>
         <Eyebrow>{nailed ? "called it" : correct === false ? "the twist" : "the answer"}</Eyebrow>
       </Rise>
@@ -149,8 +149,8 @@ export function PredictRevealView({
             display: "inline-flex",
             flexWrap: "wrap",
             alignItems: "center",
-            gap: 10,
-            padding: "10px 14px",
+            gap: 8,
+            padding: "8px 12px",
             borderRadius: 14,
             border: `1.5px solid ${correct == null ? "var(--line)" : correct ? "var(--state-correct)" : "var(--state-wrong)"}`,
             background: correct == null ? "var(--surface)" : correct ? "color-mix(in oklab, var(--state-correct) 14%, transparent)" : "color-mix(in oklab, var(--state-wrong) 12%, transparent)",

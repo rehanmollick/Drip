@@ -47,13 +47,13 @@ export function CrossroadsView({ card, entered, interaction, onChoose, onInterac
   const headFs = fitFontSize(card.headline, [[40, 32], [60, 28], [Infinity, 25]]);
 
   return (
-    <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} align="center" gap={16}>
+    <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} gap={16}>
       <Rise>
         <Eyebrow>{card.eyebrow ?? "you pick"}</Eyebrow>
       </Rise>
 
       <Rise>
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <h2 style={headlineStyle(headFs, 1.08)}>{card.headline}</h2>
           <span
             data-crossroads-finished
@@ -62,11 +62,11 @@ export function CrossroadsView({ card, entered, interaction, onChoose, onInterac
               alignSelf: "flex-start",
               display: "inline-flex",
               alignItems: "center",
-              gap: 7,
+              gap: 8,
               maxWidth: "100%",
               fontSize: 11.5,
               letterSpacing: "0.06em",
-              padding: "5px 11px",
+              padding: "4px 12px",
               borderRadius: 999,
               color: "var(--accent)",
               background: "var(--accent-soft)",
@@ -79,7 +79,7 @@ export function CrossroadsView({ card, entered, interaction, onChoose, onInterac
         </div>
       </Rise>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {card.choices.map((c, i) => {
           const chosen = picked === c.kind;
           const dim = !!picked && !chosen;
@@ -100,7 +100,7 @@ export function CrossroadsView({ card, entered, interaction, onChoose, onInterac
                 style={{
                   width: "100%",
                   minHeight: 58,
-                  padding: "13px 16px",
+                  padding: "12px 16px",
                   borderRadius: 18,
                   border: `1.5px solid ${chosen ? "var(--accent)" : "var(--line)"}`,
                   background: chosen ? "var(--accent-soft)" : "var(--surface)",
@@ -109,7 +109,7 @@ export function CrossroadsView({ card, entered, interaction, onChoose, onInterac
                   textAlign: "left",
                   display: "flex",
                   alignItems: "center",
-                  gap: 13,
+                  gap: 12,
                   cursor: picked ? "default" : "pointer",
                   WebkitTapHighlightColor: "transparent",
                   touchAction: "manipulation",
@@ -133,7 +133,7 @@ export function CrossroadsView({ card, entered, interaction, onChoose, onInterac
                 >
                   {MARK[c.kind]}
                 </span>
-                <span style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 3 }}>
+                <span style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 4 }}>
                   <span style={{ fontSize: 17, fontWeight: 600, lineHeight: 1.2, overflowWrap: "anywhere" }}>{c.label}</span>
                   {sub && (
                     <span style={{ fontSize: 13, lineHeight: 1.25, color: "var(--ink-2)", overflowWrap: "anywhere" }}>

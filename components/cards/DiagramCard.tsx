@@ -10,7 +10,7 @@ import { useEnterOnce } from "@/lib/motion";
 export function DiagramView({ card, entered, onAskAbout, onDial }: CardViewProps<DiagramCardT>) {
   const shown = useEnterOnce(entered);
   return (
-    <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} align="start" gap={14} footer={<Dials onDial={onDial} />}>
+    <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} gap={12} footer={<Dials onDial={onDial} />}>
       {/* top-anchored card: clear the feed's back chevron (~64px tall incl. its offset) */}
       <Rise style={{ paddingTop: 44 }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>

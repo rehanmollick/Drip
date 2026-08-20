@@ -11,14 +11,14 @@ import { Eyebrow } from "@/components/ui/Eyebrow";
 export function DetourMarkerView({ card, entered, onAskAbout }: CardViewProps<DetourMarkerCardT>) {
   const open = card.kind === "open";
   return (
-    <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} align="center" gap={14}>
+    <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} gap={12}>
       {open ? (
         <>
           <Rise>
             <Eyebrow>{card.eyebrow ?? "detour"}</Eyebrow>
           </Rise>
           <Rise>
-            <div style={{ borderLeft: "3px solid var(--accent)", paddingLeft: 16, display: "flex", flexDirection: "column", gap: 10 }}>
+            <div style={{ borderLeft: "3px solid var(--accent)", paddingLeft: 16, display: "flex", flexDirection: "column", gap: 8 }}>
               <h2 style={{ ...headlineStyle(card.question && card.question.length > 80 ? 26 : 30, 1.1), fontWeight: 600 }}>
                 {card.question ?? card.label}
               </h2>
@@ -36,7 +36,7 @@ export function DetourMarkerView({ card, entered, onAskAbout }: CardViewProps<De
             </Eyebrow>
           </Rise>
           <Rise>
-            <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
               <span aria-hidden style={{ height: 1, flex: "0 0 28px", background: "var(--accent)" }} />
               <h2 style={{ ...headlineStyle(24, 1.15), fontWeight: 600, color: "var(--ink)" }}>{card.label}</h2>
             </div>

@@ -84,6 +84,8 @@ test.describe("scrub + spot at their schema maximums", () => {
     await pieces.nth(3).click();
     await page.waitForTimeout(900);
     for (let k = 0; k <= last; k++) await expect(pieces.nth(k)).toBeDisabled();
+    // the close is triple-encoded: the payoff opens with the verdict in words
+    await expect(card.locator('[data-verdict="correct"]')).toBeVisible();
     const f = await fits(page, "spot");
     expect(f.out, `overflow after the hit: ${f.out.join(", ")}`).toEqual([]);
     expect(f.scrolls, "scrolls inside itself after the hit").toBe(false);

@@ -41,9 +41,9 @@ describe("pedagogy: concrete before abstract", () => {
     expect(types(orderForLearning(batch))).toEqual(["diagram", "binary", "concept"]);
   });
 
-  it("lands the concept right after the LAST concrete card of its idea", () => {
+  it("lands one idea as guess → the concrete cards → the concept that names it", () => {
     const batch = [concept("stampede"), diagram("stampede"), stat("stampede"), bet("stampede")];
-    expect(types(orderForLearning(batch))).toEqual(["diagram", "stat", "concept", "binary"]);
+    expect(types(orderForLearning(batch))).toEqual(["binary", "diagram", "stat", "concept"]);
   });
 
   it("leaves a batch alone when the ideas don't overlap, or the concept is already last", () => {
@@ -58,6 +58,45 @@ describe("pedagogy: concrete before abstract", () => {
 
   it("every concrete type counts as concrete", () => {
     expect([...CONCRETE_TYPES].sort()).toEqual(["code", "diagram", "scrub", "slider", "stat"]);
+  });
+});
+
+describe("pedagogy: bet before explain (the pretesting effect)", () => {
+  const seqCard = (anchor: string): Card => ({
+    id: next(), type: "sequence", topicNodeId: "n1", detourId: null, anchor,
+    prompt: "put the read path in order", items: [{ id: "a", label: "a" }, { id: "b", label: "b" }, { id: "c", label: "c" }],
+    revealCopy: "the order is the idea", difficulty: 2,
+  });
+  const predict = (anchor: string): Card => ({
+    id: next(), type: "predict", topicNodeId: "n1", detourId: null, anchor,
+    prompt: "what happens next?", options: ["it holds", "it dies"], correctIndex: 1,
+    revealHeadline: "it dies", revealBody: "every request goes to the db at once.", difficulty: 3,
+  });
+
+  it("hoists a same-idea bet above the concept that resolves it, so the next card pays it off", () => {
+    expect(types(orderForLearning([concept("stampede"), bet("stampede")]))).toEqual(["binary", "concept"]);
+    expect(types(orderForLearning([diagram("stampede"), stat("stampede"), predict("stampede")]))).toEqual(["predict", "diagram", "stat"]);
+  });
+
+  it("leaves a bet already in front alone, and never hoists across ideas", () => {
+    const already = [bet("stampede"), diagram("stampede")];
+    expect(orderForLearning(already)).toEqual(already);
+    const acrossIdeas = [concept("eviction"), bet("stampede")];
+    expect(orderForLearning(acrossIdeas)).toEqual(acrossIdeas);
+  });
+
+  it("a sequence is doing, not guessing — it does not hoist", () => {
+    const batch = [concept("stampede"), seqCard("stampede")];
+    expect(orderForLearning(batch)).toEqual(batch);
+  });
+
+  it("reverts rather than cost the batch a card — same guard as the concrete-first rule", () => {
+    // hoisting the bet would park the idea's concept next to another concept: two prose cards
+    // back to back, which the governor answers by dropping one. the writer's own order wins.
+    const batch = [concept("a"), bet("a"), concept("b")];
+    expect(enforceVariety([], batch).dropped).toHaveLength(0);
+    expect(enforceVariety([], [batch[1], batch[0], batch[2]]).dropped).toHaveLength(1);
+    expect(orderForLearning(batch)).toEqual(batch);
   });
 });
 

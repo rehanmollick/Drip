@@ -66,7 +66,7 @@ export function SliderView({ card, entered, interaction, onInteract, onAskAbout 
   const showCurve = estimateLines(card.prompt, 34) <= 2;
 
   return (
-    <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} align="center" gap={18}>
+    <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} gap={16}>
       <style dangerouslySetInnerHTML={{ __html: RANGE_CSS }} />
       <Rise>
         <Eyebrow>{card.eyebrow ?? "feel it"}</Eyebrow>
@@ -75,7 +75,7 @@ export function SliderView({ card, entered, interaction, onInteract, onAskAbout 
         <h2 style={headlineStyle(promptFs, 1.08)}>{card.prompt}</h2>
       </Rise>
       <Rise>
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12 }}>
             <span className="font-body" style={{ fontSize: 14, color: "var(--ink-2)" }}>{card.label}</span>
             <span className="font-mono" style={{ fontSize: 15, color: "var(--ink)", fontVariantNumeric: "tabular-nums" }}>{inputText}</span>

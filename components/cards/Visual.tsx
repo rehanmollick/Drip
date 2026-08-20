@@ -68,7 +68,7 @@ export function Visual({
         >
           {spec.value}
         </span>
-        <span className="font-body" style={{ marginTop: 8, fontSize: 14, lineHeight: 1.3, color: "var(--ink-2)", maxWidth: 260 }}>
+        <span className="font-body" style={{ marginTop: 8, fontSize: 14, lineHeight: 1.3, color: "var(--ink-2)", maxWidth: "36ch" }}>
           {spec.label}
         </span>
       </div>

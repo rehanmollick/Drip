@@ -21,7 +21,7 @@ export type CardViewProps<T extends Card = Card> = {
   /** Previously recorded interaction (replay state; interactive cards render as already-answered). */
   interaction?: Interaction | null;
   onInteract?: (r: InteractResult) => void;
-  /** 🧒 simpler / 🎓 deeper ghosts (concept + diagram cards). */
+  /** simpler / deeper dial chips (concept + diagram cards). */
   onDial?: (dir: "simpler" | "deeper") => void;
   /** Long-press → "ask about this". */
   onAskAbout?: () => void;

@@ -91,7 +91,7 @@ export function OpenView({ card, entered, interaction, onAnswer, onInteract, onA
   const feedbackFs = feedback ? fitFontSize(feedback.feedback, [[160, 17], [260, 16], [Infinity, 15]]) : 17;
 
   return (
-    <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} align="center" gap={14}>
+    <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} gap={12}>
       <Rise>
         <Eyebrow>{card.eyebrow ?? "your words"}</Eyebrow>
       </Rise>
@@ -125,7 +125,7 @@ export function OpenView({ card, entered, interaction, onAnswer, onInteract, onA
                 background: "var(--surface)",
                 border: "1.5px solid var(--line)",
                 borderRadius: 16,
-                padding: "12px 14px",
+                padding: "12px",
                 color: "var(--ink)",
                 fontSize: 16,          // 16px: iOS refuses to zoom the viewport on focus
                 lineHeight: 1.4,
@@ -139,7 +139,7 @@ export function OpenView({ card, entered, interaction, onAnswer, onInteract, onA
             />
           </Rise>
           <Rise>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
               <GhostButton tone="accent" size="md" onClick={() => void submit()} disabled={!text.trim()} ariaLabel="send it">
                 send it <span aria-hidden>↑</span>
               </GhostButton>
@@ -186,7 +186,7 @@ export function OpenView({ card, entered, interaction, onAnswer, onInteract, onA
             exit={{ opacity: 0, transition: { duration: 0.12 } }}
             transition={reduced ? { duration: 0.15 } : spring}
             aria-live="polite"
-            style={{ display: "flex", flexDirection: "column", gap: 9 }}
+            style={{ display: "flex", flexDirection: "column", gap: 8 }}
           >
             <span className="font-mono uppercase" style={{ fontSize: 10.5, letterSpacing: "0.16em", color: "var(--ink-2)" }}>
               reading what you wrote…
@@ -233,7 +233,7 @@ export function OpenView({ card, entered, interaction, onAnswer, onInteract, onA
                     style={{
                       fontSize: 11,
                       letterSpacing: "0.04em",
-                      padding: "4px 9px",
+                      padding: "4px 8px",
                       borderRadius: 999,
                       color: "var(--ink-2)",
                       border: "1px solid var(--line)",
@@ -254,7 +254,7 @@ export function OpenView({ card, entered, interaction, onAnswer, onInteract, onA
 
       {(shown || fellBack) && (
         <Rise>
-          <div data-open-model style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <div data-open-model style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             <span className="font-mono uppercase" style={{ fontSize: 10.5, letterSpacing: "0.16em", color: "var(--accent)" }}>
               one way to put it
             </span>

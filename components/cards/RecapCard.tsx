@@ -29,17 +29,17 @@ export function RecapView({ card, entered, onAskAbout }: CardViewProps<RecapCard
   const allBeats = card.beats.join(" ");
 
   return (
-    <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} align="center" gap={16}>
+    <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} gap={16}>
       <Rise>
         <Eyebrow>{card.eyebrow ?? "rewind"}</Eyebrow>
       </Rise>
       <Rise>
         <h2 style={headlineStyle(headFs, 1.08)}>{card.headline}</h2>
       </Rise>
-      <ol style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 14 }}>
+      <ol style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 12 }}>
         {card.beats.map((beat, i) => (
           <Rise key={i}>
-            <li style={{ position: "relative", display: "flex", gap: 14, alignItems: "flex-start" }}>
+            <li style={{ position: "relative", display: "flex", gap: 12, alignItems: "flex-start" }}>
               {i < card.beats.length - 1 && (
                 <motion.span
                   aria-hidden
@@ -50,7 +50,7 @@ export function RecapView({ card, entered, onAskAbout }: CardViewProps<RecapCard
                     left: 15,
                     marginLeft: -0.75,
                     top: 33,
-                    bottom: -16,
+                    bottom: -14,
                     width: 1.5,
                     borderRadius: 1,
                     background: "color-mix(in oklab, var(--accent) 40%, transparent)",

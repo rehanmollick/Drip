@@ -86,7 +86,7 @@ export function ScrubView({ card, entered, interaction, onInteract, onAskAbout }
   const labelFs = fitFontSize(longest(card.frames.map((f) => f.label)), [[10, 15], [16, 14], [Infinity, 12.5]]);
 
   return (
-    <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} align="center" gap={16}>
+    <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} gap={16}>
       <Rise>
         <Eyebrow>{card.eyebrow ?? "drag it"}</Eyebrow>
       </Rise>

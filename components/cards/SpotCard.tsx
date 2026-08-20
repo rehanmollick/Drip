@@ -8,6 +8,7 @@ import { Eyebrow } from "@/components/ui/Eyebrow";
 import { Panel } from "@/components/ui/Panel";
 import { Confetti } from "@/components/ui/Confetti";
 import { Shake } from "@/components/ui/Shake";
+import { Verdict, VERDICT_SLOT } from "@/components/ui/Verdict";
 import { Glossed, GlossHint, hasTerms } from "./Glossed";
 import { useTheme } from "@/components/theme/ThemeRoot";
 import { usePressable } from "@/lib/motion";
@@ -67,14 +68,14 @@ export function SpotView({ card, entered, interaction, onInteract, onAskAbout }:
   const longestNote = card.pieces.reduce((a, p) => ((p.note ?? "").length > a.length ? p.note ?? "" : a), "");
   const slot = Math.max(
     longestNote ? reserveHeight(longestNote, noteFs, 42) : 0,
-    reserveHeight(card.revealCopy, revealFs, 40),
+    reserveHeight(card.revealCopy, revealFs, 40) + VERDICT_SLOT,
   );
 
   const note = last != null ? card.pieces[last].note : undefined;
   const lastWasHit = last != null && card.pieces[last].hit;
 
   return (
-    <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} align="center" gap={16}>
+    <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} gap={16}>
       <Rise>
         <Eyebrow>{card.eyebrow ?? "spot it"}</Eyebrow>
       </Rise>
@@ -179,13 +180,16 @@ export function SpotView({ card, entered, interaction, onInteract, onAskAbout }:
                 }}
               />
               {solved ? (
-                <Glossed
-                  text={card.revealCopy}
-                  terms={card.terms}
-                  wrapStyle={{ flex: "1 1 auto" }}
-                  className="font-body"
-                  style={{ margin: 0, fontSize: revealFs, lineHeight: 1.4, color: "var(--ink)", textWrap: "pretty", overflowWrap: "anywhere" }}
-                />
+                <div style={{ display: "flex", flexDirection: "column", gap: 8, flex: "1 1 auto", minWidth: 0 }}>
+                  {/* the outcome in words, not just tint: colour + glyph + copy, always all three */}
+                  <Verdict correct label="found it" />
+                  <Glossed
+                    text={card.revealCopy}
+                    terms={card.terms}
+                    className="font-body"
+                    style={{ margin: 0, fontSize: revealFs, lineHeight: 1.4, color: "var(--ink)", textWrap: "pretty", overflowWrap: "anywhere" }}
+                  />
+                </div>
               ) : (
                 <p className="font-body" style={{ margin: 0, fontSize: noteFs, lineHeight: 1.4, color: "var(--ink-2)", textWrap: "pretty", overflowWrap: "anywhere" }}>
                   {note}
@@ -227,7 +231,7 @@ function pieceFontSize(longest: string, count: number, mono: boolean): number {
   return count >= 5 ? base - 1 : base;
 }
 
-/** Row padding shrinks with the row count — six rows cannot each afford 9px of breathing room. */
+/** Row padding shrinks with the row count — six rows cannot each afford 8px of breathing room. */
 function piecePadding(count: number): string {
-  return count >= 6 ? "6px 12px" : count >= 5 ? "7px 12px" : "9px 12px";
+  return count >= 6 ? "4px 12px" : "8px 12px";
 }

@@ -54,6 +54,22 @@ test.describe("prime directive + feed mechanics on the sample deck", () => {
     });
   }
 
+  test("dial chips are typographic — no emoji, no school iconography", async ({ page }) => {
+    await page.goto("/dev/cards");
+    await page.waitForSelector("section.card");
+    await page.evaluate(() => {
+      const f = document.querySelector(".feed")!;
+      const s = document.querySelectorAll("section.card")[1] as HTMLElement; // concept carries the dials
+      f.scrollTo({ top: s.offsetTop, behavior: "instant" as ScrollBehavior });
+    });
+    const dials = page.locator("[data-dials]").first();
+    await expect(dials).toBeVisible();
+    const text = await dials.innerText();
+    expect(text).toMatch(/simpler/);
+    expect(text).toMatch(/deeper/);
+    expect(text).not.toMatch(/\p{Extended_Pictographic}/u);
+  });
+
   test("reduced motion: content still appears (as fades)", async ({ browser }) => {
     const ctx = await browser.newContext({ reducedMotion: "reduce", viewport: { width: 393, height: 852 }, isMobile: true, hasTouch: true, deviceScaleFactor: 3 });
     const page = await ctx.newPage();
@@ -74,6 +90,8 @@ test.describe("prime directive + feed mechanics on the sample deck", () => {
     const binary = page.locator('section.card[data-card-type="binary"]').first();
     await binary.getByRole("button", { name: /^nah$/i }).click();
     await expect(binary.getByText(/stampede/i)).toBeVisible({ timeout: 4000 });
+    // the outcome is triple-encoded: the verdict says it in words, not just tint
+    await expect(binary.locator("[data-verdict]")).toContainText(/called it|not quite/i);
     // reveal is slide 9
     await go(9);
     const reveal = page.locator('section.card[data-card-type="reveal"]').first();

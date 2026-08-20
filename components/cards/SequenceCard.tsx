@@ -9,6 +9,7 @@ import { Glossed, GlossHint, hasTerms } from "./Glossed";
 import { GhostButton } from "@/components/ui/GhostButton";
 import { Shake } from "@/components/ui/Shake";
 import { Confetti } from "@/components/ui/Confetti";
+import { Verdict, VERDICT_SLOT } from "@/components/ui/Verdict";
 import { useTheme } from "@/components/theme/ThemeRoot";
 import { ticks } from "@/lib/audio/ticks";
 import { fitFontSize, reserveHeight, sameOrder, shuffleDeterministic } from "./helpers";
@@ -63,7 +64,7 @@ export function SequenceView({ card, entered, interaction, onInteract, onAskAbou
   const chipH = card.items.length > 5 ? 44 : 50;
 
   return (
-    <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} align="center" gap={14}>
+    <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} gap={12}>
       <Rise>
         <Eyebrow>{card.eyebrow ?? "put it in order"}</Eyebrow>
       </Rise>
@@ -100,7 +101,7 @@ export function SequenceView({ card, entered, interaction, onInteract, onAskAbou
           </Reorder.Group>
         </Shake>
       </Rise>
-      <div style={{ minHeight: Math.max(48, reserveHeight(card.revealCopy, revealFs, 42)) + (glossed ? 24 : 0) }}>
+      <div style={{ minHeight: Math.max(48, reserveHeight(card.revealCopy, revealFs, 42) + VERDICT_SLOT) + (glossed ? 24 : 0) }}>
         <AnimatePresence initial={live} mode="wait">
           {!locked ? (
             <motion.div key="lock" exit={{ opacity: 0, transition: { duration: 0.12 } }} style={{ position: "relative", display: "inline-flex" }}>
@@ -118,7 +119,9 @@ export function SequenceView({ card, entered, interaction, onInteract, onAskAbou
               style={{ display: "flex", gap: 12, alignItems: "flex-start", position: "relative" }}
             >
               <span aria-hidden style={{ width: 3, alignSelf: "stretch", borderRadius: 2, background: locked.correct ? "var(--state-correct)" : "var(--state-wrong)", flexShrink: 0 }} />
-              <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
+                {/* the outcome in words, not just tint: colour + glyph + copy, always all three */}
+                <Verdict correct={locked.correct} label={locked.correct ? "in order" : "not quite"} />
                 <Glossed text={card.revealCopy} terms={card.terms} style={bodyStyle(revealFs)} />
                 {glossed && <GlossHint text={card.revealCopy} terms={card.terms} />}
               </div>
@@ -167,7 +170,7 @@ function SequenceChip({
         alignItems: "center",
         gap: 12,
         minHeight: height,
-        padding: "8px 14px 8px 12px",
+        padding: "8px 12px",
         borderRadius: 14,
         border: `1.5px solid ${border}`,
         background: bg,

@@ -32,7 +32,7 @@ export function ClarifyView({ card, entered, interaction, onInteract, onAskAbout
   );
   const promptFs = fitFontSize(card.prompt, [[50, 32], [90, 28], [Infinity, 25]]);
   return (
-    <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} align="center" gap={18}>
+    <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} gap={16}>
       <Rise>
         <Eyebrow>{card.eyebrow ?? "quick one"}</Eyebrow>
       </Rise>
@@ -40,7 +40,7 @@ export function ClarifyView({ card, entered, interaction, onInteract, onAskAbout
         <h2 style={headlineStyle(promptFs, 1.08)}>{card.prompt}</h2>
       </Rise>
       <Rise>
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {card.options.map((label, i) => (
             <OptionButton
               key={i}

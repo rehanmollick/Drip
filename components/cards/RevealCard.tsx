@@ -32,7 +32,7 @@ export function RevealView({ card, entered, interaction, onInteract, onAskAbout 
   const t = reduced ? { duration: 0.15 } : { ...spring, stiffness: 240, damping: 26 };
 
   return (
-    <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} align="center" gap={18}>
+    <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} gap={16}>
       {card.visual?.kind === "icon" && (
         <Rise>
           <Visual spec={card.visual} size="sm" />
@@ -63,7 +63,7 @@ export function RevealView({ card, entered, interaction, onInteract, onAskAbout 
               initial={false}
               animate={{ opacity: flipped ? 0 : 1 }}
               transition={reduced ? { duration: 0.15 } : { duration: 0.18, delay: flipped ? 0 : 0.14 }}
-              style={{ gridArea: "cell", backfaceVisibility: "hidden", WebkitBackfaceVisibility: "hidden", display: "flex", flexDirection: "column", gap: 14 }}
+              style={{ gridArea: "cell", backfaceVisibility: "hidden", WebkitBackfaceVisibility: "hidden", display: "flex", flexDirection: "column", gap: 12 }}
             >
               <h2 style={headlineStyle(setupFs, 1.08)}>{card.setup}</h2>
               <span className="font-mono" style={{ fontSize: 11, letterSpacing: "0.12em", color: "var(--ink-2)", display: "inline-flex", alignItems: "center", gap: 8 }}>
@@ -91,7 +91,7 @@ export function RevealView({ card, entered, interaction, onInteract, onAskAbout 
               <Glossed
                 text={card.payoff}
                 terms={flipped ? card.terms : null}
-                style={{ ...bodyStyle(payoffFs), borderLeft: "3px solid var(--accent)", paddingLeft: 14 }}
+                style={{ ...bodyStyle(payoffFs), borderLeft: "3px solid var(--accent)", paddingLeft: 12 }}
               />
             </motion.div>
           </motion.div>

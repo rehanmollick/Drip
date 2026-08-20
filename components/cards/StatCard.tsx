@@ -35,7 +35,7 @@ export function StatView({ card, entered, onAskAbout }: CardViewProps<StatCardT>
   });
 
   return (
-    <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} align="center" gap={14}>
+    <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} gap={12}>
       {card.eyebrow && (
         <Rise>
           <Eyebrow>{card.eyebrow}</Eyebrow>
@@ -78,9 +78,9 @@ export function StatView({ card, entered, onAskAbout }: CardViewProps<StatCardT>
 
       {card.compare && (
         <Rise>
-          <div data-stat-compare style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 2 }}>
+          <div data-stat-compare style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 4 }}>
             {bars && (
-              <div aria-hidden style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <div aria-hidden style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 <span style={{ display: "block", height: 10, borderRadius: 5, background: "var(--surface)", overflow: "hidden" }}>
                   <motion.span
                     variants={grow(bars.value, 0.06)}
@@ -95,7 +95,7 @@ export function StatView({ card, entered, onAskAbout }: CardViewProps<StatCardT>
                 </span>
               </div>
             )}
-            <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
               <span
                 className="font-display"
                 style={{
@@ -118,7 +118,7 @@ export function StatView({ card, entered, onAskAbout }: CardViewProps<StatCardT>
         </Rise>
       )}
 
-      <Rise style={{ marginTop: 2 }}>
+      <Rise style={{ marginTop: 4 }}>
         <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
           <span aria-hidden style={{ width: 3, alignSelf: "stretch", borderRadius: 2, background: "var(--accent)", opacity: 0.85, flexShrink: 0 }} />
           <Glossed

@@ -25,11 +25,11 @@ export function WrapView({ card, entered, onAskAbout }: CardViewProps<WrapCardT>
   const beats = card.beats;
   const totalBeats = beats.reduce((n, b) => n + b.length, 0);
   const beatFs = totalBeats > 460 ? 14.5 : totalBeats > 320 ? 15.5 : beats.length >= 5 ? 16 : 17;
-  const beatGap = beats.length >= 5 ? 10 : 13;
+  const beatGap = beats.length >= 5 ? 8 : 12;
   const headFs = fitFontSize(card.headline, [[34, 34], [56, 29], [Infinity, 26]]);
 
   return (
-    <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} align="center" gap={16}>
+    <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} gap={16}>
       <Rise>
         <SignatureEyebrow text={card.eyebrow ?? "that's the thread"} seed={card.id} />
       </Rise>
@@ -111,7 +111,7 @@ export function WrapView({ card, entered, onAskAbout }: CardViewProps<WrapCardT>
             style={{
               display: "flex",
               flexDirection: "column",
-              gap: 5,
+              gap: 4,
               paddingTop: 12,
               borderTop: "1px solid var(--line)",
             }}

@@ -48,7 +48,7 @@ export function CodeView({ card, entered, onAskAbout }: CardViewProps<CodeCardT>
   );
 
   return (
-    <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} align="center" gap={14}>
+    <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} gap={12}>
       <Rise>
         <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12 }}>
           <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
@@ -71,7 +71,7 @@ export function CodeView({ card, entered, onAskAbout }: CardViewProps<CodeCardT>
             background: "var(--surface)",
             border: "1px solid var(--line)",
             borderRadius: 14,
-            padding: "10px 12px 10px 8px",
+            padding: "8px 12px 8px 8px",
             color: "var(--ink)",
             overflow: "hidden",
             maxWidth: "100%",
@@ -143,7 +143,7 @@ export function CodeView({ card, entered, onAskAbout }: CardViewProps<CodeCardT>
                 </motion.div>
                 <AnimatePresence initial={false}>
                   {isOpen && note && (
-                    <div style={{ padding: "4px 4px 6px", paddingLeft: `calc(${gutter} + 12px)` }}>
+                    <div style={{ padding: "4px 4px 4px", paddingLeft: `calc(${gutter} + 12px)` }}>
                       <Chip spring={spring} reduced={reduced} style={{ fontSize: Math.max(12.5, fs + 0.5) }}>
                         {note}
                       </Chip>

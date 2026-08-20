@@ -6,6 +6,7 @@ import type { CardViewProps } from "./types";
 import { CardFrame, Rise, bodyStyle, headlineStyle } from "./CardFrame";
 import { Eyebrow } from "@/components/ui/Eyebrow";
 import { OptionButton, type OptionState } from "@/components/ui/OptionButton";
+import { Verdict, VERDICT_SLOT } from "@/components/ui/Verdict";
 import { Glossed, GlossHint, hasTerms } from "./Glossed";
 import { Shake } from "@/components/ui/Shake";
 import { useTheme } from "@/components/theme/ThemeRoot";
@@ -57,7 +58,7 @@ export function BinaryView({ card, entered, interaction, onInteract, onAskAbout 
   const glossed = hasTerms(card.revealCopy, card.terms);
 
   return (
-    <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} align="center" gap={18}>
+    <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} gap={16}>
       {card.eyebrow && (
         <Rise>
           <Eyebrow>{card.eyebrow}</Eyebrow>
@@ -67,7 +68,7 @@ export function BinaryView({ card, entered, interaction, onInteract, onAskAbout 
         <h2 style={headlineStyle(promptFs, 1.08)}>{card.prompt}</h2>
       </Rise>
       <Rise>
-        <Shake trigger={shake} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <Shake trigger={shake} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {card.options.map((label, i) => (
             <OptionButton
               key={i}
@@ -81,7 +82,7 @@ export function BinaryView({ card, entered, interaction, onInteract, onAskAbout 
         </Shake>
       </Rise>
       {/* reserved slot: the payoff lands here without shifting the options */}
-      <div style={{ minHeight: reserveHeight(card.revealCopy, revealFs, 40) + (glossed ? 24 : 0) }}>
+      <div style={{ minHeight: reserveHeight(card.revealCopy, revealFs, 40) + VERDICT_SLOT + (glossed ? 24 : 0) }}>
       <AnimatePresence initial={live}>
         {answered && (
           <motion.div
@@ -96,7 +97,9 @@ export function BinaryView({ card, entered, interaction, onInteract, onAskAbout 
               aria-hidden
               style={{ width: 3, alignSelf: "stretch", borderRadius: 2, background: wasWrong ? "var(--state-wrong)" : "var(--state-correct)", flexShrink: 0, opacity: 0.9 }}
             />
-            <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
+              {/* the outcome in words, not just tint: colour + glyph + copy, always all three */}
+              <Verdict correct={!wasWrong} />
               <Glossed
                 text={card.revealCopy}
                 terms={card.terms}

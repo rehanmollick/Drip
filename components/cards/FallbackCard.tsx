@@ -2,7 +2,7 @@
 import { motion } from "framer-motion";
 import type { Card, FallbackCard as FallbackCardT } from "@/lib/schemas/cards";
 import type { CardViewProps } from "./types";
-import { CardFrame, Rise, headlineStyle } from "./CardFrame";
+import { CardFrame, PROSE_MEASURE, Rise, headlineStyle } from "./CardFrame";
 import { Eyebrow } from "@/components/ui/Eyebrow";
 import { GhostButton } from "@/components/ui/GhostButton";
 import { useTheme } from "@/components/theme/ThemeRoot";
@@ -16,7 +16,7 @@ export function FallbackView({ card, entered, onRetry, onAskAbout }: CardViewPro
   const { reduced, spring } = useTheme();
   const retryable = card.type === "fallback" ? card.retryable !== false : true;
   return (
-    <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} align="center" gap={18}>
+    <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} gap={16}>
       <Rise>
         <Eyebrow tone="muted">{card.eyebrow ?? "bump in the road"}</Eyebrow>
       </Rise>
@@ -28,7 +28,7 @@ export function FallbackView({ card, entered, onRetry, onAskAbout }: CardViewPro
         )}
       </Rise>
       <Rise>
-        <p className="font-body" style={{ margin: 0, fontSize: 17, lineHeight: 1.4, color: "var(--ink-2)", maxWidth: 320 }}>
+        <p className="font-body" style={{ margin: 0, fontSize: 17, lineHeight: 1.4, color: "var(--ink-2)", maxWidth: PROSE_MEASURE }}>
           {retryable ? "this stretch didn\u2019t load right. one tap and we take another run at it." : "this one didn\u2019t render right. the next one\u2019s fine \u2014 swipe on."}
         </p>
       </Rise>

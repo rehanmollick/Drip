@@ -23,7 +23,7 @@ export function CheckpointView({ card, entered, streak, onAskAbout }: CardViewPr
   const headFs = fitFontSize(card.headline, [[40, 40], [64, 34], [Infinity, 30]]);
   const showStreak = typeof streak === "number" && streak >= 2;
   return (
-    <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} align="center" gap={20}>
+    <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} gap={20}>
       <Rise>
         <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
           <SignatureEyebrow text={card.eyebrow ?? "checkpoint"} seed={card.id} />
@@ -38,7 +38,7 @@ export function CheckpointView({ card, entered, streak, onAskAbout }: CardViewPr
                 gap: 6,
                 fontSize: 11,
                 letterSpacing: "0.12em",
-                padding: "5px 10px",
+                padding: "4px 12px",
                 borderRadius: 999,
                 background: "var(--accent)",
                 color: "var(--accent-ink)",

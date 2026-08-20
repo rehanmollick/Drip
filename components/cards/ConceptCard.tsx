@@ -3,7 +3,7 @@ import { motion } from "framer-motion";
 import type { ConceptCard as ConceptCardT } from "@/lib/schemas/cards";
 import type { VisualSpec } from "@/lib/schemas/visual";
 import type { CardViewProps } from "./types";
-import { CardFrame, Dials, Rise, headlineStyle } from "./CardFrame";
+import { CardFrame, Dials, PROSE_MEASURE, Rise, headlineStyle } from "./CardFrame";
 import { Eyebrow } from "@/components/ui/Eyebrow";
 import { Glossed, GlossHint, hasTerms } from "./Glossed";
 import { Visual } from "./Visual";
@@ -50,8 +50,7 @@ export function ConceptView({ card, entered, onAskAbout, onDial }: CardViewProps
       card={card}
       entered={entered}
       onAskAbout={onAskAbout}
-      align="center"
-      gap={hasVisual ? 14 : 16}
+      gap={hasVisual ? 12 : 16}
       footer={<Dials onDial={onDial} />}
     >
       {iconAbove && (
@@ -92,7 +91,7 @@ export function ConceptView({ card, entered, onAskAbout, onDial }: CardViewProps
             fontSize: ledeFs,
             lineHeight: hasVisual ? 1.4 : rest ? 1.32 : 1.45,
             color: "var(--ink)",
-            maxWidth: hasVisual ? "100%" : 340,
+            maxWidth: hasVisual ? "100%" : PROSE_MEASURE,
             textWrap: "pretty",
             overflowWrap: "anywhere",
           }}
@@ -117,7 +116,7 @@ export function ConceptView({ card, entered, onAskAbout, onDial }: CardViewProps
               fontSize: restFs,
               lineHeight: 1.45,
               color: "var(--ink-2)",
-              maxWidth: 340,
+              maxWidth: PROSE_MEASURE,
               textWrap: "pretty",
               overflowWrap: "anywhere",
             }}
@@ -152,7 +151,7 @@ function VisualPanel({ spec }: { spec?: VisualSpec | null }) {
     <div
       data-visual-panel
       style={{
-        padding: spec?.kind === "stat" ? "16px 18px" : "14px 16px",
+        padding: spec?.kind === "stat" ? "16px" : "12px 16px",
         borderRadius: 18,
         background: "var(--surface)",
         border: "1px solid var(--line)",
