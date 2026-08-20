@@ -330,6 +330,14 @@ describe("DiagramCard shape guard", () => {
   });
 });
 
+/** effective rendered chip half-extents — mirrors clampEdgeLabels (wrapped chips are narrower + taller) */
+function chipHalf(e: { label?: string; labelRotate?: number; labelMaxW?: number }) {
+  const w = e.labelMaxW ? Math.min(edgeLabelWidth(e.label!), e.labelMaxW) : edgeLabelWidth(e.label!);
+  const h = e.labelMaxW && edgeLabelWidth(e.label!) > e.labelMaxW ? 30 : 18;
+  const rotated = Math.abs(((e.labelRotate ?? 0) % 180) - 90) < 45;
+  return { halfW: (rotated ? h : w) / 2, halfH: (rotated ? w : h) / 2 };
+}
+
 describe("edge labels stay inside the box", () => {
   const BOXES: Box[] = [{ w: 361, h: 460 }, { w: 345, h: 520 }, { w: 300, h: 300 }];
   const LABEL = "x".repeat(20); // schema max
@@ -345,9 +353,7 @@ describe("edge labels stay inside the box", () => {
         const layout = layoutDiagram({ variant, nodes, edges }, box);
         for (const e of layout.edges) {
           if (!e.label) continue;
-          const rotated = Math.abs(((e.labelRotate ?? 0) % 180) - 90) < 45;
-          const halfW = (rotated ? 18 : edgeLabelWidth(e.label)) / 2;
-          const halfH = (rotated ? edgeLabelWidth(e.label) : 18) / 2;
+          const { halfW, halfH } = chipHalf(e);
           expect(e.labelAt.x - halfW, `${variant} ${box.w}x${box.h} ${e.key} left`).toBeGreaterThanOrEqual(-0.5);
           expect(e.labelAt.x + halfW, `${variant} ${box.w}x${box.h} ${e.key} right`).toBeLessThanOrEqual(box.w + 0.5);
           expect(e.labelAt.y - halfH, `${variant} ${box.w}x${box.h} ${e.key} top`).toBeGreaterThanOrEqual(-0.5);
@@ -368,12 +374,12 @@ describe("compare: cross-connector labels ride the gutter, not the nodes", () =>
       for (const label of ["predictable rescue", "x".repeat(20)]) {
         const layout = layoutCompare(nodes, [{ from: "a", to: "b", label }], box);
         const [e] = layout.edges;
-        const halfW = edgeLabelWidth(label) / 2;
+        const { halfW, halfH } = chipHalf(e);
         const l = e.labelAt.x - halfW;
         const r = e.labelAt.x + halfW;
         for (const n of layout.nodes) {
           const overlapsX = r > n.x && l < n.x + n.w;
-          const overlapsY = e.labelAt.y + 9 > n.y && e.labelAt.y - 9 < n.y + n.h;
+          const overlapsY = e.labelAt.y + halfH > n.y && e.labelAt.y - halfH < n.y + n.h;
           expect(overlapsX && overlapsY, `${box.w}px "${label}" overlaps ${n.id}`).toBe(false);
         }
       }

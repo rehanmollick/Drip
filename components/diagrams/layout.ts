@@ -31,6 +31,10 @@ export const NODE_PAD_X = 12;
 export const NODE_PAD_Y = 10;
 export const EDGE_LABEL_PX = 10.5;
 export const ARROW_LEN = 8;
+/** connector endpoints stand off the node border so arrowheads never touch a box */
+export const END_GAP = 4;
+/** preferred minimum node height — a comfortable tap target (44) when the box allows it */
+export const MIN_TAP_H = 44;
 /**
  * Average glyph advance / font-size used by the char-count heuristics.
  * Defaults are conservative (a wide grotesk); pass the theme's faces via
@@ -88,6 +92,8 @@ export type LayoutEdge = {
   label?: string;
   labelAt: Pt;
   labelRotate: number;
+  /** when set, the renderer wraps the label chip to 2 lines inside this width (compare gutters) */
+  labelMaxW?: number;
   arrow: { x: number; y: number; angle: number } | null;
   /** drawn by the layout, not the AI (cycle ring when edges are absent / open) */
   implicit?: boolean;
@@ -154,10 +160,11 @@ type Measured = {
   prefH: number;
 };
 
-function measureNode(spec: DiagramNodeSpec, w: number, opts: { row?: boolean; maxSubLines?: number; em?: TextMetrics } = {}): Measured {
+function measureNode(spec: DiagramNodeSpec, w: number, opts: { row?: boolean; maxSubLines?: number; em?: TextMetrics; compact?: boolean } = {}): Measured {
   const em = opts.em ?? DEFAULT_METRICS;
   const innerW = Math.max(24, w - 2 * NODE_PAD_X);
-  const fontSize = fitLabelSize(spec.label, innerW, em.labelEm);
+  // compact: crowded layouts step the type down one size instead of crushing the gaps
+  const fontSize = Math.min(fitLabelSize(spec.label, innerW, em.labelEm), opts.compact ? LABEL_SIZES[1] : LABEL_SIZES[0]);
   if (opts.row && spec.sub) {
     const lw = textWidth(spec.label, fontSize, em.labelEm);
     const sw = textWidth(spec.sub, SUB_PX, em.subEm);
@@ -288,7 +295,7 @@ function mkEdge(
   key: string,
   spec: Pick<DiagramEdgeSpec, "from" | "to" | "label">,
   g: PathGeom,
-  opts: { rotate?: number; implicit?: boolean; arrow?: boolean } = {},
+  opts: { rotate?: number; implicit?: boolean; arrow?: boolean; labelMaxW?: number } = {},
 ): LayoutEdge {
   return {
     key,
@@ -298,6 +305,7 @@ function mkEdge(
     ...(spec.label ? { label: spec.label } : {}),
     labelAt: { x: Math.round(g.mid.x * 10) / 10, y: Math.round(g.mid.y * 10) / 10 },
     labelRotate: opts.rotate ?? 0,
+    ...(opts.labelMaxW && spec.label ? { labelMaxW: opts.labelMaxW } : {}),
     arrow:
       opts.arrow === false
         ? null
@@ -413,6 +421,8 @@ export function layoutFlow(nodes: readonly DiagramNodeSpec[], edges: readonly Di
 
   if (orient === "v") {
     const gapX = 16;
+    // a label chip is 18px tall — labelled flows keep a gap it can actually sit in
+    const gapFloor = hasLabels ? 20 : 14;
     let gapY = hasLabels ? 36 : 32;
     // shared width for single-node rows: content-fit, clamped
     const singles = levels.filter((l) => l.length === 1).map((l) => byId.get(l[0])!);
@@ -421,16 +431,20 @@ export function layoutFlow(nodes: readonly DiagramNodeSpec[], edges: readonly Di
       0,
     );
     const singleW = clamp(Math.ceil((contentW + 2 * NODE_PAD_X + 16) / GRID) * GRID, 136, Math.min(240, box.w - 16));
-    const rows = levels.map((l) => {
-      const m = l.length;
-      const w = m === 1 ? singleW : Math.floor((box.w - (m - 1) * gapX) / m);
-      const ms = l.map((id) => measureNode(byId.get(id)!, w, { em }));
-      return { ids: l, w, ms, h: Math.max(...ms.map((x) => x.prefH)) };
-    });
+    const measureRows = (compact: boolean) =>
+      levels.map((l) => {
+        const m = l.length;
+        const w = m === 1 ? singleW : Math.floor((box.w - (m - 1) * gapX) / m);
+        const ms = l.map((id) => measureNode(byId.get(id)!, w, compact ? { em, compact: true, maxSubLines: 1 } : { em }));
+        return { ids: l, w, ms, h: Math.max(MIN_TAP_H, ...ms.map((x) => x.prefH)) };
+      });
+    let rows = measureRows(false);
+    // crowded chains: step the type down one size before crushing gaps or boxes
+    if (K >= 5 && rows.reduce((s, r) => s + r.h, 0) + (K - 1) * gapFloor > box.h) rows = measureRows(true);
     let sumH = rows.reduce((s, r) => s + r.h, 0);
     if (sumH + (K - 1) * gapY > box.h) {
-      // too tall: tighten the gaps first (min 20), then scale rows + gaps together
-      gapY = Math.max(20, Math.floor((box.h - sumH) / Math.max(1, K - 1)));
+      // too tall: tighten the gaps first (down to the floor), then scale rows + gaps together
+      gapY = Math.max(gapFloor, Math.floor((box.h - sumH) / Math.max(1, K - 1)));
       if (sumH + (K - 1) * gapY > box.h) {
         const k = box.h / (sumH + (K - 1) * gapY);
         for (const r of rows) r.h = Math.max(8, Math.floor((r.h * k) / 2) * 2);
@@ -500,7 +514,7 @@ export function layoutFlow(nodes: readonly DiagramNodeSpec[], edges: readonly Di
     const key = `${e.from}->${e.to}#${i}`;
     if (orient === "v") {
       if (lb === la + 1) {
-        const g = sCurve({ x: A.x + A.w / 2, y: A.y + A.h + 2 }, { x: B.x + B.w / 2, y: B.y - 2 }, "y");
+        const g = sCurve({ x: A.x + A.w / 2, y: A.y + A.h + END_GAP }, { x: B.x + B.w / 2, y: B.y - END_GAP }, "y");
         // tight rows: put the label beside the arrow instead of on top of it
         if (e.label && B.y - (A.y + A.h) < 40) g.mid = { x: g.mid.x + edgeLabelWidth(e.label) / 2 + 8, y: g.mid.y };
         return mkEdge(key, e, g);
@@ -509,9 +523,9 @@ export function layoutFlow(nodes: readonly DiagramNodeSpec[], edges: readonly Di
         const margin = box.w - maxX;
         if (margin >= 20) {
           const b = Math.min(36, margin - 6);
-          return mkEdge(key, e, bulgePath({ x: A.x + A.w + 2, y: A.y + A.h / 2 }, { x: B.x + B.w + 2, y: B.y + B.h / 2 }, "right", b));
+          return mkEdge(key, e, bulgePath({ x: A.x + A.w + END_GAP, y: A.y + A.h / 2 }, { x: B.x + B.w + END_GAP, y: B.y + B.h / 2 }, "right", b));
         }
-        return mkEdge(key, e, sCurve({ x: A.x + A.w / 2, y: A.y + A.h + 2 }, { x: B.x + B.w / 2, y: B.y - 2 }, "y"));
+        return mkEdge(key, e, sCurve({ x: A.x + A.w / 2, y: A.y + A.h + END_GAP }, { x: B.x + B.w / 2, y: B.y - END_GAP }, "y"));
       }
       if (lb === la) {
         const aLeft = A.x <= B.x;
@@ -519,21 +533,21 @@ export function layoutFlow(nodes: readonly DiagramNodeSpec[], edges: readonly Di
           key,
           e,
           aLeft
-            ? linePath({ x: A.x + A.w + 2, y: A.y + A.h / 2 }, { x: B.x - 2, y: B.y + B.h / 2 })
-            : linePath({ x: A.x - 2, y: A.y + A.h / 2 }, { x: B.x + B.w + 2, y: B.y + B.h / 2 }),
+            ? linePath({ x: A.x + A.w + END_GAP, y: A.y + A.h / 2 }, { x: B.x - END_GAP, y: B.y + B.h / 2 })
+            : linePath({ x: A.x - END_GAP, y: A.y + A.h / 2 }, { x: B.x + B.w + END_GAP, y: B.y + B.h / 2 }),
         );
       }
       // backward: loop around the left
       const margin = minX;
       if (margin >= 20) {
         const b = Math.min(36, margin - 6);
-        return mkEdge(key, e, bulgePath({ x: A.x - 2, y: A.y + A.h / 2 }, { x: B.x - 2, y: B.y + B.h / 2 }, "left", b));
+        return mkEdge(key, e, bulgePath({ x: A.x - END_GAP, y: A.y + A.h / 2 }, { x: B.x - END_GAP, y: B.y + B.h / 2 }, "left", b));
       }
-      return mkEdge(key, e, sCurve({ x: A.x + A.w / 2, y: A.y - 2 }, { x: B.x + B.w / 2, y: B.y + B.h + 2 }, "y"));
+      return mkEdge(key, e, sCurve({ x: A.x + A.w / 2, y: A.y - END_GAP }, { x: B.x + B.w / 2, y: B.y + B.h + END_GAP }, "y"));
     }
     // horizontal
     if (lb === la + 1) {
-      const g = sCurve({ x: A.x + A.w + 2, y: A.y + A.h / 2 }, { x: B.x - 2, y: B.y + B.h / 2 }, "x");
+      const g = sCurve({ x: A.x + A.w + END_GAP, y: A.y + A.h / 2 }, { x: B.x - END_GAP, y: B.y + B.h / 2 }, "x");
       // labels float just above the connector so the arrowhead stays visible
       if (e.label) g.mid = { x: g.mid.x, y: g.mid.y - 12 };
       return mkEdge(key, e, g);
@@ -542,9 +556,9 @@ export function layoutFlow(nodes: readonly DiagramNodeSpec[], edges: readonly Di
       const margin = box.h - maxY;
       if (margin >= 20) {
         const b = Math.min(36, margin - 6);
-        return mkEdge(key, e, bulgePath({ x: A.x + A.w / 2, y: A.y + A.h + 2 }, { x: B.x + B.w / 2, y: B.y + B.h + 2 }, "down", b));
+        return mkEdge(key, e, bulgePath({ x: A.x + A.w / 2, y: A.y + A.h + END_GAP }, { x: B.x + B.w / 2, y: B.y + B.h + END_GAP }, "down", b));
       }
-      return mkEdge(key, e, sCurve({ x: A.x + A.w + 2, y: A.y + A.h / 2 }, { x: B.x - 2, y: B.y + B.h / 2 }, "x"));
+      return mkEdge(key, e, sCurve({ x: A.x + A.w + END_GAP, y: A.y + A.h / 2 }, { x: B.x - END_GAP, y: B.y + B.h / 2 }, "x"));
     }
     if (lb === la) {
       const aAbove = A.y <= B.y;
@@ -552,16 +566,16 @@ export function layoutFlow(nodes: readonly DiagramNodeSpec[], edges: readonly Di
         key,
         e,
         aAbove
-          ? linePath({ x: A.x + A.w / 2, y: A.y + A.h + 2 }, { x: B.x + B.w / 2, y: B.y - 2 })
-          : linePath({ x: A.x + A.w / 2, y: A.y - 2 }, { x: B.x + B.w / 2, y: B.y + B.h + 2 }),
+          ? linePath({ x: A.x + A.w / 2, y: A.y + A.h + END_GAP }, { x: B.x + B.w / 2, y: B.y - END_GAP })
+          : linePath({ x: A.x + A.w / 2, y: A.y - END_GAP }, { x: B.x + B.w / 2, y: B.y + B.h + END_GAP }),
       );
     }
     const margin = minY;
     if (margin >= 20) {
       const b = Math.min(36, margin - 6);
-      return mkEdge(key, e, bulgePath({ x: A.x + A.w / 2, y: A.y - 2 }, { x: B.x + B.w / 2, y: B.y - 2 }, "up", b));
+      return mkEdge(key, e, bulgePath({ x: A.x + A.w / 2, y: A.y - END_GAP }, { x: B.x + B.w / 2, y: B.y - END_GAP }, "up", b));
     }
-    return mkEdge(key, e, sCurve({ x: A.x - 2, y: A.y + A.h / 2 }, { x: B.x + B.w + 2, y: B.y + B.h / 2 }, "x"));
+    return mkEdge(key, e, sCurve({ x: A.x - END_GAP, y: A.y + A.h / 2 }, { x: B.x + B.w + END_GAP, y: B.y + B.h / 2 }, "x"));
   });
 
   return { variant: "flow", box, nodes: outNodes, edges: outEdges, decor: [] };
@@ -573,36 +587,45 @@ export function layoutBoxes(nodes: readonly DiagramNodeSpec[], edges: readonly D
   const n = nodes.length;
   const cols = n >= 7 ? 3 : 2;
   const rows = Math.ceil(n / cols);
-  const gap = 12;
-  const cellW = Math.floor((box.w - (cols - 1) * gap) / cols);
+  const gapX = 12;
+  const cellW = Math.floor((box.w - (cols - 1) * gapX) / cols);
   const ms = nodes.map((s) => measureNode(s, cellW, { em }));
   const maxPref = Math.max(...ms.map((m) => m.prefH));
-  const avail = Math.floor((box.h - (rows - 1) * gap) / rows);
+  let gapY = 12;
+  const avail = Math.floor((box.h - (rows - 1) * gapY) / rows);
   let cellH = Math.min(Math.max(maxPref + 8, 56), 112);
   cellH = Math.max(24, Math.min(cellH, avail));
   cellH = Math.floor(cellH / 2) * 2;
-  const gridH = rows * cellH + (rows - 1) * gap;
+  // leftover height feeds the row gaps before the grid gets re-centered — space between rows
+  // is where edge labels live, and a taller void above/below says less than a looser grid
+  if (rows > 1) {
+    const slack = box.h - rows * cellH - (rows - 1) * gapY;
+    gapY = Math.min(32, gapY + Math.floor(Math.max(0, slack) / (2 * (rows - 1))));
+  }
+  const gridH = rows * cellH + (rows - 1) * gapY;
   const y0 = Math.round((box.h - gridH) / 2);
   const outNodes = nodes.map((s, i) => {
     const r = Math.floor(i / cols);
     const c = i % cols;
     const inRow = Math.min(cols, n - r * cols);
-    const rowW = inRow * cellW + (inRow - 1) * gap;
+    const rowW = inRow * cellW + (inRow - 1) * gapX;
     const x0 = Math.round((box.w - rowW) / 2);
-    return placeNode(s, ms[i], { x: x0 + c * (cellW + gap), y: y0 + r * (cellH + gap), w: cellW, h: cellH }, i);
+    return placeNode(s, ms[i], { x: x0 + c * (cellW + gapX), y: y0 + r * (cellH + gapY), w: cellW, h: cellH }, i);
   });
   const rect = new Map(outNodes.map((nd) => [nd.id, rectOf(nd)]));
   const outEdges = validEdges(nodes, edges).map((e, i) => {
     const A = rect.get(e.from)!;
     const B = rect.get(e.to)!;
-    const a = rectAnchor(A, center(B), 2);
-    const b = rectAnchor(B, center(A), 2);
+    const a = rectAnchor(A, center(B), END_GAP);
+    const b = rectAnchor(B, center(A), END_GAP);
     const g = linePath(a, b);
-    // grid gaps are tight: float labels above horizontal connectors, beside vertical ones
+    // labels sit in gaps: a mostly-vertical connector's midpoint IS the row gap, so a chip
+    // centered there clears both boxes once the gap can hold it; tight gaps and horizontal
+    // runs keep the old float-beside placements
     if (e.label) {
-      g.mid = Math.abs(b.y - a.y) < Math.abs(b.x - a.x)
-        ? { x: g.mid.x, y: g.mid.y - 12 }
-        : { x: g.mid.x + edgeLabelWidth(e.label) / 2 + 8, y: g.mid.y };
+      const vertical = Math.abs(b.y - a.y) >= Math.abs(b.x - a.x);
+      if (vertical && gapY < EDGE_LABEL_H + 4) g.mid = { x: g.mid.x + edgeLabelWidth(e.label) / 2 + 8, y: g.mid.y };
+      else if (!vertical) g.mid = { x: g.mid.x, y: g.mid.y - 12 };
     }
     return mkEdge(`${e.from}->${e.to}#${i}`, e, g);
   });
@@ -628,16 +651,23 @@ export function layoutTimeline(nodes: readonly DiagramNodeSpec[], edges: readonl
     leftX = spineX - gapToSpine - nodeW;
     rightX = spineX + gapToSpine;
   } else {
-    spineX = 16;
-    nodeW = box.w - 48;
-    leftX = 48;
-    rightX = 48;
+    // 20px of spine margin + a 64px gutter gives single-side skip arcs and their
+    // rotated labels a lane of their own instead of grazing the node column
+    spineX = 20;
+    nodeW = box.w - 64;
+    leftX = 64;
+    rightX = 64;
   }
+  const esT = validEdges(nodes, edges);
+  const idxT = new Map(nodes.map((s, i) => [s.id, i]));
+  const hasSpineLabels = esT.some((e) => Math.abs(idxT.get(e.from)! - idxT.get(e.to)!) === 1 && !!e.label);
+  // spine-riding label chips live in the row gap — reserve one that can hold them
+  const rowGap = hasSpineLabels ? EDGE_LABEL_H + 6 : 8;
   const ms = nodes.map((s) => measureNode(s, nodeW, { em }));
   let h = Math.max(...ms.map((m) => m.prefH));
-  const hCap = alternate ? Math.floor((2 * box.h - 8 * (n - 1)) / (n + 1)) : Math.floor((box.h - 8 * (n - 1)) / n);
+  const hCap = alternate ? Math.floor((2 * box.h - rowGap * (n - 1)) / (n + 1)) : Math.floor((box.h - rowGap * (n - 1)) / n);
   h = Math.max(24, Math.min(h, Math.floor(hCap / 2) * 2));
-  const maxPitch = alternate ? 96 : 88;
+  const maxPitch = alternate ? 96 : Math.max(88, h + rowGap); // never let the pitch cap fold single-side rows into each other
   const pitch = Math.min(maxPitch, (box.h - h) / (n - 1));
   const total = h + (n - 1) * pitch;
   const cy0 = (box.h - total) / 2 + h / 2;
@@ -657,11 +687,10 @@ export function layoutTimeline(nodes: readonly DiagramNodeSpec[], edges: readonl
     decor.push({ kind: "dot", key: `dot-${nd.id}`, x: spineX, y: ys[i], r: nd.emphasis ? dotR + 1 : dotR, emphasis: nd.emphasis, order: i });
   });
 
-  const idx = new Map(nodes.map((s, i) => [s.id, i]));
   const outEdges: LayoutEdge[] = [];
-  validEdges(nodes, edges).forEach((e, i) => {
-    const a = idx.get(e.from)!;
-    const b = idx.get(e.to)!;
+  esT.forEach((e, i) => {
+    const a = idxT.get(e.from)!;
+    const b = idxT.get(e.to)!;
     const key = `${e.from}->${e.to}#${i}`;
     if (Math.abs(a - b) === 1) {
       if (!e.label) return; // the spine already says it
@@ -671,7 +700,9 @@ export function layoutTimeline(nodes: readonly DiagramNodeSpec[], edges: readonl
         to: e.to,
         d: "",
         label: e.label,
-        labelAt: { x: spineX, y: Math.round((ys[a] + ys[b]) / 2) },
+        // single-side: the chip sits in the row gap under the node column, where the gap
+        // actually is — centered on the spine it would clamp into the boxes
+        labelAt: { x: alternate ? spineX : Math.round(leftX + Math.min(nodeW / 2, 96)), y: Math.round((ys[a] + ys[b]) / 2) },
         labelRotate: 0,
         arrow: null,
       });
@@ -682,7 +713,7 @@ export function layoutTimeline(nodes: readonly DiagramNodeSpec[], edges: readonl
       { x: spineX, y: ys[a] + (down ? dotR + 1 : -(dotR + 1)) },
       { x: spineX, y: ys[b] - (down ? dotR + 2 : -(dotR + 2)) },
       alternate ? "left" : "right",
-      alternate ? 16 : 22,
+      alternate ? 16 : 24,
     );
     outEdges.push(mkEdge(key, e, g, { rotate: -90 })); // skip arcs are vertical: labels read along them
   });
@@ -701,10 +732,14 @@ export function layoutCompare(nodes: readonly DiagramNodeSpec[], edges: readonly
   // the divider gutter grows to hold the widest cross-connector label (labels ride the divider)
   const widestLabel = es.reduce((m, e) => Math.max(m, e.label ? edgeLabelWidth(e.label) : 0), 0);
   // The label rides the divider, so anything wider than the gutter lands on top of both columns.
-  // A schema-max 20-char label is ~143px: give the gutter room for it, keeping the columns readable.
-  const MIN_COL = 76;
+  // A schema-max 20-char label is ~143px: rather than let the gutter starve the columns to hold
+  // it on one line, cap the gutter and wrap long chips to two lines (labelMaxW). Columns keep
+  // enough width to say something.
+  const MIN_COL = 104;
+  const CHIP_MAX = 100;
   const gutterMax = Math.max(40, Math.min(Math.floor(box.w * 0.46), box.w - 2 * MIN_COL));
-  const gutter = clamp(widestLabel + 12, 40, gutterMax);
+  const gutter = clamp(Math.min(widestLabel, CHIP_MAX) + 12, 40, gutterMax);
+  const chipMaxW = widestLabel > gutter - 8 ? Math.max(48, gutter - 8) : 0;
   const colW = Math.floor((box.w - gutter) / 2);
   const leftX = 0;
   const rightX = box.w - colW;
@@ -722,7 +757,8 @@ export function layoutCompare(nodes: readonly DiagramNodeSpec[], edges: readonly
     }
   } else {
     const slack = box.h - sum - (nL - 1) * gapY;
-    gapY = Math.min(20, gapY + Math.floor(slack / Math.max(1, nL - 1)));
+    // the row gap is where adjacent same-column labels sit — let it grow to hold a chip
+    gapY = Math.min(EDGE_LABEL_H + 8, gapY + Math.floor(slack / Math.max(1, nL - 1)));
   }
   const total = sum + (nL - 1) * gapY;
   const y0 = Math.round((box.h - total) / 2);
@@ -742,13 +778,17 @@ export function layoutCompare(nodes: readonly DiagramNodeSpec[], edges: readonly
     const sa = sideOf.get(e.from)!;
     const sb = sideOf.get(e.to)!;
     const key = `${e.from}->${e.to}#${i}`;
+    // wide labels wrap inside the gutter instead of stretching across the columns
+    const chip = chipMaxW ? { labelMaxW: chipMaxW } : {};
     if (sa === "left" && sb === "right") {
-      return mkEdge(key, e, sCurve({ x: A.x + A.w + 2, y: A.y + A.h / 2 }, { x: B.x - 2, y: B.y + B.h / 2 }, "x"));
+      return mkEdge(key, e, sCurve({ x: A.x + A.w + END_GAP, y: A.y + A.h / 2 }, { x: B.x - END_GAP, y: B.y + B.h / 2 }, "x"), chip);
     }
     if (sa === "right" && sb === "left") {
-      return mkEdge(key, e, sCurve({ x: A.x - 2, y: A.y + A.h / 2 }, { x: B.x + B.w + 2, y: B.y + B.h / 2 }, "x"));
+      return mkEdge(key, e, sCurve({ x: A.x - END_GAP, y: A.y + A.h / 2 }, { x: B.x + B.w + END_GAP, y: B.y + B.h / 2 }, "x"), chip);
     }
     // same column: straight if vertically adjacent, else loop through the inner side
+    // (their chips sit over the column, so they may wrap at the column width instead)
+    const chipCol = chipMaxW ? { labelMaxW: Math.max(chipMaxW, colW - 12) } : {};
     const down = B.y > A.y;
     const adjacent = down ? B.y - (A.y + A.h) <= gapY + 1 : A.y - (B.y + B.h) <= gapY + 1;
     if (adjacent) {
@@ -756,14 +796,25 @@ export function layoutCompare(nodes: readonly DiagramNodeSpec[], edges: readonly
         key,
         e,
         down
-          ? linePath({ x: A.x + A.w / 2, y: A.y + A.h + 2 }, { x: B.x + B.w / 2, y: B.y - 2 })
-          : linePath({ x: A.x + A.w / 2, y: A.y - 2 }, { x: B.x + B.w / 2, y: B.y + B.h + 2 }),
+          ? linePath({ x: A.x + A.w / 2, y: A.y + A.h + END_GAP }, { x: B.x + B.w / 2, y: B.y - END_GAP })
+          : linePath({ x: A.x + A.w / 2, y: A.y - END_GAP }, { x: B.x + B.w / 2, y: B.y + B.h + END_GAP }),
+        chipCol,
       );
     }
     return sa === "left"
-      ? mkEdge(key, e, bulgePath({ x: A.x + A.w + 2, y: A.y + A.h / 2 }, { x: B.x + B.w + 2, y: B.y + B.h / 2 }, "right", 14))
-      : mkEdge(key, e, bulgePath({ x: A.x - 2, y: A.y + A.h / 2 }, { x: B.x - 2, y: B.y + B.h / 2 }, "left", 14));
+      ? mkEdge(key, e, bulgePath({ x: A.x + A.w + END_GAP, y: A.y + A.h / 2 }, { x: B.x + B.w + END_GAP, y: B.y + B.h / 2 }, "right", 14), chipCol)
+      : mkEdge(key, e, bulgePath({ x: A.x - END_GAP, y: A.y + A.h / 2 }, { x: B.x - END_GAP, y: B.y + B.h / 2 }, "left", 14), chipCol);
   });
+  // several cross-connectors put their chips on the divider at similar heights —
+  // spread them vertically so they read as a stack instead of interleaving
+  const divider = outEdges
+    .filter((e) => e.label && sideOf.get(e.from) !== sideOf.get(e.to))
+    .sort((a, b) => a.labelAt.y - b.labelAt.y);
+  const minChipGap = EDGE_LABEL_H + 16;
+  for (let i = 1; i < divider.length; i++) {
+    const prev = divider[i - 1].labelAt.y;
+    if (divider[i].labelAt.y - prev < minChipGap) divider[i].labelAt = { x: divider[i].labelAt.x, y: Math.min(box.h - EDGE_LABEL_H, prev + minChipGap) };
+  }
   const dx = Math.round(box.w / 2);
   const decor: Decor[] = [
     { kind: "line", key: "divider", d: `M${dx} ${Math.max(0, y0 - 6)}L${dx} ${Math.min(box.h, y0 + total + 6)}`, dashed: true },
@@ -856,8 +907,8 @@ export function layoutCycle(nodes: readonly DiagramNodeSpec[], edges: readonly D
   };
   const step = (Math.PI / 180) * 0.5;
 
-  /** arc along the ellipse from ring slot i to slot j (adjacent), clockwise unless ccw */
-  const arc = (i: number, j: number, ccw: boolean): PathGeom | null => {
+  /** arc along the ellipse from ring slot i to slot j (adjacent), clockwise unless ccw; tMid = parametric angle at the arc's midpoint */
+  const arc = (i: number, j: number, ccw: boolean): (PathGeom & { tMid: number }) | null => {
     const A = rects[i];
     const B = rects[j];
     const t1 = angles[i];
@@ -881,6 +932,7 @@ export function layoutCycle(nodes: readonly DiagramNodeSpec[], edges: readonly D
       mid: pm,
       end: p2,
       angle: tangentDeg(b, ccw),
+      tMid: (a + b) / 2,
     };
   };
   const chord = (A: Rect, B: Rect): PathGeom => {
@@ -896,9 +948,18 @@ export function layoutCycle(nodes: readonly DiagramNodeSpec[], edges: readonly D
   };
 
   const outEdges: LayoutEdge[] = [];
+  // long ring labels wrap to two lines so a chip intrudes half as far over its neighbours
+  const ringChipW = 88;
   const pushArc = (key: string, spec: Pick<DiagramEdgeSpec, "from" | "to" | "label">, i: number, j: number, ccw: boolean, implicit: boolean) => {
-    const g = arc(i, j, ccw) ?? linePath(rectAnchor(rects[i], center(rects[j]), 2), rectAnchor(rects[j], center(rects[i]), 2));
-    outEdges.push(mkEdge(key, spec, g, { implicit }));
+    const g0 = arc(i, j, ccw);
+    const g = g0 ?? linePath(rectAnchor(rects[i], center(rects[j]), 2), rectAnchor(rects[j], center(rects[i]), 2));
+    // the chip sits just OUTSIDE the ring at the arc's midpoint — between the nodes is
+    // where the reader's eye follows the loop, and outside is where the free margin is
+    if (spec.label && g0) {
+      g.mid = { x: cx + (rx + 14) * Math.cos(g0.tMid), y: cy + (ry + 14) * Math.sin(g0.tMid) };
+    }
+    const wrap = spec.label && edgeLabelWidth(spec.label) > ringChipW ? { labelMaxW: ringChipW } : {};
+    outEdges.push(mkEdge(key, spec, g, { implicit, ...wrap }));
   };
   if (!es.length) {
     order.forEach((id, i) => {
@@ -924,26 +985,36 @@ export function layoutCycle(nodes: readonly DiagramNodeSpec[], edges: readonly D
 export function layoutLayers(nodes: readonly DiagramNodeSpec[], edges: readonly DiagramEdgeSpec[], box: Box, em: TextMetrics = DEFAULT_METRICS): DiagramLayout {
   const n = nodes.length;
   const es = validEdges(nodes, edges);
-  const gutter = es.length ? 44 : 0;
+  // the gutter widens with the number of side arcs so they can nest instead of coinciding
+  const gutter = es.length ? Math.min(84, 36 + 12 * Math.min(es.length, 4)) : 0;
   const bandW = box.w - gutter;
-  const gap = 8;
+  let gap = 8;
   const ms = nodes.map((s) => measureNode(s, bandW, { row: true, maxSubLines: 1, em }));
   const maxPref = Math.max(...ms.map((m) => m.prefH));
   const avail = Math.floor((box.h - (n - 1) * gap) / n);
-  let bandH = Math.max(Math.min(64, avail), maxPref);
+  let bandH = Math.max(Math.min(64, avail), Math.max(maxPref, Math.min(MIN_TAP_H, avail)));
   if (bandH > avail) bandH = Math.max(24, avail);
   bandH = Math.floor(bandH / 2) * 2;
+  // a little of the leftover height loosens the stack — but layers should still read as stacked
+  if (n > 1) gap = Math.min(14, gap + Math.floor(Math.max(0, box.h - n * bandH - (n - 1) * gap) / (3 * (n - 1))));
   const total = n * bandH + (n - 1) * gap;
   const y0 = Math.round((box.h - total) / 2);
   const outNodes = nodes.map((s, i) => placeNode(s, ms[i], { x: 0, y: y0 + (n - 1 - i) * (bandH + gap), w: bandW, h: bandH }, i));
   const rect = new Map(outNodes.map((nd) => [nd.id, rectOf(nd)]));
+  const idx = new Map(nodes.map((s, i) => [s.id, i]));
   const outEdges = es.map((e, i) => {
     const A = rect.get(e.from)!;
     const B = rect.get(e.to)!;
-    const a: Pt = { x: A.x + A.w + 2, y: A.y + A.h / 2 };
-    const b: Pt = { x: B.x + B.w + 2, y: B.y + B.h / 2 };
-    const g = bulgePath(a, b, "right", Math.max(12, gutter - 16));
-    return mkEdge(`${e.from}->${e.to}#${i}`, e, g, { rotate: -90 });
+    const a: Pt = { x: A.x + A.w + END_GAP, y: A.y + A.h / 2 };
+    const b: Pt = { x: B.x + B.w + END_GAP, y: B.y + B.h / 2 };
+    // arcs nest by span: short hops hug the bands, long ones swing wider, so
+    // several edges through one gutter stay separate lines instead of one smear
+    const span = Math.abs(idx.get(e.from)! - idx.get(e.to)!);
+    const amount = clamp(8 + span * 7 + (i % 3) * 8, 12, Math.max(12, (gutter - 10) / 1.25));
+    const g = bulgePath(a, b, "right", amount);
+    // long chips wrap so each occupies ~half the run along the gutter
+    const wrap = e.label && edgeLabelWidth(e.label) > 84 ? { labelMaxW: 84 } : {};
+    return mkEdge(`${e.from}->${e.to}#${i}`, e, g, { rotate: -90, ...wrap });
   });
   return { variant: "layers", box, nodes: outNodes, edges: outEdges, decor: [] };
 }
@@ -976,8 +1047,11 @@ function clampEdgeLabels(layout: DiagramLayout, box: Box): DiagramLayout {
     edges: layout.edges.map((e) => {
       if (!e.label) return e;
       const rotated = Math.abs(((e.labelRotate ?? 0) % 180) - 90) < 45;
-      const halfW = (rotated ? EDGE_LABEL_H : edgeLabelWidth(e.label)) / 2;
-      const halfH = (rotated ? edgeLabelWidth(e.label) : EDGE_LABEL_H) / 2;
+      // wrapped chips are capped in width but two lines tall
+      const w = e.labelMaxW ? Math.min(edgeLabelWidth(e.label), e.labelMaxW) : edgeLabelWidth(e.label);
+      const h = e.labelMaxW && edgeLabelWidth(e.label) > e.labelMaxW ? EDGE_LABEL_H + 12 : EDGE_LABEL_H;
+      const halfW = (rotated ? h : w) / 2;
+      const halfH = (rotated ? w : h) / 2;
       const x = Math.min(Math.max(e.labelAt.x, halfW), Math.max(halfW, box.w - halfW));
       const y = Math.min(Math.max(e.labelAt.y, halfH), Math.max(halfH, box.h - halfH));
       return x === e.labelAt.x && y === e.labelAt.y ? e : { ...e, labelAt: { x: Math.round(x * 10) / 10, y: Math.round(y * 10) / 10 } };

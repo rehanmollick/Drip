@@ -75,6 +75,7 @@ test.describe("cards assemble instead of appearing", () => {
   }
 
   test("sentence pieces are never left invisible under reduced motion", async ({ browser }) => {
+    test.slow(); // walks every slide of both decks at ~1s each — the worst deck now carries a ruler per diagram variant
     const ctx = await browser.newContext({
       reducedMotion: "reduce",
       viewport: { width: 393, height: 852 },
@@ -140,5 +141,43 @@ test.describe("cards assemble instead of appearing", () => {
     await goToType(page, "stat");
     const stat = page.locator('section.card[data-card-type="stat"] [data-stat-value]');
     await expect(stat).toHaveText(/0\.2/, { timeout: 4000 });   // lands on the authored string
+  });
+
+  test("diagrams: every variant earns the card's full height at schema max", async ({ page }) => {
+    // the squish regression: the drawing clustered in the top half of the card and node
+    // gaps collapsed. Each worst-deck ruler (8 nodes / 12 labelled edges) must spread its
+    // nodes across most of a tall drawing area and keep every node a real tap target.
+    await page.goto("/dev/cards/worst");
+    await page.waitForSelector("section.card");
+    const idx: number[] = await page.evaluate(() =>
+      [...document.querySelectorAll("section.card")].flatMap((s, i) => ((s as HTMLElement).dataset.cardType === "diagram" ? [i] : [])),
+    );
+    expect(idx.length).toBe(6); // one ruler per variant
+    const seen: string[] = [];
+    for (const i of idx) {
+      await goToSlide(page, i);
+      await page.waitForTimeout(800);
+      const d = await page.evaluate((i) => {
+        const slide = document.querySelectorAll("section.card")[i] as HTMLElement;
+        const el = slide.querySelector("[data-diagram]") as HTMLElement;
+        const box = el.getBoundingClientRect();
+        const nodes = [...el.querySelectorAll("[data-node-id]")].map((n) => n.getBoundingClientRect());
+        const top = Math.min(...nodes.map((r) => r.top));
+        const bottom = Math.max(...nodes.map((r) => r.bottom));
+        return {
+          variant: el.dataset.diagram!,
+          boxH: box.height,
+          nodeCount: nodes.length,
+          minNodeH: Math.min(...nodes.map((r) => r.height)),
+          spread: (bottom - top) / box.height,
+        };
+      }, i);
+      seen.push(d.variant);
+      expect(d.nodeCount, `${d.variant} nodes`).toBe(8);
+      expect(d.boxH, `${d.variant} drawing area`).toBeGreaterThan(380);      // the fill-height fix
+      expect(d.spread, `${d.variant} vertical spread`).toBeGreaterThan(0.6); // no top-clustering
+      expect(d.minNodeH, `${d.variant} tap target`).toBeGreaterThanOrEqual(40);
+    }
+    expect(seen.sort()).toEqual(["boxes", "compare", "cycle", "flow", "layers", "timeline"]);
   });
 });

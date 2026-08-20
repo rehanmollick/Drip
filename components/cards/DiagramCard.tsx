@@ -10,7 +10,17 @@ import { useEnterOnce } from "@/lib/motion";
 export function DiagramView({ card, entered, onAskAbout, onDial }: CardViewProps<DiagramCardT>) {
   const shown = useEnterOnce(entered);
   return (
-    <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} gap={12} footer={<Dials onDial={onDial} />}>
+    <CardFrame
+      card={card}
+      entered={entered}
+      onAskAbout={onAskAbout}
+      gap={12}
+      // basis 100% starves the frame's trailing flex spacer, which otherwise
+      // splits the leftover height with the content column and pins the
+      // drawing to the top half of the card — the diagram earns the full drop
+      contentStyle={{ flex: "1 1 100%" }}
+      footer={<Dials onDial={onDial} />}
+    >
       {/* top-anchored card: clear the feed's back chevron (~64px tall incl. its offset) */}
       <Rise style={{ paddingTop: 44 }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>

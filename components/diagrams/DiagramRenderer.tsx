@@ -374,6 +374,9 @@ function EdgeEl({ e, play, reduced, delay, dur }: { e: LayoutEdge; play: boolean
 }
 
 function EdgeLabel({ e, play, reduced, delay }: { e: LayoutEdge; play: boolean; reduced: boolean; delay: number }) {
+  // labelMaxW (compare gutters): wrap to two centered lines inside the gutter
+  // instead of stretching one long chip across both columns
+  const wrap = !!e.labelMaxW;
   return (
     <motion.span
       aria-hidden
@@ -394,8 +397,16 @@ function EdgeLabel({ e, play, reduced, delay }: { e: LayoutEdge; play: boolean; 
         background: "var(--bg)",
         padding: "3px 6px",
         borderRadius: 5,
-        whiteSpace: "nowrap",
-        maxWidth: 160,
+        whiteSpace: wrap ? "normal" : "nowrap",
+        // explicit width: an absolutely-positioned chip anchored near the right wall
+        // would otherwise shrink-to-fit against the container edge and over-wrap
+        width: wrap ? e.labelMaxW : undefined,
+        boxSizing: wrap ? "border-box" : undefined,
+        maxWidth: wrap ? e.labelMaxW : 160,
+        textAlign: wrap ? "center" : undefined,
+        display: wrap ? "-webkit-box" : undefined,
+        WebkitBoxOrient: wrap ? ("vertical" as const) : undefined,
+        WebkitLineClamp: wrap ? 2 : undefined,
         overflow: "hidden",
         textOverflow: "ellipsis",
         pointerEvents: "none",
