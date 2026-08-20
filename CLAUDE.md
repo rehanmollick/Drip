@@ -1,5 +1,8 @@
 # CLAUDE.md — DRIP
 
+> New here? Read `HANDOFF.md` first — it carries what this file can't: what was deliberately NOT
+> built (and why, so it doesn't get rebuilt), and the two things still needing a human's eye.
+
 DRIP: TikTok's format, a great teacher's brain. Paste anything → an infinite, adaptive, snap-scrolling feed that teaches it. `dripSpec.md` is the source of truth; this file is the working contract for anyone (human or Claude) touching the code.
 
 ## 0. The Prime Directive
