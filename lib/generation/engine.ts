@@ -101,6 +101,15 @@ async function deps(): Promise<EngineDeps> {
 
 // ── per-session mutex (in-process, NOT re-entrant) ──────────────────────────
 const locks = new Map<string, Promise<unknown>>();
+
+/**
+ * Sessions whose wrap is being written RIGHT NOW (choice claimed and archived, wrap row not yet
+ * inserted — the model spends seconds in writeWrap inside that window). An archived session with
+ * no wrap row normally reads as a wrap that died mid-flight and gets the deterministic ending
+ * healed in; this set keeps a live wrap from being preempted by that heal. In-process on purpose:
+ * a dead process loses its entry, which is exactly when the heal SHOULD fire.
+ */
+const wrapsInFlight = new Set<string>();
 async function withSessionLock<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
   const prev = locks.get(sessionId) ?? Promise.resolve();
   const run = prev.then(fn, fn);
@@ -677,15 +686,30 @@ export async function generateNext(sessionId: string, opts: { waitMs?: number } 
   const last = all[all.length - 1] ?? null;
   const now = nowIso();
 
-  // The thread was wrapped on request: the feed stays scrollable, nothing more is written.
-  if (last && last.payload.type === "wrap") {
-    return withFrontier({ batch: pseudo("wrapped", "done", `wrapped:${sessionId}`, "wrapped"), cards: [] }, all);
-  }
+  // The thread was wrapped on request: the feed stays scrollable, nothing more is written. When
+  // the wrap itself died between its claim and its insert, the deterministic ending lands once —
+  // the thread always ends with an ending.
+  const wrapped = async (): Promise<GenerateData> => {
+    if (all.some((c) => c.payload.type === "wrap") || wrapsInFlight.has(sessionId)) {
+      return withFrontier({ batch: pseudo("wrapped", "done", `wrapped:${sessionId}`, "wrapped"), cards: [] }, all);
+    }
+    const rows = await landWrap(store, sessionId, buildWrapCard({ title: session.title, storyline: session.storyline, outline: session.outline, nodeIdx: session.progress.nodeIdx }));
+    return withFrontier({ batch: pseudo("wrapped", "done", `wrapped:${sessionId}`, "wrapped"), cards: rows }, [...all, ...rows]);
+  };
+  // status is the durable truth here, not row order — a batch racing in after the wrap row lands
+  // can leave any row last, and that must never reopen an archived session
+  if (session.status === "archived") return wrapped();
+  if (last && last.payload.type === "wrap") return wrapped();
   // A topic just closed and the reader hasn't picked a direction: the feed ASKS instead of running on.
   if (session.progress.awaitingChoice) {
     if (atOpenChoice(all)) {
       return withFrontier({ batch: pseudo("awaiting_choice", "done", `choice:${sessionId}:${last?.idx ?? "start"}`, "awaiting_choice"), cards: [] }, all);
     }
+    // every crossroads is answered past this point. an answered 'wrap' with no wrap row is a wrap
+    // IN FLIGHT (or one that died), never a dropped runway — clearing the gate here is what let
+    // generation resume mid-wrap and write another crossroads
+    const newestAnswered = [...all].reverse().find((c) => c.payload.type === "crossroads" && c.interaction?.choice !== undefined);
+    if (newestAnswered?.interaction?.choice === "wrap") return wrapped();
     // the crossroads went with a dropped runway — heal rather than stall forever
     await updateSessionLocked(store, sessionId, (fresh) =>
       fresh.progress.awaitingChoice ? { progress: { ...fresh.progress, awaitingChoice: false } } : null,
@@ -1114,7 +1138,21 @@ export async function chooseAtCrossroads(sessionId: string, cardId: string, choi
     } else {
       p.awaitingChoice = true; // wrap: nothing more is ever written on this thread
     }
-    return { session: await store.updateSession(sessionId, { progress: p }), taken: true as const };
+    // wrap archives HERE, in the same write that answers the card. status is the durable truth
+    // generateNext checks: any window where the card is answered but the session still looks
+    // active is a window where a racing generate resumes mid-wrap and writes another crossroads
+    const patch: Partial<Session> = { progress: p };
+    if (choice === "wrap" && fresh.status === "active") patch.status = "archived";
+    // flagged BEFORE the archive commits, so no generate ever sees archived-with-no-wrap and
+    // heals over the real ending being written right now; wrapUp clears it in its finally
+    if (choice === "wrap") wrapsInFlight.add(sessionId);
+    try {
+      return { session: await store.updateSession(sessionId, patch), taken: true as const };
+    } catch (e) {
+      // the claim failed, so no wrapUp will run — a flag left behind would block the heal forever
+      if (choice === "wrap") wrapsInFlight.delete(sessionId);
+      throw e;
+    }
   });
   if (!claim.taken) return { session: claim.session, cards: [] };
   if (choice === "ask") return { session: claim.session, cards: [] };
@@ -1131,34 +1169,49 @@ export async function chooseAtCrossroads(sessionId: string, cardId: string, choi
  * offers a new thread rather than dead-ending.
  */
 async function wrapUp(llm: LlmApi, store: Store, sessionId: string): Promise<ChooseResult> {
-  const session = await store.getSession(sessionId);
-  if (!session) throw new HttpError(404, "not_found", "session not found");
-  const payloads = (await store.listAllCards(sessionId)).map((r) => r.payload);
-  let payload: Card | null = null;
   try {
-    const r = await llm.writeWrap({
-      sessionId,
-      persona: session.persona ?? PLACEHOLDER_PERSONA,
-      theme: themeSlice(session),
-      storyline: session.storyline,
-      outline: session.outline,
-      covered: recentSummaries(payloads, 12),
-      learnerState: session.learnerState,
-    });
-    if (r.ok) {
-      const parsed = CardSchema.safeParse(r.value);
-      if (parsed.success && parsed.data.type === "wrap") payload = parsed.data;
+    const session = await store.getSession(sessionId);
+    if (!session) throw new HttpError(404, "not_found", "session not found");
+    const payloads = (await store.listAllCards(sessionId)).map((r) => r.payload);
+    let payload: Card | null = null;
+    try {
+      const r = await llm.writeWrap({
+        sessionId,
+        persona: session.persona ?? PLACEHOLDER_PERSONA,
+        theme: themeSlice(session),
+        storyline: session.storyline,
+        outline: session.outline,
+        covered: recentSummaries(payloads, 12),
+        learnerState: session.learnerState,
+      });
+      if (r.ok) {
+        const parsed = CardSchema.safeParse(r.value);
+        if (parsed.success && parsed.data.type === "wrap") payload = parsed.data;
+      }
+    } catch (e) {
+      console.warn("[engine] writeWrap failed", sessionId, e instanceof Error ? e.message : e);
     }
-  } catch (e) {
-    console.warn("[engine] writeWrap failed", sessionId, e instanceof Error ? e.message : e);
+    if (!payload) {
+      payload = buildWrapCard({ title: session.title, storyline: session.storyline, outline: session.outline, nodeIdx: session.progress.nodeIdx });
+    }
+    const rows = await landWrap(store, sessionId, payload);
+    return { session: (await store.getSession(sessionId)) ?? session, cards: rows };
+  } finally {
+    wrapsInFlight.delete(sessionId);
   }
-  if (!payload) {
-    payload = buildWrapCard({ title: session.title, storyline: session.storyline, outline: session.outline, nodeIdx: session.progress.nodeIdx });
-  }
+}
+
+/**
+ * Land the ending under the session lock — exactly one wrap row ever lands, whoever brings it
+ * (the chosen wrap, or the deterministic heal for one that died mid-flight). Idempotent about
+ * status and about the row: an archived session stays archived, an ended thread keeps its ending.
+ */
+async function landWrap(store: Store, sessionId: string, payload: Card): Promise<CardRow[]> {
   const [wrap] = adopt([payload], SYSTEM_NODE, null);
-  const rows = await withSessionLock(sessionId, async () => {
+  return withSessionLock(sessionId, async () => {
     const fresh = await store.getSession(sessionId);
     if (!fresh) return [];
+    if ((await store.listAllCards(sessionId)).some((c) => c.payload.type === "wrap")) return [];
     const inserted = await insertAfterLast(store, sessionId, [wrap], null);
     await store.updateSession(sessionId, {
       status: fresh.status === "active" ? "archived" : fresh.status,
@@ -1172,7 +1225,6 @@ async function wrapUp(llm: LlmApi, store: Store, sessionId: string): Promise<Cho
     });
     return inserted;
   });
-  return { session: (await store.getSession(sessionId)) ?? session, cards: rows };
 }
 
 /**

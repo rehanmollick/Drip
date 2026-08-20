@@ -12,6 +12,7 @@ import { PlanOutputSchema } from "@/lib/schemas/plan";
 import { SAMPLE_THEME_TERMINAL_NOIR } from "@/lib/theme/defaults";
 import { uuid } from "@/lib/id";
 import { findBannedInValue } from "@/lib/copy/banned";
+import { keyBetween } from "@/lib/detour/splice";
 import {
   ask, chooseAtCrossroads, createSession, generateNext, interact, listCardsPage, setEngineDepsForTests,
   settleBackgroundForTests, startPlanning,
@@ -261,6 +262,114 @@ describe("wrap", () => {
     ]);
     expect(a.cards.length + b.cards.length).toBe(1);
     expect((await store.listAllCards(s.id)).filter((c) => c.type === "wrap")).toHaveLength(1);
+  });
+
+  // ── the wrap race (field report: "click wrap up and it keeps generating") ──
+
+  /** Poll until `cond` holds — the wrap race needs a foothold inside the claim→insert window. */
+  async function until(cond: () => Promise<boolean>, ms = 2000): Promise<void> {
+    const deadline = Date.now() + ms;
+    while (!(await cond())) {
+      if (Date.now() > deadline) throw new Error("condition never held");
+      await new Promise((r) => setTimeout(r, 10));
+    }
+  }
+
+  /** Hold the model mid-writeWrap: the choice is claimed, the wrap row is not yet inserted. */
+  function holdWrap() {
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    const realWrap = llm.writeWrap.bind(llm);
+    llm.writeWrap = async (ctx) => { await held; return realWrap(ctx); };
+    return release;
+  }
+
+  it("a generate racing between the wrap claim and its insert writes nothing — the gate survives", async () => {
+    llm.state.wrap = true;
+    const s = await planned();
+    const fork = await toFirstFork(s.id);
+    const release = holdWrap();
+    const choosing = chooseAtCrossroads(s.id, fork.id, "wrap");
+    await until(async () => (await store.getSession(s.id))!.status === "archived");
+    const before = writes();
+    const g = await generateNext(s.id);
+    expect(g.batch.reason).toBe("wrapped");
+    expect(g.cards).toEqual([]);
+    expect(writes()).toBe(before); // nothing was generated mid-wrap
+    const mid = await store.listAllCards(s.id);
+    expect(mid.some((c) => c.type === "wrap")).toBe(false); // and the heal didn't preempt the real ending
+    expect(mid.filter((c) => c.type === "crossroads")).toHaveLength(1); // no second fork, ever
+    release();
+    const r = await choosing;
+    expect(r.cards).toHaveLength(1);
+    const wraps = (await store.listAllCards(s.id)).filter((c) => c.type === "wrap");
+    expect(wraps).toHaveLength(1);
+    expect((wraps[0].payload as WrapCard).headline).toBe("that's the whole thread."); // the model's wrap landed, not the heal's
+  });
+
+  it("archived is the halt, not row order: a batch landing after the wrap changes nothing", async () => {
+    llm.state.wrap = true;
+    const s = await planned();
+    const fork = await toFirstFork(s.id);
+    await chooseAtCrossroads(s.id, fork.id, "wrap");
+    // a batch that raced in AFTER the ending landed: the last row is no longer the wrap
+    const all = await store.listAllCards(s.id);
+    const late: Card = { id: uuid(), type: "concept", topicNodeId: "n2", detourId: null, headline: "late", body: "landed after the wrap" };
+    await store.insertCards([{
+      id: late.id, sessionId: s.id, idx: keyBetween(all.at(-1)!.idx, null), type: "concept",
+      payload: late, detourId: null, batchId: null, viewedAt: null, interaction: null, createdAt: new Date().toISOString(),
+    }]);
+    const before = writes();
+    const g = await generateNext(s.id);
+    expect(g.batch.reason).toBe("wrapped");
+    expect(g.cards).toEqual([]);
+    expect(writes()).toBe(before);
+    expect((await store.listAllCards(s.id)).filter((c) => c.type === "wrap")).toHaveLength(1);
+  });
+
+  it("wrap-after-wrap is impossible: the doom loop's second crossroads never gets written", async () => {
+    llm.state.wrap = true;
+    const s = await planned();
+    const fork = await toFirstFork(s.id);
+    const release = holdWrap();
+    const choosing = chooseAtCrossroads(s.id, fork.id, "wrap");
+    await until(async () => (await store.getSession(s.id))!.status === "archived");
+    // the client force-pumps right after a choose — the exact trigger from the field report
+    await generateNext(s.id);
+    await generateNext(s.id);
+    release();
+    await choosing;
+    // one fork, one ending: a second crossroads is what let the reader wrap forever
+    const rows = await store.listAllCards(s.id);
+    expect(rows.filter((c) => c.type === "crossroads")).toHaveLength(1);
+    expect(rows.filter((c) => c.type === "wrap")).toHaveLength(1);
+    // and even the original card can't wrap twice
+    const again = await chooseAtCrossroads(s.id, fork.id, "wrap");
+    expect(again.cards).toEqual([]);
+    expect((await store.listAllCards(s.id)).filter((c) => c.type === "wrap")).toHaveLength(1);
+  });
+
+  it("an archived thread with no ending gets exactly one deterministic wrap healed in", async () => {
+    const s = await planned();
+    const fork = await toFirstFork(s.id);
+    // the process died between the wrap claim and its insert: archived, answered, no wrap row
+    const at = new Date().toISOString();
+    await store.updateCard(fork.id, { viewedAt: at, interaction: { choice: "wrap", at } });
+    await store.updateSession(s.id, { status: "archived" });
+    const g = await generateNext(s.id);
+    expect(g.batch.reason).toBe("wrapped");
+    expect(g.cards).toHaveLength(1);
+    const wrap = g.cards[0].payload as WrapCard;
+    expect(wrap.type).toBe("wrap");
+    expect(wrap.beats.length).toBeGreaterThanOrEqual(3); // the deterministic ending, built from the through-line
+    expect(CardSchema.safeParse(wrap).success).toBe(true);
+    expect(findBannedInValue(wrap)).toBeNull();
+    // healed once: the next generate finds the ending and writes nothing
+    const again = await generateNext(s.id);
+    expect(again.batch.reason).toBe("wrapped");
+    expect(again.cards).toEqual([]);
+    expect((await store.listAllCards(s.id)).filter((c) => c.type === "wrap")).toHaveLength(1);
+    expect((await store.getSession(s.id))!.status).toBe("archived");
   });
 });
 
