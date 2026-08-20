@@ -23,6 +23,7 @@ import { glossedTerms, recentSummaries, recentTypes, usedMetaphors } from "./sum
 import { budgetNotice, fallbackCard, isBudgetNotice, isFallback, SYSTEM_NODE } from "./system-cards";
 import { DEEPER_CARDS, DEEPER_CARDS_DEEP, countsTowardNode, frontierPublic } from "./frontier";
 import { buildCrossroadsCard, buildWrapCard } from "./crossroads";
+import { spineFromPlan } from "@/lib/prompts/plan";
 import { advanceStoryline, initialStoryline, mergeStoryline, reanchorDirective } from "./storyline";
 import { describeViolations, enforceVariety, narrowAllowed, varietyDirectives } from "./variety";
 import { buildDetourRows, keyBetween, keysBetween } from "@/lib/detour/splice";
@@ -194,15 +195,16 @@ function currentNode(session: Session): OutlineNode | null {
   return session.outline[session.progress.nodeIdx] ?? null;
 }
 
-/** Human-readable directives for the writer, derived from learner state. */
+/**
+ * Human-readable directives for the writer, derived from learner state.
+ *
+ * ONE OWNER PER SIGNAL: difficulty is `difficultyDirective`'s, pace and reinforce are
+ * `learnerSummary`'s (both lib/prompts/shared.ts). This used to restate all three, so every prompt
+ * said each of them two or three times — and a repeated instruction is the cheapest one for the
+ * model to discount. What is left is the one signal nothing else carries: what the dial taps mean.
+ */
 export function directiveLines(state: LearnerState): string[] {
   const out: string[] = [];
-  const d = state.directives;
-  const drift = state.level - state.globalLevel;
-  if (drift > 0) out.push(`difficulty +${drift}: raise the bar — plausible-wrong options, "which one is the lie" bets, curveballs`);
-  if (drift < 0) out.push(`difficulty ${drift}: lower the bar — concrete before abstract, one idea per card`);
-  if (d.pace === "compress") out.push("pace: compress — bigger claims, fewer cards per idea, no throat-clearing");
-  if (d.reinforce.length) out.push(`reinforce (asked about in detours): ${d.reinforce.join(", ")}`);
   if (state.prefs.simplerTaps > state.prefs.deeperTaps) out.push("the learner tapped 'simpler' — plain words, everyday metaphors");
   if (state.prefs.deeperTaps > state.prefs.simplerTaps) out.push("the learner tapped 'deeper' — mechanisms, edge cases, the why under the what");
   return out;
@@ -555,9 +557,13 @@ async function applyPlan(store: Store, session: Session, plan: PlanOutput, opts:
     void _a; void _b; void _c;
     const titleIsAuto = fresh.title === autoTitle(fresh.sourceText) || fresh.title === "untitled";
     const title = titleIsAuto ? plan.title : fresh.title;
+    // the planner was made to craft an argument-spine (lib/prompts/plan.ts SPINE_RULES) and the
+    // storyline exists to carry it 40 slides deep — seeding with the bare title-and-topic join
+    // threw that work away and started the through-line's life empty of the argument
+    const seeded = initialStoryline(title, plan.outline, rows[rows.length - 1]?.idx ?? null);
     return store.updateSession(session.id, {
       title,
-      storyline: initialStoryline(title, plan.outline, rows[rows.length - 1]?.idx ?? null),
+      storyline: { ...seeded, spine: spineFromPlan(plan) || seeded.spine },
       theme: opts.replan && fresh.theme ? fresh.theme : plan.theme,
       persona: plan.persona,
       outline: plan.outline,
@@ -738,6 +744,12 @@ export async function generateNext(sessionId: string, opts: { waitMs?: number } 
     const rows = await withSessionLock(sessionId, async () => {
       const fresh = await store.getSession(sessionId);
       if (!fresh || fresh.progress.epoch !== session.progress.epoch) return null;
+      // the epoch is only one part of the key: a recap landing on the tail or a directive moving
+      // while the model wrote re-keys the frontier without touching it. re-derive the key from
+      // fresh state + the row actually last — a mismatch means these cards were written for a
+      // runway that no longer exists, and the NEW key's batch will write the real ones.
+      const lastNow = await store.lastCard(sessionId);
+      if (frontierKeyFor(fresh, lastNow?.idx ?? null) !== frontierKey) return null;
       const inserted = await insertAfter(store, sessionId, null, built.cards, batch.id);
       await store.updateBatch(batch.id, { status, cardIds: inserted.map((r) => r.id), error: built.error ?? null, updatedAt: nowIso() });
       let state = fresh.learnerState;
@@ -782,6 +794,9 @@ export async function generateNext(sessionId: string, opts: { waitMs?: number } 
       rows = await withSessionLock(sessionId, async () => {
         const fresh = await store.getSession(sessionId);
         if (fresh && fresh.progress.epoch !== session.progress.epoch) return [];
+        // same supersede rule as the success path: a fallback for a frontier that moved on would
+        // park a retry card behind a runway that already regenerated without us
+        if (fresh && frontierKeyFor(fresh, (await store.lastCard(sessionId))?.idx ?? null) !== frontierKey) return [];
         return insertAfterLast(store, sessionId, [fallbackCard(message, frontierKey)], batch.id);
       });
     } catch {
@@ -806,10 +821,13 @@ type Built = {
 };
 
 /**
- * How many recent batches had cards dropped for repeating a shape. In-memory and
- * best-effort — it only sharpens the next batch's directives (lib/generation/variety.ts).
+ * How the last few batches misbehaved, per signal. `drops` counts batches that actually had cards
+ * dropped for repeating a shape; `noVisual` counts batches that shipped with nothing to look at —
+ * a violation that drops nothing, so it escalates in its own words instead of borrowing the
+ * "cards were dropped" line and making the directive lie. In-memory and best-effort — it only
+ * sharpens the next batch's directives (lib/generation/variety.ts).
  */
-const varietyPressure = new Map<string, number>();
+const varietyPressure = new Map<string, { drops: number; noVisual: number }>();
 
 /**
  * The jargon governor's memory (lib/generation/quality.ts), in the same register as
@@ -915,9 +933,9 @@ async function buildBatch(llm: LlmApi, session: Session, all: CardRow[]): Promis
 
   // the variety governor decides what this batch is allowed to look like BEFORE the call
   const seen = base.recentTypes ?? [];
-  const pressure = varietyPressure.get(session.id) ?? 0;
+  const pressure = varietyPressure.get(session.id) ?? { drops: 0, noVisual: 0 };
   const jargon = qualityPressure.get(session.id) ?? { pressure: 0, unintroduced: [] };
-  const variety = varietyDirectives({ recentTypes: seen, batchSize, allowedTypes: base.allowedTypes, pressure });
+  const variety = varietyDirectives({ recentTypes: seen, batchSize, allowedTypes: base.allowedTypes, pressure: pressure.drops, noVisualPressure: pressure.noVisual });
   const allowed = narrowAllowed(base.allowedTypes, variety.forbidden);
   const cameBackFromDetour = all.length > 0 && all[all.length - 1].detourId !== null;
   const shared = [
@@ -953,7 +971,11 @@ async function buildBatch(llm: LlmApi, session: Session, all: CardRow[]): Promis
         ...shared,
         useResurface
           ? "the outline is done: reframe these near-misses as fresh bets — new angle, never the same wording"
-          : "the outline is done: two 'adjacent waters' cards — a hook that offers to go one layer deeper into a neighbouring idea (\"wanna go one layer deeper into X? keep scrolling\") and one card that starts it",
+          : deeperOwed > 0
+            // they tapped "one more layer" AT the end-of-outline fork: the offer was already made
+            // and accepted, so a hook that asks again is the feed forgetting their answer
+            ? "they already said yes at the fork — no offer, no hook asking permission: open the deeper layer with its most concrete card and keep going under"
+            : "the outline is done: two 'adjacent waters' cards — a hook that offers to go one layer deeper into a neighbouring idea (\"wanna go one layer deeper into X? keep scrolling\") and one card that starts it",
       ],
     });
   }
@@ -968,9 +990,15 @@ async function buildBatch(llm: LlmApi, session: Session, all: CardRow[]): Promis
     // the governor again, this time on what actually came back: drop the repeats, keep the batch
     const v = enforceVariety(history, ordered);
     kept = v.kept;
-    if (v.violations.length) {
-      console.warn(`[engine] variety: kept ${v.kept.length}/${ordered.length} cards (${describeViolations(v.violations)}) session=${session.id}`);
-      varietyPressure.set(session.id, Math.min(3, pressure + 1));
+    if (v.violations.length) console.warn(`[engine] variety: kept ${v.kept.length}/${ordered.length} cards (${describeViolations(v.violations)}) session=${session.id}`);
+    // pressure escalates only on what actually happened: drops count as drops, and a batch with
+    // nothing to look at (which drops nothing) escalates its own line instead of borrowing theirs
+    const noVisualNow = v.violations.some((x) => x.rule === "no_visual");
+    if (v.dropped.length > 0 || noVisualNow) {
+      varietyPressure.set(session.id, {
+        drops: v.dropped.length > 0 ? Math.min(3, pressure.drops + 1) : 0,
+        noVisual: noVisualNow ? Math.min(3, pressure.noVisual + 1) : 0,
+      });
     } else {
       varietyPressure.delete(session.id);
     }
@@ -985,6 +1013,16 @@ async function buildBatch(llm: LlmApi, session: Session, all: CardRow[]): Promis
     } else {
       qualityPressure.delete(session.id);
     }
+    // the "end with a checkpoint" directive fired on a PREDICTION (cardsInNode + batchSize) that
+    // the governor can invalidate by dropping cards. if the node did not actually close, a trailing
+    // "you did it" card is the feed congratulating someone mid-topic — drop it, and the 12-row gap
+    // (checkpointEarned) means the flex is still owed at the boundary that really does close.
+    const nodeClosed = node
+      ? deeperOwed > 0
+        ? kept.length >= deeperOwed
+        : session.progress.cardsInNode + kept.length >= node.estCards
+      : true;
+    if (!nodeClosed && kept.length > 1 && kept[kept.length - 1].type === "checkpoint") kept = kept.slice(0, -1);
     cards.push(...adopt(kept, mainTopic, null));
   } else if (st.outcome === "budget") {
     return { cards: [...cards, budgetNotice()], outcome: "budget", node, mainCount: 0, consumedScaffold, endsNode: false };
@@ -1003,11 +1041,15 @@ async function buildBatch(llm: LlmApi, session: Session, all: CardRow[]): Promis
     : true;
   if (endsNode) {
     const idx = node ? session.outline.findIndex((n) => n.id === node.id) : -1;
+    // "one more layer" closes the same node twice (or more) — the seed carries how many forks this
+    // node has already had, or a reader who goes deeper is asked the same question in the same words
+    const forkNode = node?.id ?? SYSTEM_NODE;
+    const priorForks = all.filter((r) => !r.detourId && r.payload.type === "crossroads" && r.payload.topicNodeId === forkNode).length;
     cards.push(buildCrossroadsCard({
       finished: node?.title ?? (mainTopic === "resurface" ? "the ones that wobbled" : "the extra layer"),
       upNext: idx >= 0 ? session.outline[idx + 1]?.title ?? null : null,
-      nodeId: node?.id ?? SYSTEM_NODE,
-      seed: idx >= 0 ? idx : session.progress.extensions,
+      nodeId: forkNode,
+      seed: (idx >= 0 ? idx : session.progress.extensions) + priorForks,
     }));
   }
 
@@ -1354,6 +1396,17 @@ export async function interact(cardId: string, body: InteractBody): Promise<Inte
         missedConcepts: [r.recap.concept],
         extraDirectives: [...directiveLines(session.learnerState), `the learner is stuck on "${r.recap.concept}" — one recap card: 3 beats, brand-new metaphor, never the same wording`],
       });
+      if (!w.ok || w.value.length === 0) {
+        // the trigger was claimed and cleared under the lock, so a failed write would swallow it —
+        // the reader is still stuck. a full re-arm would loop a failing model, so it degrades to a
+        // pull-forward: the schedule brings the same idea back a few cards on, in a shape that asks.
+        await updateSessionLocked(store, sessionId, (fresh) => ({
+          learnerState: {
+            ...fresh.learnerState,
+            directives: { ...fresh.learnerState.directives, due: pullForward(fresh.learnerState.directives.due, anchorOf(card.payload)) },
+          },
+        })).catch(() => undefined);
+      }
       if (w.ok && w.value.length) {
         const [payload] = await highlightCards(adopt(w.value.slice(0, 1), card.payload.topicNodeId, card.detourId));
         // a miss is reported while the user is ON the card → right after it. dwell / scroll-back are reported when
@@ -1439,8 +1492,15 @@ export async function ask(sessionId: string, question: string, currentCardId: st
   const detourId = uuid();
   const all = await store.listAllCards(sessionId);
   const base = baseContext(session, all, node);
+  // the detour splices right after the card they are ON, not after the runway's last row — so the
+  // writer's continuity window and the variety governor both measure at the splice point, the same
+  // history the reader's thumb has actually seen there
+  const atSplice = all.filter((r) => r.idx <= card.idx).map((r) => r.payload);
+  const spliceTypes = recentTypes(atSplice, 6);
   const ctx: DetourContext = {
     ...base,
+    recent: recentSummaries(atSplice, 6),
+    recentTypes: spliceTypes,
     detourId,
     batchSize: cardCount,
     question,
@@ -1450,7 +1510,12 @@ export async function ask(sessionId: string, question: string, currentCardId: st
     extraDirectives: [...base.extraDirectives, `the learner asked about "${focus}" — reinforce it; answer the question first, then connect it back`],
   };
   const written = await llm.writeDetour(ctx);
-  const kept = written.ok ? enforceChill(written.value, session.settings) : [];
+  const chilled = written.ok ? enforceChill(written.value, session.settings) : [];
+  // "variety is enforced in code" includes detours: an answer that comes back as three paragraphs
+  // is still the paragraph deck, spliced into the exact spot the reader is looking at
+  const v = enforceVariety(spliceTypes, chilled);
+  if (v.violations.length) console.warn(`[engine] detour variety: kept ${v.kept.length}/${chilled.length} cards (${describeViolations(v.violations)}) session=${sessionId}`);
+  const kept = v.kept;
   if (!written.ok || kept.length === 0) {
     return { kind: "inline", answer: !written.ok && written.code === "budget" ? COPY.askBudget : COPY.detourUnavailable };
   }

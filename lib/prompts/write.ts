@@ -9,7 +9,7 @@ import {
   themeGroundingBlock, type Prompt,
 } from "./shared";
 
-export const PROMPT_VERSION = "write.v5";
+export const PROMPT_VERSION = "write.v6";
 
 /** Corpus budget for one writer call (chars). The caller already slices per node; this is a hard ceiling. */
 export const WRITE_CORPUS_CHARS = 12_000;
@@ -28,7 +28,9 @@ const CRAFT = `craft:
 - every string fits its cap. shorter is better. one idea per card. lowercase.
 - visuals: only the schema-listed kinds; icons from the allowed icon list.
 - anchors: stamp "anchor" on every card, and REUSE the slug an idea already has (the recent ones are listed in the user turn) rather than coining a second one. it is invisible to the reader and it is what lets a card come back to an idea instead of re-teaching it.
-- a callback is a bet, not a reminder. when you come back to an older idea, it arrives in a new shape and never says that it is coming back.`;
+- a callback is a bet, not a reminder. when you come back to an older idea, it arrives in a new shape and never says that it is coming back.
+- THREAD THE BATCH: inside a batch, each card's opening line connects to the previous card's idea — because, so, but, which is why — so the batch reads as one argument, not a deck of facts. worked example: a stat lands "16 cents to load a ton" → the next card opens "so the bottleneck moved to the ports overnight" → the next opens "but the ports had been built for the old world". never number the connection, never "as we just saw" — the logic carries it, not a reference.
+- roughly one card in five — with jitter, never on a schedule — is the batch's JACKPOT: the stat that reframes everything, the twist reveal, the bet whose answer stings. never two jackpots adjacent, and it never announces itself; the reader just hits it.`;
 
 /**
  * System prompt: persona + theme are stapled in (grounding — callers can never
@@ -142,7 +144,7 @@ function modeInstructions(ctx: WriteContext): string {
         `over the life of a node, land at least one code card (when the subject has code) and one diagram card. if the recent shapes had neither, that's this batch.`,
         wantsCheckpoint ? `this batch ENDS the node: make the LAST card a "checkpoint" that flexes what they now know in this subject's world ("you now know more about X than most Y").` : null,
         difficultyDirective(ctx.learnerState),
-        ctx.learnerState.directives.pace === "compress" ? `pace: compress — bigger claims, fewer words, land the node in fewer cards.` : null,
+        // pace is reported once, by learnerSummary — a directive said twice is one the model ignores
       ];
       return lines.filter(Boolean).join("\n");
     }
@@ -163,12 +165,26 @@ function modeInstructions(ctx: WriteContext): string {
         `topicNodeId "${node?.id ?? "resurface"}".`,
         difficultyDirective(ctx.learnerState),
       ].join("\n");
-    case "adjacent":
+    case "adjacent": {
+      // "one more layer" was TAPPED at the end of the outline → they already said yes: an offer-hook
+      // here asks a question they just answered. the engine signals acceptance with the deeper
+      // directive, the same tell the normal mode reads for checkpoints.
+      const accepted = ctx.extraDirectives.some((d) => /tapped "one more layer"/i.test(d));
+      if (accepted) {
+        return [
+          `mode: adjacent waters, accepted. they tapped "one more layer" at the end of the thread — do NOT offer, do NOT ask, no "wanna go deeper" hook. write EXACTLY ${n} cards that go straight UNDER what the session covered: the mechanism beneath the mechanism, the edge case, the part that surprises. never restate a card they have already seen.`,
+          batchShape(ctx, n),
+          node?.brief ? `the deeper layer: ${node.brief}` : `pick the most natural deeper layer from the source and the recent cards.`,
+          `topicNodeId "${node?.id ?? "adjacent"}".`,
+          difficultyDirective(ctx.learnerState),
+        ].filter(Boolean).join("\n");
+      }
       return [
         `mode: adjacent waters. the outline is done; offer to go one layer deeper. write EXACTLY 2 cards: 1 "hook" whose headline is an offer like "wanna go one layer deeper into ${node?.title ?? "this"}? keep scrolling" then 1 card that opens that deeper layer — pick its shape from what the layer actually is (a number → "stat", a mechanism → "diagram", otherwise "concept" with a visual).`,
         node?.brief ? `the deeper layer: ${node.brief}` : `pick the most natural next layer from the source and the recent cards.`,
         `topicNodeId "${node?.id ?? "adjacent"}".`,
       ].join("\n");
+    }
     case "recap":
       return [
         `mode: recap. they missed the same idea twice (or stalled on it). write EXACTLY 1 "recap" card: headline + 3 beats that re-explain it through a NEW metaphor. never the earlier wording, never a used metaphor.`,

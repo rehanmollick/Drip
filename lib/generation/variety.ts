@@ -60,17 +60,22 @@ export type VarietyDirectives = {
 };
 
 /**
- * `pressure` is how many recent batches had to be trimmed (0 = clean). It only
- * sharpens the language and widens what gets forbidden; it never blocks a call.
+ * `pressure` is how many recent batches actually had cards DROPPED (0 = clean); `noVisualPressure`
+ * counts batches that shipped with nothing to look at, which drops nothing and so escalates in its
+ * own words — telling the writer "cards were dropped" over a violation that cost it nothing taught
+ * it the directive lies. Both only sharpen the language and widen what gets forbidden; neither
+ * ever blocks a call.
  */
 export function varietyDirectives(input: {
   recentTypes: readonly CardType[];
   batchSize: number;
   allowedTypes: readonly CardType[];
   pressure?: number;
+  noVisualPressure?: number;
 }): VarietyDirectives {
   const { batchSize, allowedTypes } = input;
   const pressure = Math.max(0, input.pressure ?? 0);
+  const noVisualPressure = Math.max(0, input.noVisualPressure ?? 0);
   const recent = input.recentTypes.slice(-LOOKBACK);
   const wanted = VISUAL_CARD_TYPES.filter((t) => allowedTypes.includes(t));
   const lines: string[] = [];
@@ -102,6 +107,13 @@ export function varietyDirectives(input: {
       pressure > 1
         ? `the last ${pressure} batches had cards dropped for repeating the same shape. every card in this batch is a different type. no exceptions.`
         : `the last batch had a card dropped for repeating the same shape. vary every card in this one.`,
+    );
+  }
+  if (noVisualPressure > 0 && wanted.length) {
+    lines.push(
+      noVisualPressure > 1
+        ? `the last ${noVisualPressure} batches went out with nothing to look at — not one ${wanted.join("/")} card among them. this batch OPENS with one. no paragraph gets written before it exists.`
+        : `the last batch went out with nothing to look at — no ${wanted.join("/")} card in it. this batch carries at least one, and it is not the last card.`,
     );
   }
   return { lines, forbidden: dedupe(forbidden), wanted };

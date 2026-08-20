@@ -341,18 +341,24 @@ export function difficultyFor(state: LearnerState): number {
   return clamp(state.level, 1, 5);
 }
 
+/**
+ * ONE OWNER PER SIGNAL: difficulty is commanded by `difficultyDirective` (this block only reports
+ * the dial and the reading), pace and reinforce live HERE and nowhere else. Each signal used to be
+ * said two or three times per prompt, and a repeated instruction is the cheapest one to ignore.
+ * (`recapDue` never appears: it is transient inside interact() and reaches the recap writer as
+ * `missedConcepts`, so by the time any prompt reads persisted state it is always null.)
+ */
 export function learnerSummary(state: LearnerState): string {
   const last = state.rolling.last10Interactive;
   const hits = last.filter(Boolean).length;
   const rate = last.length ? Math.round((hits / last.length) * 100) : null;
   const d = state.directives;
   const lines = [
-    `they dialled ${state.globalLevel}/5 (1 = total beginner, 5 = practitioner); their answers read ${difficultyFor(state)}/5 → write interactives at difficulty ${difficultyFor(state)}.`,
+    `they dialled ${state.globalLevel}/5 (1 = total beginner, 5 = practitioner); their answers read ${difficultyFor(state)}/5.`,
     rate === null ? `no interactive results yet.` : `recent bets: ${hits}/${last.length} landed (${rate}%).`,
     state.rolling.avgDwellMs ? `avg dwell ${Math.round(state.rolling.avgDwellMs / 100) / 10}s per card.` : ``,
     `pace: ${d.pace}${d.pace === "compress" ? " → they're skimming: bigger claims, fewer words, fewer cards per idea." : "."}`,
     d.scaffoldNext.length ? `needs a gentler re-angle before the next bet on: ${d.scaffoldNext.join(", ")}.` : ``,
-    d.recapDue ? `recap due on: ${d.recapDue}.` : ``,
     d.reinforce.length ? `they asked about these in detours — reinforce: ${d.reinforce.join(", ")}.` : ``,
     `prefs: chill mode ${state.prefs.chillMode ? "ON (no bets, no sliders — consumption only)" : "off"}, depth ${state.prefs.depthPreset}, simpler taps ${state.prefs.simplerTaps}, deeper taps ${state.prefs.deeperTaps}.`,
     `every number in this block is context for YOU. none of it goes on screen, ever — no score, no percentage, no "difficulty 4", no "you got 3 of 4". they are here to be read, not graded.`,

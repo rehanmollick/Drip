@@ -90,7 +90,8 @@ function fakeLlm(): Fake {
     },
     async writeDetour(ctx) {
       f.calls.push({ fn: "writeDetour", ctx });
-      return okR(Array.from({ length: ctx.cardCount }, (_, k) => (k % 2 ? stat(`d${k}`) : concept(`d${k}`))));
+      // stat first: the detour is governed against the splice point's history, which often ends in prose
+      return okR(Array.from({ length: ctx.cardCount }, (_, k) => (k % 2 ? concept(`d${k}`) : stat(`d${k}`))));
     },
     async dialToast() { return "bet."; },
     async evaluateOpen(input) {
@@ -267,7 +268,9 @@ describe("wrap", () => {
 describe("storyline", () => {
   it("is set from the plan and reaches every write call", async () => {
     const s = await planned();
-    expect(s.storyline?.spine).toBe("cache stampedes: what a cache is → stampedes");
+    // the spine is the planner's ARGUMENT (title + the hook's sharpest edge), not a list of topics —
+    // spineFromPlan reads it off the plan; the topic list still lives in covered/next
+    expect(s.storyline?.spine).toBe("cache stampedes — hook first");
     expect(s.storyline?.next).toBe("what a cache is");
     await generateNext(s.id);
     const ctxs = llm.calls.filter((c) => c.fn === "writeBatch").map((c) => c.ctx as WriteContext);

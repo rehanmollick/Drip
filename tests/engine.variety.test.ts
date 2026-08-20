@@ -111,6 +111,19 @@ describe("variety governor", () => {
     const d = varietyDirectives({ recentTypes: ["concept", "concept"], batchSize: 4, allowedTypes: chill });
     expect(d.wanted).toEqual(["diagram", "code", "stat"]);
   });
+
+  it("no_visual escalates its own line and never borrows the dropped-cards one", () => {
+    // a batch with nothing to look at drops nothing, so telling the writer "cards were dropped"
+    // over it made the directive lie — it gets its own words, and only real drops get theirs
+    const d = varietyDirectives({ recentTypes: ["stat", "code"], batchSize: 4, allowedTypes: WRITER_CARD_TYPES, noVisualPressure: 1 });
+    expect(d.lines.join(" ")).toMatch(/nothing to look at/);
+    expect(d.lines.join(" ")).not.toMatch(/dropped/);
+    const hot = varietyDirectives({ recentTypes: ["stat", "code"], batchSize: 4, allowedTypes: WRITER_CARD_TYPES, noVisualPressure: 2 });
+    expect(hot.lines.join(" ")).toMatch(/OPENS with one/);
+    const both = varietyDirectives({ recentTypes: ["stat", "code"], batchSize: 4, allowedTypes: WRITER_CARD_TYPES, pressure: 1, noVisualPressure: 1 });
+    expect(both.lines.join(" ")).toMatch(/dropped/);
+    expect(both.lines.join(" ")).toMatch(/nothing to look at/);
+  });
 });
 
 describe("crossroads card", () => {
@@ -123,7 +136,9 @@ describe("crossroads card", () => {
     expect(c.upNext).toBe("stampedes");
     expect(c.headline).toBe("that's what a cache is. where to?");
     expect(c.choices.map((x) => x.kind)).toEqual(["continue", "deeper", "ask", "wrap"]);
-    expect(c.choices[0].label).toBe("keep going: stampedes");
+    // the label says the direction ONCE — the renderer's "next up · {upNext}" sub-line owns the
+    // topic, untruncated, so the button never says the same thing twice with one of them cut short
+    expect(c.choices[0].label).toBe("keep going");
     expect(CardSchema.safeParse(c).success).toBe(true);
     expect(findBannedInValue(c)).toBeNull();
   });

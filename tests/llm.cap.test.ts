@@ -39,7 +39,7 @@ describe("spend cap (fails closed)", () => {
     expect(store.calls).toHaveLength(1);
     expect(store.calls[0].ok).toBe(false);
     expect(store.calls[0].purpose).toBe("write");
-    expect(store.calls[0].promptVersion).toMatch(/^write\.v5\+shared\.v\d+\.[0-9a-f]{8}$/);
+    expect(store.calls[0].promptVersion).toMatch(/^write\.v6\+shared\.v\d+\.[0-9a-f]{8}$/);
     expect(store.calls[0].error).toMatch(/budget/);
   });
 
@@ -135,7 +135,7 @@ describe("logging + mock pipeline", () => {
     expect(typeof toast).toBe("string");
     expect(store.calls.map((c) => c.purpose)).toEqual(["plan", "write", "triage", "detour", "chat"]);
     const shared = /\+shared\.v\d+\.[0-9a-f]{8}$/;
-    expect(store.calls.map((c) => c.promptVersion.replace(shared, ""))).toEqual(["plan.v4", "write.v5", "triage.v2", "detour.v2+write.v5", "dial.v1"]);
+    expect(store.calls.map((c) => c.promptVersion.replace(shared, ""))).toEqual(["plan.v4", "write.v6", "triage.v2", "detour.v2+write.v6", "dial.v1"]);
     for (const c of store.calls) expect(c.promptVersion).toMatch(shared);
     for (const c of store.calls) {
       expect(c.ok).toBe(true);

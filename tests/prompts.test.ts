@@ -330,6 +330,45 @@ describe("prompt files", () => {
     expect(p.user).toMatch(/none of it goes on screen/);
   });
 
+  it("threads the batch causally and asks for a jackpot cadence — rules, not systems", () => {
+    const s = write.buildWritePrompt(writeCtx()).system;
+    // Mayer's coherence + the narrative-spine evidence: each card's opening line connects to the
+    // previous card's idea so a batch reads as one argument, not a deck of facts
+    expect(s).toMatch(/THREAD THE BATCH/);
+    expect(s).toMatch(/because, so, but, which is why/);
+    expect(s).toMatch(/one argument, not a deck of facts/);
+    // variable-ratio reward (Fiorillo 2003): about one card in five is the batch's jackpot
+    expect(s).toMatch(/JACKPOT/);
+    expect(s).toMatch(/one card in five/);
+    expect(s).toMatch(/never two jackpots adjacent/);
+    expect(s).toMatch(/never announces itself/);
+  });
+
+  it("each learner signal is said ONCE per prompt: difficulty, pace, reinforce all have one owner", () => {
+    const state = defaultLearnerState();
+    const p = write.buildWritePrompt(writeCtx({
+      learnerState: { ...state, level: 4, directives: { ...state.directives, pace: "compress", reinforce: ["ttl"] } },
+    }));
+    expect((p.user.match(/write interactives at difficulty/g) ?? []).length).toBe(1);
+    expect((p.user.match(/compress/g) ?? []).length).toBe(1);
+    expect((p.user.match(/reinforce/g) ?? []).length).toBe(1);
+  });
+
+  it("adjacent mode stops offering once 'one more layer' was tapped — they already said yes", () => {
+    const offer = write.buildWritePrompt(writeCtx({ mode: "adjacent" }));
+    expect(offer.user).toMatch(/wanna go one layer deeper/);
+    const accepted = write.buildWritePrompt(writeCtx({
+      mode: "adjacent",
+      batchSize: 3,
+      extraDirectives: [`they tapped "one more layer" on what just went by — go UNDER what is already on screen`],
+    }));
+    expect(accepted.user).toMatch(/adjacent waters, accepted/);
+    expect(accepted.user).toMatch(/write EXACTLY 3 cards/);
+    expect(accepted.user).not.toMatch(/wanna go one layer deeper/);
+    // and the system prompt stays byte-identical: acceptance is a user-turn fact
+    expect(accepted.system).toBe(offer.system);
+  });
+
   it("write prompt's batch shape demands a visual card, caps prose, and places the open beat", () => {
     const p = write.buildWritePrompt(writeCtx({ batchSize: 4 }));
     expect(p.user).toMatch(/batch shape/);

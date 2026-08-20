@@ -309,5 +309,10 @@ describe("learner reducer: dial + reinforce + hash", () => {
     // …while the things that genuinely change what the writer is told still move it
     expect(learnerStateHash(applyDial(s0, "deeper"))).not.toBe(h0);
     expect(learnerStateHash(addReinforce(s0, "eviction"))).not.toBe(h0);
+
+    // recapDue never survives interact() (claimed and cleared inside one lock write), so a hash
+    // entry for it could only ever re-key the frontier mid-request — it stays out of the key
+    const stuck = { ...s0, directives: { ...s0.directives, recapDue: "ttl" } };
+    expect(learnerStateHash(stuck), "transient recapDue re-keyed the frontier").toBe(h0);
   });
 });

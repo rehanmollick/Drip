@@ -96,15 +96,18 @@ describe("misc engine helpers", () => {
     expect(toPublic(s, 2).cardCount).toBe(2);
   });
 
-  it("directiveLines renders learner directives as writer-facing lines", () => {
+  it("directiveLines carries ONLY the dial taps — difficulty, pace and reinforce each have one owner elsewhere", () => {
     const st = defaultLearnerState();
     expect(directiveLines(st)).toEqual([]);
+    // these three signals are owned by difficultyDirective / learnerSummary (lib/prompts/shared.ts);
+    // repeating them here made every prompt say each one two or three times
     st.level = st.globalLevel + 1;
     st.directives = { ...st.directives, pace: "compress", reinforce: ["ttl"] };
-    const lines = directiveLines(st);
-    expect(lines.some((l) => /difficulty \+1/.test(l))).toBe(true);
-    expect(lines.some((l) => /compress/.test(l))).toBe(true);
-    expect(lines.some((l) => /ttl/.test(l))).toBe(true);
+    expect(directiveLines(st)).toEqual([]);
+    st.prefs = { ...st.prefs, simplerTaps: 2 };
+    expect(directiveLines(st).join(" ")).toMatch(/plain words/);
+    st.prefs = { ...st.prefs, simplerTaps: 2, deeperTaps: 3 };
+    expect(directiveLines(st).join(" ")).toMatch(/mechanisms/);
   });
 
   it("recomputeProgress derives the frontier from the remaining main-thread cards", () => {

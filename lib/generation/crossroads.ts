@@ -20,7 +20,6 @@ import { SYSTEM_NODE } from "./system-cards";
 /** Longest a topic title may be inside a headline before it stops fitting one phone line. */
 const HEADLINE_TITLE_CHARS = 34;
 const FINISHED_CHARS = 60;
-const UP_NEXT_LABEL_CHARS = 26;
 
 export function clampText(s: string, max: number): string {
   const t = s.replace(/\s+/g, " ").trim();
@@ -96,7 +95,10 @@ export function buildCrossroadsCard(input: CrossroadsInput): CrossroadsCard {
   const finished = clampText(input.finished, FINISHED_CHARS);
   const upNext = input.upNext ? clampText(input.upNext, FINISHED_CHARS) : null;
   const choices: CrossroadsCard["choices"] = [];
-  if (upNext) choices.push({ kind: "continue", label: `keep going: ${clampText(upNext, UP_NEXT_LABEL_CHARS)}` });
+  // the label is just the verb: the renderer's sub-line owns the topic ("next up · {upNext}"),
+  // said once and untruncated at upNext's own cap — the old "keep going: <topic clamped to 26>"
+  // put the same words on the button twice, one of them cut mid-phrase
+  if (upNext) choices.push({ kind: "continue", label: "keep going" });
   choices.push({ kind: "deeper", label: "one more layer here" });
   choices.push({ kind: "ask", label: "ask something" });
   choices.push({ kind: "wrap", label: "wrap it up" });

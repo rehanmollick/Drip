@@ -99,7 +99,8 @@ function fakeLlm(): Fake {
     async writeDetour(ctx) {
       f.calls.push({ fn: "writeDetour", ctx });
       const i = String(++seq);
-      return okR(Array.from({ length: ctx.cardCount }, (_, k) => concept(`d${i}-${k}`, `detour-${i}-${k}`)));
+      // varied shapes: detours pass the variety governor now, and a wall of concepts would be trimmed
+      return okR(Array.from({ length: ctx.cardCount }, (_, k) => (k % 2 ? concept(`d${i}-${k}`, `detour-${i}-${k}`) : stat(`d${i}-${k}`, `detour-${i}-${k}`))));
     },
     async dialToast() { return "bet."; },
     async evaluateOpen() { return failR(); },

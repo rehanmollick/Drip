@@ -11,6 +11,7 @@ import type { PlanOutput } from "@/lib/schemas/plan";
 import { PlanOutputSchema } from "@/lib/schemas/plan";
 import { SAMPLE_THEME_TERMINAL_NOIR } from "@/lib/theme/defaults";
 import { uuid } from "@/lib/id";
+import { anchorOf } from "@/lib/adapt/anchors";
 import { findBannedInValue } from "@/lib/copy/banned";
 import {
   answerClarifiers, ask, chooseAtCrossroads, createSession, dial, generateNext, interact, reapIfStuck, remixSession,
@@ -29,6 +30,7 @@ const hook = (i: string): Card => ({ id: uuid(), type: "hook", topicNodeId: "n1"
 const binary = (i: string): Card => ({ id: uuid(), type: "binary", topicNodeId: "n1", detourId: null, eyebrow: `bet ${i}`, prompt: `hot take ${i}`, options: ["real", "nah"], correctIndex: 1, revealCopy: "nah.", difficulty: 2 });
 const code = (i: string): Card => ({ id: uuid(), type: "code", topicNodeId: "n1", detourId: null, lang: "ts", code: `const a${i} = 1;`, annotations: [] });
 const stat = (i: string): Card => ({ id: uuid(), type: "stat", topicNodeId: "n1", detourId: null, value: "80%", label: `hit rate ${i}`, context: `context ${i}` });
+const reveal = (i: string): Card => ({ id: uuid(), type: "reveal", topicNodeId: "n1", detourId: null, setup: `you'd think ${i}…`, payoff: `nah ${i}.` });
 const recap = (i: string): Card => ({ id: uuid(), type: "recap", topicNodeId: "n1", detourId: null, headline: `again ${i}`, beats: ["a", "b", "c"], metaphor: `metaphor ${i}` });
 
 function makePlan(over: Partial<PlanOutput> = {}): PlanOutput {
@@ -96,7 +98,8 @@ function fakeLlm(): Fake {
     async writeDetour(ctx) {
       f.calls.push({ fn: "writeDetour", ctx });
       const i = String(++seq);
-      return okR(Array.from({ length: ctx.cardCount }, (_, k) => concept(`detour-${i}-${k}`)));
+      // varied non-prose shapes: detours pass the same variety governor as everything else now
+      return okR(Array.from({ length: ctx.cardCount }, (_, k) => (k % 2 ? reveal(`detour-${i}-${k}`) : stat(`detour-${i}-${k}`))));
     },
     async dialToast({ direction }) {
       return direction === "simpler" ? "say less." : "bet.";
@@ -273,7 +276,8 @@ describe("generateNext", () => {
     expect(fork.finished).toBe("what a cache is");
     expect(fork.upNext).toBe("stampedes");
     expect(fork.choices.map((c) => c.kind)).toEqual(["continue", "deeper", "ask", "wrap"]);
-    expect(fork.choices[0].label).toContain("stampedes");
+    // the topic is said once, by `upNext` (the renderer's sub-line); the label is just the verb
+    expect(fork.choices[0].label).toBe("keep going");
     expect(findBannedInValue(fork)).toBeNull();
     expect(CardSchema.safeParse(fork).success).toBe(true);
 
@@ -327,6 +331,10 @@ describe("generateNext", () => {
     expect(["adjacent", "resurface"]).toContain(ctx.mode);
     expect(ctx.node).toBeNull();
     expect(ctx.extraDirectives.join(" ")).toMatch(/one more layer/);
+    // they already said yes at the fork: the batch is the full grant, and nothing asks again
+    expect(ctx.batchSize).toBe(3);
+    expect(ctx.extraDirectives.join(" ")).toMatch(/already said yes/);
+    expect(ctx.extraDirectives.join(" ")).not.toMatch(/wanna go one layer deeper/);
     const cur = (await store.getSession(s.id))!;
     expect(cur.progress.exhausted).toBe(true);
     expect(cur.progress.extensions).toBe(1);
@@ -349,6 +357,51 @@ describe("generateNext", () => {
     expect(cur.progress.nodeIdx).toBe(0);
     expect(cur.progress.deeperCards).toBe(0); // the debt was paid by this batch
     expect(cur.progress.awaitingChoice).toBe(true); // …and it ends in another fork
+    // the same node closed twice, so the second fork must not ask in the same words as the first
+    const forks = (await store.listAllCards(s.id)).filter((c) => c.type === "crossroads").map((c) => c.payload as CrossroadsCard);
+    expect(forks).toHaveLength(2);
+    expect(forks[1].headline).not.toBe(forks[0].headline);
+  });
+
+  it("a batch whose frontier moved mid-write is superseded, never inserted — even with the epoch unmoved", async () => {
+    // the frontier key carries MORE than the epoch: the last row and the learner hash. a recap
+    // landing on the tail while the model writes re-keys the frontier without an epoch bump, and
+    // the epoch-only check used to let the stale cards in anyway.
+    const s = await planned();
+    let release!: () => void;
+    const gate = new Promise<void>((res) => { release = res; });
+    const orig = llm.writeBatch.bind(llm);
+    llm.writeBatch = async (ctx) => { await gate; return orig(ctx); };
+    const pending = generateNext(s.id);
+    await new Promise((r) => setTimeout(r, 100)); // let the batch get claimed and the write start
+    // a row lands on the very end of the deck while the model is writing
+    const seed = (await store.listAllCards(s.id)).at(-1)!;
+    await store.insertCards([{ ...seed, id: uuid(), idx: `${seed.idx}V`, payload: { ...seed.payload, id: uuid() }, viewedAt: null, interaction: null }]);
+    const before = (await store.listAllCards(s.id)).length;
+    release();
+    const g = await pending;
+    expect(g.batch.status).toBe("failed");
+    expect(g.batch.reason).toBe("superseded");
+    expect(g.cards).toEqual([]);
+    expect((await store.listAllCards(s.id)).length).toBe(before);
+    // the epoch never moved — this supersede came from the re-derived key alone
+    expect((await store.getSession(s.id))!.progress.epoch).toBe(s.progress.epoch);
+  });
+
+  it("a checkpoint written for a close that the governor cancelled is demoted out of the batch", async () => {
+    // "end with a checkpoint" fires on a PREDICTION (cardsInNode + batchSize >= estCards); when the
+    // kept batch is smaller and the node does NOT close, a trailing "you did it" card would land
+    // mid-topic — grading someone who is not done.
+    llm.state.plan = makePlan({ outline: [{ id: N(1), title: "what a cache is", estCards: 8, dependsOn: [] }, { id: N(2), title: "stampedes", estCards: 8, dependsOn: [N(1)] }] });
+    const s = await planned();
+    llm.writeBatch = async () => okR<Card[]>([
+      stat("cp-a"), binary("cp-b"), code("cp-c"),
+      { id: uuid(), type: "checkpoint", topicNodeId: "n1", detourId: null, headline: "you know caches better than most engineers" },
+    ]);
+    const g = await generateNext(s.id);
+    // 3 (plan) + 4 (batch) < 12 → the node did not close: no crossroads, and the checkpoint is gone
+    expect(g.cards.map((c) => c.type)).toEqual(["stat", "binary", "code"]);
+    expect((await store.getSession(s.id))!.progress.awaitingChoice).toBe(false);
   });
 
   it("stops generating when the unviewed runway is already deep", async () => {
@@ -512,7 +565,7 @@ describe("ask", () => {
     if (r.kind !== "detour") return;
     expect(r.detour.parentDetourId).toBeNull();
     expect(r.detour.insertedAfterIdx).toBe(current.idx);
-    expect(r.cards.map((c) => c.type)).toEqual(["detour_marker", "concept", "concept", "concept", "detour_marker"]);
+    expect(r.cards.map((c) => c.type)).toEqual(["detour_marker", "stat", "reveal", "stat", "detour_marker"]);
     expect(r.cards.every((c) => c.detourId === r.detour.id && c.payload.detourId === r.detour.id)).toBe(true);
     for (const c of r.cards) {
       expect(c.idx > current.idx).toBe(true);
@@ -530,9 +583,12 @@ describe("ask", () => {
     // learner state: reinforce
     const cur = (await store.getSession(s.id))!;
     expect(cur.learnerState.directives.reinforce).toEqual(["ttl"]);
-    const dctx = llm.calls.find((c) => c.fn === "writeDetour")!.ctx as { detourId: string; cardCount: number; focus: string };
+    const dctx = llm.calls.find((c) => c.fn === "writeDetour")!.ctx as { detourId: string; cardCount: number; focus: string; recentTypes: string[] };
     expect(dctx.cardCount).toBe(3);
     expect(dctx.detourId).toBe(r.detour.id);
+    // the detour writer sees the feed AT THE SPLICE POINT, not the runway written past the reader:
+    // the current card is row 1 of [hook, concept, …], so that is all the history there is
+    expect(dctx.recentTypes).toEqual(["hook", "concept"]);
 
     // nested: ask from the 2nd detour card
     const inner = r.cards[2];
@@ -550,6 +606,21 @@ describe("ask", () => {
     const p = final.findIndex((c) => c.id === inner.id);
     expect(final.slice(p, p + 7).map((c) => c.id)).toEqual([inner.id, ...r2.cards.map((c) => c.id), innerNext.id]);
     expect((await store.listDetours(s.id)).map((d) => d.parentDetourId)).toEqual([null, r.detour.id]);
+  });
+
+  it("a detour that comes back as three paragraphs is governed like any other batch", async () => {
+    // "variety is enforced in code" includes detours: the splice point's history is the window,
+    // and a wall of concepts spliced under the reader's thumb is still the paragraph deck
+    const s = await planned();
+    const all = await store.listAllCards(s.id);
+    const current = all[1]; // a concept — so a detour opening with a concept is two prose in a row
+    llm.state.triage = "detour";
+    llm.writeDetour = async (ctx) => okR(Array.from({ length: ctx.cardCount }, (_, k) => concept(`wall-${k}`)));
+    const r = await ask(s.id, "why though?", current.id);
+    expect(r.kind).toBe("detour");
+    if (r.kind !== "detour") return;
+    // three concepts against a history ending in a concept: the governor keeps the salvaged one
+    expect(r.cards.map((c) => c.type)).toEqual(["detour_marker", "concept", "detour_marker"]);
   });
 
   it("detour at the very end of the feed appends after the last card", async () => {
@@ -618,6 +689,25 @@ describe("interact", () => {
     const r4 = await interact(bet4.id, { choice: 0, correct: false });
     expect(r4.inserted).toEqual([]);
     expect(llm.calls.filter((c) => c.fn === "writeBatch").length).toBe(calls);
+  });
+
+  it("a failed recap write degrades to a pull-forward instead of swallowing the trigger", async () => {
+    const s = await planned();
+    await generateNext(s.id);
+    const bet = (await store.listAllCards(s.id)).find((c) => c.type === "binary")!;
+    const orig = llm.writeBatch.bind(llm);
+    llm.writeBatch = async (ctx) => (ctx.mode === "recap" ? apiFail<Card[]>() : orig(ctx));
+    // two misses on the same concept → recapDue is claimed and cleared under the lock…
+    await interact(bet.id, { choice: 0, correct: false });
+    const bet2 = { ...bet, id: uuid(), idx: bet.idx + "V", payload: { ...bet.payload, id: uuid() }, viewedAt: null, interaction: null };
+    await store.insertCards([bet2]);
+    const r = await interact(bet2.id, { choice: 0, correct: false });
+    // …and the write failed: no recap card, no re-armed trigger (that would loop a failing model)
+    expect(r.inserted).toEqual([]);
+    const cur = (await store.getSession(s.id))!;
+    expect(cur.learnerState.directives.recapDue).toBeNull();
+    // but the reader is still stuck, so the schedule is told to ask about the idea again soon
+    expect(cur.learnerState.directives.due).toContain(anchorOf(bet.payload));
   });
 
   it("system cards do not touch learner state; tapping a clarify card records the answer", async () => {

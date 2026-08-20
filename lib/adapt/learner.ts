@@ -300,6 +300,13 @@ export function withPrefs(state: LearnerState, prefs: Partial<Pick<LearnerState[
  * projection of the ledger — all four move on ordinary cards, so all four stay
  * out. What they're for reaches the writer through `level`, which is hashed and
  * only steps when the reading genuinely changed.
+ *
+ * `recapDue` is deliberately NOT here. It is transient within one interact():
+ * the reducer sets it and interact() claims and clears it inside the same lock
+ * write, so the persisted state this hash ever sees carries null — a component
+ * that never survives a request is dead weight in the frontier key, and the
+ * batch writer is handed the recap concept through `missedConcepts`, never
+ * through the hashable state.
  */
 export function learnerStateHash(state: LearnerState): string {
   const key = JSON.stringify([
@@ -312,7 +319,6 @@ export function learnerStateHash(state: LearnerState): string {
     state.prefs.deeperTaps,
     state.directives.pace,
     state.directives.scaffoldNext,
-    state.directives.recapDue,
     state.directives.reinforce,
   ]);
   return createHash("sha1").update(key).digest("hex").slice(0, 10);
