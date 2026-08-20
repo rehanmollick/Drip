@@ -6,25 +6,29 @@ import { useTheme } from "@/components/theme/ThemeRoot";
 import type { Material, MapTopic } from "@/lib/feed/map";
 
 /**
- * THE SESSION MAP — long-press the timeline.
+ * THE SESSION MAP — long-press the depth rail.
  *
- * The whole thread at a glance: every topic in order, the detours you took hanging off the topic
- * they branched from, and a mark on where you are right now. Tap something you have already been
- * through to go back to it; anything still ahead is inert — the map orients you, it never skips
- * you forward past what has been written. The in-app refresh lives here too (a standalone PWA has
- * no pull-to-refresh).
+ * The whole thread at a glance, drawn as the SAME vertical path the rail is: every topic in order
+ * down one line, the detours you took hanging off the topic they branched from, and a mark on where
+ * you are right now. The materials are the rail's, appearing a second time — one idea, two places:
  *
- * The dots carry the same two-state material the timeline's ghost band draws: a topic with cards
- * WRITTEN gets the ghosted accent, one that is still only PLANNED gets the plain rule. One idea,
- * appearing twice — so a heading the writer hasn't reached yet stops looking like a stretch of feed
- * already waiting for you.
+ *   done      solid accent — you've been through it
+ *   written   ghosted accent — it exists, waiting below
+ *   planned   a dotted line and a hollow dot — a heading so far, nothing written
  *
- * No counters, no percentages, no "3 of 8". Structure only.
+ * Tap something you have already been through to go back to it; anything still ahead is inert —
+ * the map orients you, it never skips you forward past what has been written. The in-app refresh
+ * lives here too (a standalone PWA has no pull-to-refresh).
+ *
+ * The one number in this whole surface: "~N min left in this thread", computed from the session's
+ * own median dwell. Time-as-effort is allowed HERE — on demand, behind a long-press — and nowhere
+ * ambient. Never a percent, never a count of cards.
  */
 export function SessionMapSheet({
   open,
   onClose,
   topics,
+  minutesLeft = null,
   onGoTo,
   onRefresh,
   refreshing,
@@ -32,6 +36,8 @@ export function SessionMapSheet({
   open: boolean;
   onClose: () => void;
   topics: MapTopic[];
+  /** null = not enough dwell history yet, or nothing ahead — the line simply isn't there. */
+  minutesLeft?: number | null;
   onGoTo: (rowId: string) => void;
   onRefresh: () => void;
   refreshing: boolean;
@@ -54,6 +60,12 @@ export function SessionMapSheet({
         </GhostButton>
       </div>
 
+      {minutesLeft !== null && (
+        <p data-testid="minutes-left" className="font-body text-[13px]" style={{ margin: "0 0 6px", color: "var(--ink-2)" }}>
+          ~{minutesLeft} min left in this thread
+        </p>
+      )}
+
       {topics.length === 0 ? (
         <p className="pb-6 font-body text-[15px]" style={{ color: "var(--ink-2)" }}>
           still shaping this one. the map fills in as it goes.
@@ -66,19 +78,21 @@ export function SessionMapSheet({
                 label={t.title}
                 state={t.state}
                 material={t.material}
+                nextMaterial={t.detours.length ? "written" : topics[i + 1]?.material}
                 reachable={t.reachable}
                 last={i === topics.length - 1 && t.detours.length === 0}
                 reduced={reduced}
                 onTap={() => go(t.firstRowId)}
               />
-              {t.detours.map((d) => (
+              {t.detours.map((d, k) => (
                 <Row
                   key={d.detourId}
                   branch
                   label={d.label || "your question"}
                   state={d.state}
+                  nextMaterial={k === t.detours.length - 1 ? topics[i + 1]?.material : "written"}
                   reachable={d.reachable}
-                  last={false}
+                  last={i === topics.length - 1 && k === t.detours.length - 1}
                   reduced={reduced}
                   onTap={() => go(d.firstRowId)}
                 />
@@ -95,6 +109,7 @@ function Row({
   label,
   state,
   material = "written",
+  nextMaterial,
   reachable,
   branch = false,
   last,
@@ -105,6 +120,8 @@ function Row({
   state: "done" | "current" | "ahead";
   /** a detour you took is written by definition, so only topics ever pass this */
   material?: Material;
+  /** what the connector below this row runs into — dotted the moment the path stops being written */
+  nextMaterial?: Material;
   reachable: boolean;
   branch?: boolean;
   last: boolean;
@@ -115,6 +132,14 @@ function Row({
   const dim = state === "ahead";
   const written = material === "written";
   const color = here ? "var(--accent)" : state === "done" ? "var(--ink)" : "var(--ink-2)";
+  // the path below this row: solid where you've been, ghosted where cards wait, dotted into a
+  // heading — the rail's three materials, spoken again
+  const connector =
+    state === "done"
+      ? "color-mix(in oklab, var(--accent) 55%, transparent)"
+      : (nextMaterial ?? material) === "written"
+        ? "color-mix(in oklab, var(--accent) 28%, transparent)"
+        : null; // planned → dotted, drawn with a dashed border instead of a fill
   return (
     <motion.button
       type="button"
@@ -129,25 +154,27 @@ function Row({
       style={{ paddingLeft: branch ? 22 : 0, cursor: reachable ? "pointer" : "default", opacity: dim ? (written ? 0.62 : 0.45) : 1 }}
     >
       <span className="relative flex w-4 shrink-0 justify-center self-stretch" aria-hidden>
-        {!last && (
-          <span
-            className="absolute top-3 bottom-0 w-px"
-            style={{ background: "var(--line)", left: "50%" }}
-          />
-        )}
+        {!last &&
+          (connector ? (
+            <span className="absolute top-3 bottom-0 w-px" style={{ background: connector, left: "50%" }} />
+          ) : (
+            <span className="absolute top-3 bottom-0 w-0" style={{ left: "50%", borderLeft: "1.5px dotted var(--line)" }} />
+          ))}
         <span
           className="relative mt-[7px] rounded-full"
           style={{
             width: here ? 9 : 7,
             height: here ? 9 : 7,
-            // written but not yet reached: the same ghosted accent the timeline uses for buffered
+            // the rail's materials: done/current solid, written-but-unreached ghosted, planned a
+            // hollow dotted ring — the same story the rail below the thumb tells
             background: here
               ? "var(--accent)"
               : state === "done"
                 ? "color-mix(in oklab, var(--accent) 55%, transparent)"
                 : written
                   ? "color-mix(in oklab, var(--accent) 35%, transparent)"
-                  : "var(--line)",
+                  : "transparent",
+            border: !here && state !== "done" && !written ? "1.5px dotted var(--ink-2)" : undefined,
             boxShadow: here ? "0 0 0 4px var(--accent-soft)" : undefined,
           }}
         />

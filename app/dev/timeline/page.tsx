@@ -3,37 +3,52 @@ import type { FrontierPublic, SessionPublic } from "@/lib/api/contract";
 import { devSession, sampleRows } from "@/lib/feed/dev";
 import type { Card } from "@/lib/schemas/cards";
 import type { CardRow } from "@/lib/schemas/session";
+import type { Persona } from "@/lib/schemas/plan";
 import { SAMPLE_THEME_TERMINAL_NOIR } from "@/lib/theme/defaults";
 
 /**
- * Timeline + session map fixture (no network). e2e/timeline.spec.ts drives this page.
+ * Depth-rail + session-map + planning-theatre fixture (no network). e2e/timeline.spec.ts drives it.
  *
- * Default: the showcase deck spread across the whole outline, with NO frontier — the bar says only
- * what the local rows can prove, exactly as it did before anything counted.
+ * Default: the showcase deck spread across the whole outline, with NO frontier — the rail says only
+ * what the local rows can prove (they exist, so they draw solid; the outline's estimates continue
+ * dim below). Scrolling/resting behaviour is exercised on this state.
  *
- * `?state=buffered|live|gate` bolts on a counted frontier so the three things the bar exists to
- * tell apart are screenshot-testable:
+ * `?state=` bolts on what each rail state needs:
  *   buffered  a finished topic, one you're inside with runway ahead, one written but unreached,
  *             and one that is nothing but a heading so far
- *   live      the same, plus a batch being written into the topic ahead — one pulsing nib
- *   gate      the same, parked at a fork: no nib anywhere (nothing is being written while it waits)
- *             and everything downstream of the fork dimmed
+ *   live      the same, plus a batch in flight — the written edge carries the pulse
+ *   gate      parked at a fork: a gate mark, no pulse anywhere, downstream dimmed
+ *   wrapped   the thread ended on request: the rail is all written, hard end cap, no dim zone
+ *   planning  the pre-plan theatre: proto-rail breathing, no fake progress
+ *   planned   the reveal: persona line + outline stops ticking in (the plan just landed)
  */
 
 const SEEN = "2026-01-01T00:00:00.000Z";
-const FIXTURES = ["buffered", "live", "gate"] as const;
+const FIXTURES = ["buffered", "live", "gate", "wrapped", "planning", "planned"] as const;
 type Fixture = (typeof FIXTURES)[number];
+
+const DEV_PERSONA: Persona = {
+  name: "the night-shift SRE",
+  traits: ["deadpan", "war-story driven", "allergic to hand-waving"],
+  tics: ["calls the database 'the slow path'", "measures everything in pager beeps"],
+  humor: "dry, post-incident-review",
+  neverDoes: "never says 'it depends' without saying on what",
+  voiceSample: "caches don't make sites fast. they make the second ask free. big difference.",
+};
 
 export default async function DevTimelinePage({ searchParams }: { searchParams: Promise<{ state?: string }> }) {
   const { state } = await searchParams;
   const session = devSession(SAMPLE_THEME_TERMINAL_NOIR, "how a cache keeps a site alive");
   const rows = sampleRows();
   const fixture = FIXTURES.find((f) => f === state);
+  if (fixture === "planning" || fixture === "planned") {
+    return <Feed session={theatre(session, fixture)} initialCards={[]} staticMode />;
+  }
   const { session: s, cards } = fixture ? counted(session, rows, fixture) : spreadOverOutline(session, rows);
   return <Feed session={s} initialCards={cards} staticMode />;
 }
 
-/** The default fixture: every topic carries some of the deck, so the bar shows real transitions. */
+/** The default fixture: every topic carries some of the deck, so the rail shows real transitions. */
 function spreadOverOutline(session: SessionPublic, rows: CardRow[]) {
   const nodes = session.outline.map((n) => n.id);
   const per = Math.ceil(rows.length / nodes.length);
@@ -43,13 +58,18 @@ function spreadOverOutline(session: SessionPublic, rows: CardRow[]) {
     // everything up to the halfway mark reads as already been through
     viewedAt: i < per * 2 ? SEEN : null,
   }));
-  return { session: { ...session, position: per * 2 }, cards };
+  // enough dwell history for the sheet's "~N min left" line to compute (median 6s a card)
+  const learnerState = {
+    ...session.learnerState,
+    rolling: { ...session.learnerState.rolling, dwellMs: [4000, 5000, 6000, 7000, 9000], avgDwellMs: 6200 },
+  };
+  return { session: { ...session, position: per * 2, learnerState }, cards };
 }
 
 /**
  * The counted fixtures. The whole deck sits in the first two topics — one finished behind the
  * reader, one they're standing in — which is what a real session looks like: you cannot hold rows
- * for a topic the writer hasn't reached. Everything the bar knows about the two topics ahead comes
+ * for a topic the writer hasn't reached. Everything the rail knows about the two topics ahead comes
  * from the census, which is the entire point.
  */
 function counted(session: SessionPublic, rows: CardRow[], fixture: Fixture) {
@@ -65,15 +85,23 @@ function counted(session: SessionPublic, rows: CardRow[], fixture: Fixture) {
   const frontier: FrontierPublic = {
     // n0 is finished, n1 is what the writer is in, n2 has a stretch written but unreached, and n3
     // is absent from the census entirely — nothing but a heading, which is how an unwritten node
-    // arrives. the four things the bar has to be able to draw differently
+    // arrives. the four things the rail has to be able to draw differently
     written: { n0: half, n1: rows.length - half, n2: 4 },
     nodeIdx: 1,
     deeper: {},
-    closed: ["n0"],
-    gate: fixture === "gate" ? "crossroads" : null,
-    // set on the gate fixture too: a fork claims no batch, so the nib must vanish anyway
-    live: fixture === "buffered" ? null : { nodeIdx: 2, startedAt: SEEN },
+    closed: fixture === "wrapped" ? ["n0", "n1"] : ["n0"],
+    gate: fixture === "gate" ? "crossroads" : fixture === "wrapped" ? "wrap" : null,
+    // set on the gate fixture too: a fork claims no batch, so the pulse must vanish anyway
+    live: fixture === "buffered" || fixture === "wrapped" ? null : { nodeIdx: 2, startedAt: SEEN },
     epoch: 0,
   };
   return { session: { ...session, position: at, frontier }, cards };
+}
+
+/** The planning theatre, both acts: before the plan (proto-rail) and the beat it lands (reveal). */
+function theatre(session: SessionPublic, fixture: "planning" | "planned"): SessionPublic {
+  if (fixture === "planning") {
+    return { ...session, status: "planning", outline: [], persona: null, cardCount: 0 };
+  }
+  return { ...session, status: "active", persona: DEV_PERSONA, cardCount: 0 };
 }

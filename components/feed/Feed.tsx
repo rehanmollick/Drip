@@ -17,15 +17,17 @@ import { Outbox } from "@/lib/feed/outbox";
 import { buildSlides, isPseudoKey, nextPin, runwayAhead, type Pin } from "@/lib/feed/placeholder";
 import { calledIt, streakBefore } from "@/lib/feed/progress";
 import { dropUnviewedAfter, isRowSlide, isTodayUtc, ordinalOf, toSlides } from "@/lib/feed/slides";
-import { timelineModel, type FrontierLike } from "@/lib/feed/timeline";
+import { railModel, type FrontierLike } from "@/lib/feed/rail";
 import type { Card } from "@/lib/schemas/cards";
 import type { CardRow } from "@/lib/schemas/session";
 import { SHELL_THEME } from "@/lib/theme/defaults";
+import { useReducedMotion } from "framer-motion";
 import { AskPill, BackChevron } from "./Chrome";
+import { DepthRail } from "./DepthRail";
 import { FeedSlide, type CrossroadsChoice, type SlideHandlers } from "./FeedSlide";
+import { PlanTheatreContext, type PlanTheatre } from "./PlanningTheatre";
 import { SessionMapSheet } from "./SessionMapSheet";
 import { SwipeNudge } from "./SwipeNudge";
-import { Timeline } from "./Timeline";
 import { Toast } from "./Toast";
 import { useFeedCards } from "./useFeedCards";
 
@@ -37,6 +39,8 @@ type ChooseData = z.infer<typeof ChooseDataSchema>;
 const RUNWAY_TARGET_LOW = 4;   // request the next batch at or below this
 const WINDOW = 3;              // slides rendered on either side of the active one
 const CHROME_REST_MS = 400;
+const SETTLE_MS = 150;         // scroll-quiet window before the deck may change shape (scrollend fallback)
+const FAST_ARRIVAL_MS = 400;   // under this on the previous card = a flick; land settled, skip the cascade
 const TOPIC_LABEL_MS = 2_000;  // "now: <topic>" fades in and back out over ~2s
 const TOAST_MS = 2_200;
 const POSITION_THROTTLE_MS = 1_000;
@@ -84,7 +88,7 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
   // planning, or it is re-planning behind our backs. Everything else the feed needs from the
   // session arrives on requests it is already making — every generate response carries the
   // frontier, every dial/choose response carries the session — so there is nothing here on a clock
-  // for the timeline. A frontier poll costs a full card scan plus two session reads per tick, per
+  // for the rail. A frontier poll costs a full card scan plus two session reads per tick, per
   // reader, forever, to learn what the next POST would have said anyway.
   const sessionQuery = useQuery({
     queryKey: ["session", sessionId],
@@ -114,7 +118,10 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
     sessionId,
     initialCards,
     initialHasMore: initialCards.length < (initialSession.cardCount ?? 0),
-    enabled: active && !awaitingChoice,
+    enabled: active,
+    // a fork parks GENERATION only: rows the server already wrote (the fork included) still drain,
+    // or a reader who opens mid-fork dead-ends on a card that never says why
+    holdGenerate: awaitingChoice,
     staticMode,
     beforeGenerate: () => syncBeforeGenerate.current(),
     onRunwayFull: () => landViewedUpToHere.current(),
@@ -185,11 +192,38 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
   // ── slides ──────────────────────────────────────────────────────────────
   // While a re-plan is pending the server drops every unviewed row; hide ours right away so the
   // user can't scroll into cards that are about to vanish (viewed history stays — it's history).
-  const rowSlides = useMemo(() => toSlides(replanning ? cards.filter((c) => c.viewedAt !== null) : cards), [cards, replanning]);
+  const visibleCards = useMemo(() => (replanning ? cards.filter((c) => c.viewedAt !== null) : cards), [cards, replanning]);
+  // the settle window: while the thumb is moving, the deck must not change SHAPE under it — WebKit
+  // caches snap points, and rows inserted mid-swipe land the scroll on the wrong card. Batches that
+  // arrive during a scroll wait in `cards` and render on scrollend (or 150ms of quiet). Rows that
+  // vanished (a dial, a prune) drop immediately — a ghost cannot be rendered. Row DATA (interaction,
+  // viewedAt) always flows; only membership is held.
+  const [shapeHeld, setShapeHeld] = useState(false);
+  const heldIds = useRef<string[] | null>(null);
+  const visibleIdsRef = useRef<string[]>([]);
+  visibleIdsRef.current = visibleCards.map((c) => c.id);
+  const shapeCards = useMemo(() => {
+    if (!shapeHeld || !heldIds.current) return visibleCards;
+    const byId = new Map(visibleCards.map((c) => [c.id, c]));
+    const kept: CardRow[] = [];
+    for (const id of heldIds.current) {
+      const row = byId.get(id);
+      if (row) kept.push(row);
+    }
+    return kept;
+  }, [visibleCards, shapeHeld]);
+  const rowSlides = useMemo(() => toSlides(shapeCards), [shapeCards]);
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const [entered, setEntered] = useState<Set<string>>(() => new Set());
   const [scrolling, setScrolling] = useState(false);
   const scrollingRef = useRef(false);
+  const reduced = !!useReducedMotion();
+  const reducedRef = useRef(reduced);
+  reducedRef.current = reduced;
+  // velocity-aware entrances: when the previous card held the reader for under FAST_ARRIVAL_MS,
+  // the next one skips the cascade (keys in here are sticky — a slide never un-settles)
+  const lastArrivalAt = useRef(Number.NEGATIVE_INFINITY);
+  const instantKeys = useRef<Set<string>>(new Set());
 
   const activeIndexRef = useRef(0);
   const slidesRef = useRef<Slide[]>([]);
@@ -204,7 +238,9 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
 
   // the head placeholder is "reading your stuff…" for the whole wait: it stays until real cards are
   // actually in hand, so status flipping to active mid-wait can never swap it for "catching up…".
-  const everPlanned = useRef(initialSession.status === "planning");
+  // A session that arrives active with NOTHING (no rows here, none counted server-side) gets the
+  // same head — the alternative is a blank screen with no story on it.
+  const everPlanned = useRef(initialSession.status === "planning" || (initialCards.length === 0 && (initialSession.cardCount ?? 0) === 0));
   if (status === "planning") everPlanned.current = true;
   const head: PseudoKind | null =
     status === "planning" ? "planning"
@@ -227,19 +263,28 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
     return p.type === "notice" && p.kind === "budget" && isTodayUtc(last.createdAt);
   }, [cards]);
 
+  // what the server counted, from whichever of its two mouths spoke last: the session (first paint,
+  // a dial, a choose) or the generate that just answered. Absent (an older session row, a response
+  // that didn't count) means nobody counted, and the rail falls back to saying only what the local
+  // rows can prove.
+  const census = useMemo(() => fresherCount(session.frontier ?? null, counted), [session.frontier, counted]);
+
   const tail: PseudoKind | null = useMemo(() => {
     if (!active || staticMode) return null;
     if (replanning) return "replanning";
     if (awaitingChoice) return null;   // the crossroads IS the end of the deck until they pick
     if (head === "planning") return null; // one placeholder at a time — never two waits in a row
     if (runway > 0) return null;
-    // the thread was wrapped on request: nothing is catching up, and a tail promising otherwise
-    // would undo the ending the reader just asked for
-    if (terminal === "wrapped") return null;
+    // the deck ends here ON PURPOSE — the thread was wrapped, or a fork is parked on the reader
+    // (the progress flag, the pump's own answer, or the frontier's gate: any of the three mouths
+    // saying so is enough). A "catching up" tail behind either would be promising cards nobody is
+    // writing — a live reader scrolling into an unanswered crossroads used to get exactly that lie.
+    if (terminal) return null;
+    if (census?.gate) return null;
     if (!online) return "offline";
     if (budgetCapped) return null;
     return "catching_up"; // a generate is pending / scheduled — never an error string
-  }, [active, staticMode, replanning, awaitingChoice, head, runway, terminal, online, budgetCapped]);
+  }, [active, staticMode, replanning, awaitingChoice, head, runway, terminal, census?.gate, online, budgetCapped]);
 
   const slides: Slide[] = useMemo(() => buildSlides({ head, rowSlides, tail, pin }), [head, rowSlides, tail, pin]);
   slidesRef.current = slides;
@@ -281,6 +326,12 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
         }
         if (best) {
           const k = best.key;
+          // a fast flick lands on a SETTLED card: entrance choreography is for arrivals that can
+          // watch it. decided once, before `entered` renders — sticky forever after. Reduced motion
+          // already has its own (fade-only) arrival and stays out of this.
+          const now = performance.now();
+          if (!reducedRef.current && now - lastArrivalAt.current < FAST_ARRIVAL_MS) instantKeys.current.add(k);
+          lastArrivalAt.current = now;
           setEntered((prev) => (prev.has(k) ? prev : new Set(prev).add(k)));
           setActiveKey(k);
         }
@@ -371,20 +422,60 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
     lastActiveIndex.current = activeIndex;
   }, [activeIndex, foundIndex, activeKey, slides]);
 
-  // ── chrome fade on scroll ───────────────────────────────────────────────
+  // ── chrome fade + the settle window, on scroll ──────────────────────────
+  const shapeHeldRef = useRef(false);
+  const settleTimer = useRef<number | null>(null);
+  const releaseShape = useCallback(() => {
+    if (settleTimer.current) window.clearTimeout(settleTimer.current);
+    settleTimer.current = null;
+    if (!shapeHeldRef.current) return;
+    shapeHeldRef.current = false;
+    heldIds.current = null;
+    setShapeHeld(false);
+  }, []);
   const onScroll = useCallback(() => {
     if (!scrollingRef.current) {
       scrollingRef.current = true;
       setScrolling(true);
     }
+    if (!shapeHeldRef.current) {
+      // first movement: freeze the deck's membership until the scroll comes to rest
+      heldIds.current = visibleIdsRef.current;
+      shapeHeldRef.current = true;
+      setShapeHeld(true);
+    }
+    // scrollend releases the shape where the browser supports it; this debounce is the fallback
+    if (settleTimer.current) window.clearTimeout(settleTimer.current);
+    settleTimer.current = window.setTimeout(releaseShape, SETTLE_MS);
     setBubble(null);
     if (restTimer.current) window.clearTimeout(restTimer.current);
     restTimer.current = window.setTimeout(() => {
       scrollingRef.current = false;
       setScrolling(false);
     }, CHROME_REST_MS);
-  }, []);
-  useEffect(() => () => { if (restTimer.current) window.clearTimeout(restTimer.current); }, []);
+  }, [releaseShape]);
+  useEffect(() => {
+    const root = containerRef.current;
+    if (root && "onscrollend" in root) {
+      root.addEventListener("scrollend", releaseShape);
+      return () => {
+        root.removeEventListener("scrollend", releaseShape);
+        if (restTimer.current) window.clearTimeout(restTimer.current);
+        if (settleTimer.current) window.clearTimeout(settleTimer.current);
+      };
+    }
+    return () => {
+      if (restTimer.current) window.clearTimeout(restTimer.current);
+      if (settleTimer.current) window.clearTimeout(settleTimer.current);
+    };
+  }, [releaseShape]);
+
+  // WebKit caches snap points; whenever the deck changes shape, one synchronous reflow right after
+  // the DOM mutation rebuilds them, so the snap the thumb is riding stays true to what's on screen.
+  const shapeKey = useMemo(() => slides.map((s) => s.key).join("|"), [slides]);
+  useLayoutEffect(() => {
+    void containerRef.current?.offsetHeight;
+  }, [shapeKey]);
 
   // ── sound ───────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -585,8 +676,12 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
         dwellAcc.current.set(prev.rowId, acc); // question → reveal of the same predict: one dwell
       }
     }
-    if (nowRowId && prev?.rowId && nowRowId !== prev.rowId && nowOrdinal < prev.ordinal) {
-      interact(nowRowId, { scrollBack: true });
+    if (nowRowId && prev?.rowId && nowRowId !== prev.rowId) {
+      // a deliberate jump from the map is navigation, not confusion — it must not read as "stuck".
+      // one-shot: consumed by whichever transition lands first after the jump.
+      const suppressed = suppressScrollBack.current;
+      suppressScrollBack.current = false;
+      if (nowOrdinal < prev.ordinal && !suppressed) interact(nowRowId, { scrollBack: true });
     }
     if (nowRowId) {
       c.start(nowRowId);
@@ -798,11 +893,13 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
   );
 
   /** Session map: jump back to a topic (or detour) the reader has already been through. */
+  const suppressScrollBack = useRef(false);
   const onGoTo = useCallback(
     (rowId: string) => {
       const i = slidesRef.current.findIndex((s) => isRowSlide(s) && s.rowId === rowId);
       if (i < 0) return;
       const key = slidesRef.current[i].key;
+      suppressScrollBack.current = true; // they picked this card on purpose — not a confused scroll-up
       setActiveKey(key);
       setEntered((p) => (p.has(key) ? p : new Set(p).add(key)));
       scrollToIndex(i, false);
@@ -830,57 +927,81 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
   // ── derived UI bits ─────────────────────────────────────────────────────
   const rowsById = useMemo(() => new Map(cards.map((c) => [c.id, c])), [cards]);
 
-  // the timeline reads from the last REAL card the reader stood on: standing on a placeholder
+  // the rail reads from the last REAL card the reader stood on: standing on a placeholder
   // must not blank the bar out from under them
   const anchorRowId = useRef<string | null>(null);
   if (activeRowId) anchorRowId.current = activeRowId;
   const anchor = anchorRowId.current;
 
-  // what the server counted, from whichever of its two mouths spoke last: the session (first paint,
-  // a dial, a choose) or the generate that just answered. Absent (an older session row, a response
-  // that didn't count) means nobody counted, and the bar falls back to saying only what the local
-  // rows can prove.
-  const census = useMemo(() => fresherCount(session.frontier ?? null, counted), [session.frontier, counted]);
-  // …and the cached session carries it too, so anything else reading ['session', id] — a remount,
+  // …the cached session carries the freshest count too, so anything else reading ['session', id] — a remount,
   // the map sheet — gets the count the last batch reported instead of the one the page shipped with
   useEffect(() => {
     if (!counted) return;
     qc.setQueryData<SessionPublic>(["session", sessionId], (s) => (s && (s.frontier?.epoch ?? -1) <= counted.epoch ? { ...s, frontier: counted } : s));
   }, [counted, qc, sessionId]);
 
-  // The nib answers one question — "is anything actually coming?" — and this device knows the
+  // The pulse answers one question — "is anything actually coming?" — and this device knows the
   // answer first: `fill` flips the moment the POST leaves, a round trip before the server could
   // tell us. …but only while the reader is pressed against the written edge. A top-up that fires
-  // with runway to spare is housekeeping, and pulsing the top of the screen for it is noise.
-  const barLive = fill === "pending";
+  // with runway to spare is housekeeping, and pulsing the edge of the screen for it is noise.
+  const railLive = fill === "pending";
   const pressure = runway <= RUNWAY_TARGET_LOW;
-  // (with nobody's count to hang it on, the pulse stays off: a bar drawing a live edge it cannot
+  // (with nobody's count to hang it on, the pulse stays off: a rail drawing a live edge it cannot
   // place would be inventing the one thing this whole surface exists to stop guessing about)
   const frontier = useMemo((): FrontierLike | undefined => {
-    if (!census || !barLive || !pressure) return census ?? undefined;
+    if (!census || !railLive || !pressure) return census ?? undefined;
     return { ...census, live: census.live ?? { nodeIdx: census.nodeIdx } };
-  }, [census, barLive, pressure]);
+  }, [census, railLive, pressure]);
 
-  const timeline = useMemo(() => timelineModel(cards, session.outline, anchor, frontier), [cards, session.outline, anchor, frontier]);
+  const rail = useMemo(() => railModel(cards, session.outline, anchor, frontier), [cards, session.outline, anchor, frontier]);
   const mapTopics = useMemo(() => (mapOpen ? sessionMap(cards, session.outline, anchor, frontier) : []), [mapOpen, cards, session.outline, anchor, frontier]);
+
+  // "~N min left in this thread" — time-as-effort is allowed in the sheet, on demand, and nowhere
+  // else. Computed from the session's OWN median dwell (foreground reading, capped at 60s by the
+  // clock), and only once there are enough dwells for the median to mean something.
+  const minutesLeft = useMemo(() => {
+    if (!mapOpen || rail.unitsAhead <= 0) return null;
+    const dwells = session.learnerState?.rolling?.dwellMs ?? [];
+    if (dwells.length < 5) return null;
+    const sorted = [...dwells].sort((a, b) => a - b);
+    const median = sorted[Math.floor(sorted.length / 2)];
+    if (!Number.isFinite(median) || median <= 0) return null;
+    return Math.max(1, Math.round((rail.unitsAhead * median) / 60_000));
+  }, [mapOpen, rail.unitsAhead, session.learnerState]);
+
+  // the planning reveal: whatever the session poll has learned so far, handed to the planning
+  // notice card. The palette needs no plumbing — session.theme repaints the whole feed the moment
+  // the plan lands, this pseudo included.
+  const theatre = useMemo((): PlanTheatre => {
+    // the replanning pseudo shares the "planning" card kind; while a re-plan runs it keeps its own
+    // copy ("shaping your feed…") and the proto-rail, never a stale reveal of the OLD outline
+    const planned = status !== "planning" && !replanning && (session.outline?.length ?? 0) > 0;
+    return {
+      planned,
+      title: session.title ?? "",
+      personaName: session.persona?.name ?? null,
+      voiceLine: session.persona?.voiceSample ?? null,
+      stops: (session.outline ?? []).map((n) => n.title),
+    };
+  }, [status, replanning, session.outline, session.title, session.persona]);
 
   // ── topic transitions: "now: why pods get evicted" for ~2s when the topic changes ────────
   // This is what stops a long session feeling like the same topic forever.
   const lastTopic = useRef<{ nodeId: string | null; detour: boolean } | null>(null);
   useEffect(() => {
-    if (!activeRowId || !timeline.nodeId || !timeline.title) return;
+    if (!activeRowId || !rail.nodeId || !rail.title) return;
     const prev = lastTopic.current;
-    lastTopic.current = { nodeId: timeline.nodeId, detour: timeline.detour };
-    if (prev && prev.nodeId === timeline.nodeId && prev.detour === timeline.detour) return;
+    lastTopic.current = { nodeId: rail.nodeId, detour: rail.onDetour };
+    if (prev && prev.nodeId === rail.nodeId && prev.detour === rail.onDetour) return;
     // stepping onto a detour: the marker card already says where you went, and a stale
     // "now: <topic>" over it would be a lie
-    if (timeline.detour) {
+    if (rail.onDetour) {
       setTopicLabel(null);
       return;
     }
-    const back = !!prev && prev.nodeId === timeline.nodeId && prev.detour;
-    setTopicLabel(`${back ? "back to" : "now"}: ${timeline.title}`);
-  }, [activeRowId, timeline.nodeId, timeline.title, timeline.detour]);
+    const back = !!prev && prev.nodeId === rail.nodeId && prev.detour;
+    setTopicLabel(`${back ? "back to" : "now"}: ${rail.title}`);
+  }, [activeRowId, rail.nodeId, rail.title, rail.onDetour]);
   // …and it always fades back out on its own clock, whatever happens above
   useEffect(() => {
     if (!topicLabel) return;
@@ -918,37 +1039,41 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
 
   return (
     <ThemeRoot theme={session.theme ?? SHELL_THEME} className="feed-root app-shell" data-status={status}>
-      <Timeline
-        model={timeline}
+      <DepthRail
+        model={rail}
         pulseKey={activeKey}
         epoch={epoch}
+        deckSize={rowCount}
         scrolling={scrolling}
         label={topicLabel}
         onOpenMap={() => setMapOpen(true)}
         refreshing={refreshing}
       />
       <div ref={containerRef} className="feed relative z-[1]" style={{ overflowAnchor: "none" }} onScroll={onScroll} data-testid="feed">
-        {slides.map((slide, i) => {
-          const near = Math.abs(i - activeIndex) <= WINDOW;
-          const row = isRowSlide(slide) ? rowsById.get(slide.rowId) : undefined;
-          const streak = slide.kind === "card" && slide.card.type === "checkpoint" ? streakBefore(cards, slide.rowId) : undefined;
-          const called = slide.kind === "predict_reveal" ? calledIt(cards, slide.rowId) : undefined;
-          return (
-            <FeedSlide
-              key={slide.key}
-              slide={slide}
-              observe={observe}
-              mounted={near}
-              entered={entered.has(slide.key)}
-              active={i === activeIndex}
-              interaction={row?.interaction ?? null}
-              streak={streak}
-              called={called}
-              handlers={near ? handlersFor(slide) : undefined}
-              overlay={nudgeSwipe && slide.key === activeKey ? <SwipeNudge /> : undefined}
-            />
-          );
-        })}
+        <PlanTheatreContext.Provider value={theatre}>
+          {slides.map((slide, i) => {
+            const near = Math.abs(i - activeIndex) <= WINDOW;
+            const row = isRowSlide(slide) ? rowsById.get(slide.rowId) : undefined;
+            const streak = slide.kind === "card" && slide.card.type === "checkpoint" ? streakBefore(cards, slide.rowId) : undefined;
+            const called = slide.kind === "predict_reveal" ? calledIt(cards, slide.rowId) : undefined;
+            return (
+              <FeedSlide
+                key={slide.key}
+                slide={slide}
+                observe={observe}
+                mounted={near}
+                entered={entered.has(slide.key)}
+                instant={instantKeys.current.has(slide.key)}
+                active={i === activeIndex}
+                interaction={row?.interaction ?? null}
+                streak={streak}
+                called={called}
+                handlers={near ? handlersFor(slide) : undefined}
+                overlay={nudgeSwipe && slide.key === activeKey ? <SwipeNudge /> : undefined}
+              />
+            );
+          })}
+        </PlanTheatreContext.Provider>
       </div>
       <BackChevron hidden={chromeHidden} />
       {showAsk && <AskPill hidden={chromeHidden} onOpen={openAsk} />}
@@ -959,6 +1084,7 @@ export function Feed({ session: initialSession, initialCards, staticMode = false
         open={mapOpen}
         onClose={() => setMapOpen(false)}
         topics={mapTopics}
+        minutesLeft={minutesLeft}
         onGoTo={onGoTo}
         onRefresh={() => void onRefresh()}
         refreshing={refreshing}

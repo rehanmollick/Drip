@@ -1,10 +1,10 @@
 import type { Card, DetourMarkerCard } from "@/lib/schemas/cards";
 import type { CardRow } from "@/lib/schemas/session";
-import { sortCards } from "./slides";
-import { resolveNodeIndex, type FrontierLike, type OutlineLike, type SegmentState } from "./timeline";
+import { devSorted } from "./slides";
+import { resolveNodeIndex, type FrontierLike, type OutlineLike, type SegmentState } from "./rail";
 
 /**
- * The session map (long-press the timeline): the thread, in order, with the detours you took
+ * The session map (long-press the depth rail): the thread, in order, with the detours you took
  * hanging off the topic they branched from, and a mark on where you are.
  *
  * A topic you have actually been in is tappable and scrolls back to its first card. A topic you
@@ -48,7 +48,7 @@ export function sessionMap(
   frontier?: FrontierLike,
 ): MapTopic[] {
   if (!outline || outline.length === 0) return [];
-  const sorted = sortCards(cards);
+  const sorted = devSorted(cards, "sessionMap");
   const index = new Map(outline.map((n, i) => [n.id, i]));
   const at = activeRowId ? sorted.findIndex((c) => c.id === activeRowId) : -1;
   const currentIndex = resolveNodeIndex(sorted, at, index);

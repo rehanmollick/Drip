@@ -6,6 +6,7 @@ import { CardFrame, Rise, headlineStyle } from "./CardFrame";
 import { Eyebrow } from "@/components/ui/Eyebrow";
 import { GhostButton } from "@/components/ui/GhostButton";
 import { SignatureEyebrow, SignatureHeadline } from "@/components/ui/Signature";
+import { PlanReveal, ProtoRail, usePlanTheatre } from "@/components/feed/PlanningTheatre";
 import { useTheme } from "@/components/theme/ThemeRoot";
 
 const EYEBROW: Record<NoticeCardT["kind"], string> = {
@@ -17,15 +18,23 @@ const EYEBROW: Record<NoticeCardT["kind"], string> = {
 };
 
 /**
- * notice — themed in-feed messages, never a raw spinner: budget, catching_up
- * (shimmer skeleton + signature device), offline, planning ("reading your
- * stuff…"), error (one-tap retry → onAction).
+ * notice — themed in-feed messages, never a raw spinner: budget, catching_up,
+ * offline, error (one-tap retry → onAction), and planning — which is a
+ * narrated reveal, not a skeleton: while the plan is being made a proto-rail
+ * breathes; the moment it lands the palette has already surfaced (the theme
+ * repaints the whole feed), the persona says one line, and the first stops of
+ * the thread tick in. Data arrives via PlanTheatreContext from the feed's
+ * session poll; without a provider (dev fixtures) the card still stands alone.
  */
 export function NoticeView({ card, entered, onAction, onAskAbout }: CardViewProps<NoticeCardT>) {
   const { reduced } = useTheme();
+  const theatre = usePlanTheatre();
   const k = card.kind;
-  const busy = k === "catching_up" || k === "planning";
-  const eyebrow = card.eyebrow ?? EYEBROW[k];
+  const planned = k === "planning" && !!theatre?.planned;
+  const busy = k === "catching_up" || (k === "planning" && !planned);
+  const eyebrow = planned ? "they’re here" : (card.eyebrow ?? EYEBROW[k]);
+  // once the plan lands, the card stops saying "reading your stuff" and starts saying what it made
+  const headline = planned && theatre?.title ? theatre.title : card.headline;
 
   return (
     <CardFrame card={card} entered={entered} onAskAbout={onAskAbout} align="center" gap={18}>
@@ -45,26 +54,28 @@ export function NoticeView({ card, entered, onAction, onAskAbout }: CardViewProp
         )}
       </Rise>
       <Rise>
-        {busy ? (
-          <SignatureHeadline as="h2" seed={card.id} style={headlineStyle(card.headline.length > 40 ? 28 : 34, 1.05)}>
-            {card.headline}
+        {busy || planned ? (
+          <SignatureHeadline as="h2" seed={card.id} style={headlineStyle(headline.length > 40 ? 28 : 34, 1.05)}>
+            {headline}
           </SignatureHeadline>
         ) : (
-          <h2 style={headlineStyle(card.headline.length > 40 ? 28 : 34, 1.05)}>{card.headline}</h2>
+          <h2 style={headlineStyle(headline.length > 40 ? 28 : 34, 1.05)}>{headline}</h2>
         )}
       </Rise>
-      {card.body && (
+      {card.body && !planned && (
         <Rise>
           <p className="font-body" style={{ margin: 0, fontSize: 17, lineHeight: 1.4, color: "var(--ink-2)", maxWidth: 320, textWrap: "pretty" }}>{card.body}</p>
         </Rise>
       )}
-      {busy && (
+      {k === "planning" && (
         <Rise>
-          <div aria-hidden style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 6 }}>
-            <span className="shimmer" style={{ display: "block", height: 14, width: "78%", borderRadius: 7 }} />
-            <span className="shimmer" style={{ display: "block", height: 14, width: "92%", borderRadius: 7 }} />
-            <span className="shimmer" style={{ display: "block", height: 14, width: "60%", borderRadius: 7 }} />
-            <span className="shimmer" style={{ display: "block", height: 96, width: "100%", borderRadius: 14, marginTop: 8 }} />
+          <div style={{ marginTop: 6, width: "100%" }}>{planned && theatre ? <PlanReveal theatre={theatre} /> : <ProtoRail />}</div>
+        </Rise>
+      )}
+      {k === "catching_up" && (
+        <Rise>
+          <div style={{ marginTop: 6 }}>
+            <ProtoRail />
           </div>
         </Rise>
       )}

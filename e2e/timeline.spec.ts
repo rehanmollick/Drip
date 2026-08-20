@@ -5,14 +5,21 @@ import { createSession, goToSlide, slides, waitForCards } from "./helpers";
 async function longPress(page: Page, selector: string, ms = 800) {
   const box = await page.locator(selector).boundingBox();
   if (!box) throw new Error(`no box for ${selector}`);
-  await page.mouse.move(box.x + box.width / 2, box.y + Math.max(2, box.height - 4));
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
   await page.waitForTimeout(ms);
   await page.mouse.up();
 }
 
-const segmentStates = (page: Page) =>
-  page.locator('[data-testid="timeline"] [data-segment]').evaluateAll((els) => els.map((e) => e.getAttribute("data-segment")));
+const RAIL = '[data-testid="depth-rail"]';
+
+/** Vertical geometry of a rail piece, as a fraction of the rail's own height. */
+async function frac(page: Page, selector: string) {
+  const rail = await page.locator(RAIL).boundingBox();
+  const el = await page.locator(selector).first().boundingBox();
+  if (!rail || !el) return null;
+  return { top: (el.y - rail.y) / rail.height, height: el.height / rail.height };
+}
 
 /** What the reader is actually looking at: the slide under the thumb, where it sits, and what's below it. */
 function activeInfo(page: Page) {
@@ -46,43 +53,68 @@ async function settled(page: Page, timeout = 8_000) {
   return JSON.parse(last) as { index: number; key: string | null; total: number; below: number };
 }
 
-test.describe("timeline", () => {
-  test("one segment per topic, in order, filling where you are — and never a number", async ({ page }) => {
+test.describe("the depth rail", () => {
+  test("a vertical rail on the right edge: geometry only, never a digit, and the thumb sinks as you scroll", async ({ page }) => {
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
     await page.goto("/dev/timeline");
     await page.waitForSelector("section.card");
 
-    const segs = page.locator('[data-testid="timeline"] [data-segment]');
-    await expect(segs).toHaveCount(4);
+    const rail = page.locator(RAIL);
+    await expect(rail).toBeVisible();
+    const box = await rail.boundingBox();
+    // hugging the right edge, spanning most of the viewport height
+    expect(box!.x + box!.width).toBeGreaterThan(393 - 30);
+    expect(box!.height).toBeGreaterThan(852 * 0.6);
+    // the ambient indicator carries NO text at all — the "now: <topic>" label lives outside it
+    expect((await rail.innerText()).trim()).toBe("");
 
-    await goToSlide(page, 0);
-    expect(await segmentStates(page)).toEqual(["current", "ahead", "ahead", "ahead"]);
+    // topic boundaries are ticks; spans are proportional, so there are exactly outline-1 of them
+    await expect(page.locator(`${RAIL} [data-tick]`)).toHaveCount(3);
 
+    // endowed progress: the thumb starts visibly past zero before any scrolling
+    const thumb0 = await frac(page, `${RAIL} [data-thumb]`);
+    expect(thumb0!.top).toBeGreaterThan(0.01);
+
+    // …and it sinks as the reader goes deeper (position maps to geometry 1:1)
     await goToSlide(page, 18);
-    expect(await segmentStates(page)).toEqual(["done", "done", "current", "ahead"]);
+    await page.waitForTimeout(600);
+    const thumb1 = await frac(page, `${RAIL} [data-thumb]`);
+    expect(thumb1!.top).toBeGreaterThan(thumb0!.top + 0.1);
 
-    await goToSlide(page, 22);
-    expect(await segmentStates(page)).toEqual(["done", "done", "done", "current"]);
-
-    // the bar is a hairline pinned to the top, below any safe-area inset, and carries no digits
-    const box = await page.locator('[data-testid="timeline"] [data-segment]').first().boundingBox();
-    expect(box!.height).toBeLessThanOrEqual(4);
-    expect(box!.y).toBeGreaterThanOrEqual(0);
-    expect(box!.y).toBeLessThan(40);
-    expect(await page.locator('[data-testid="timeline"]').innerText()).not.toMatch(/\d/);
+    // read is solid down to the thumb, and everything in hand draws as existing
+    const read = await frac(page, `${RAIL} [data-band="read"]`);
+    expect(read!.top).toBeLessThan(0.02);
+    expect(Math.abs(read!.top + read!.height - thumb1!.top)).toBeLessThan(0.03);
     expect(errors).toEqual([]);
   });
 
-  test("a detour reads as off the main thread on the current segment", async ({ page }) => {
+  test("ambient discipline: a hairline at rest, swollen and bright while moving", async ({ page }) => {
+    await page.goto("/dev/timeline");
+    await page.waitForSelector("section.card");
+    // rest: wait out the arrival brightness
+    await page.waitForTimeout(1_800);
+    const rest = await page.locator(`${RAIL} > div`).evaluate((el) => ({ w: el.getBoundingClientRect().width, o: Number(getComputedStyle(el).opacity) }));
+    expect(rest.w).toBeLessThan(4);
+    expect(rest.o).toBeLessThan(0.6);
+    // moving: it wakes up
+    await goToSlide(page, 3);
+    await page.waitForTimeout(250);
+    const awake = await page.locator(`${RAIL} > div`).evaluate((el) => ({ w: el.getBoundingClientRect().width, o: Number(getComputedStyle(el).opacity) }));
+    expect(awake.w).toBeGreaterThan(rest.w);
+    expect(awake.o).toBeGreaterThan(rest.o);
+  });
+
+  test("a detour doubles the rail beside itself", async ({ page }) => {
     await page.goto("/dev/cards");
     await page.waitForSelector("section.card");
     const detour = page.locator('section.card[data-card-type="detour_marker"]').first();
     const idx = await detour.evaluate((el) => [...document.querySelectorAll("section.card")].indexOf(el));
     await goToSlide(page, idx + 1); // inside the detour, not on the marker
-    await expect(page.locator('[data-testid="timeline"] [data-segment][data-detour="true"]')).toHaveCount(1);
+    await expect(page.locator(`${RAIL}[data-detour="true"]`)).toHaveCount(1);
+    await expect(page.locator(`${RAIL} [data-band="detour"]`)).toHaveCount(1);
     await goToSlide(page, 0);
-    await expect(page.locator('[data-testid="timeline"] [data-detour="true"]')).toHaveCount(0);
+    await expect(page.locator(`${RAIL}[data-detour="true"]`)).toHaveCount(0);
   });
 
   test("crossing into a new topic says so, then gets out of the way", async ({ page }) => {
@@ -97,13 +129,114 @@ test.describe("timeline", () => {
   });
 });
 
+test.describe("the rail tells written apart from planned", () => {
+  test("existing cards draw solid, a heading-only topic stays a dashed nothing, and an open topic never reads finished", async ({ page }) => {
+    await page.goto("/dev/timeline?state=buffered");
+    await page.waitForSelector("section.card");
+    // n0, n1 and n2 have cards; n3 is nothing but a heading — three exists bands, never four
+    await expect(page.locator(`${RAIL} [data-band="exists"]`)).toHaveCount(3);
+
+    // the last topic's stretch of rail is purely the dashed planned band: no exists band overlaps it
+    const rail = await page.locator(RAIL).boundingBox();
+    const lastTick = await page.locator(`${RAIL} [data-tick]`).last().boundingBox();
+    const existsBoxes = await page.locator(`${RAIL} [data-band="exists"]`).evaluateAll((els) => els.map((e) => e.getBoundingClientRect().bottom));
+    for (const bottom of existsBoxes) expect(bottom).toBeLessThanOrEqual(lastTick!.y + 3);
+    expect(lastTick!.y).toBeLessThan(rail!.y + rail!.height); // there IS rail below it: the planned zone
+
+    // still not a digit anywhere on the ambient indicator
+    expect((await page.locator(RAIL).innerText()).trim()).toBe("");
+  });
+
+  test("exactly one pulse, on the writing frontier, only while a batch is in flight", async ({ page }) => {
+    await page.goto("/dev/timeline?state=live");
+    await page.waitForSelector("section.card");
+    await expect(page.locator('[data-pulse="true"]')).toHaveCount(1);
+    await expect(page.locator(`${RAIL}[data-live="true"]`)).toHaveCount(1);
+
+    await page.goto("/dev/timeline?state=buffered");
+    await page.waitForSelector("section.card");
+    await expect(page.locator('[data-pulse="true"]')).toHaveCount(0);
+  });
+
+  test("a fork is a gate: the rail stops, nothing pulses, downstream is dimmed", async ({ page }) => {
+    await page.goto("/dev/timeline?state=gate");
+    await page.waitForSelector("section.card");
+    await expect(page.locator('[data-pulse="true"]')).toHaveCount(0);
+    await expect(page.locator(`${RAIL}[data-gate="crossroads"]`)).toHaveCount(1);
+    await expect(page.locator(`${RAIL} [data-gate-mark]`)).toHaveCount(1);
+    // everything below the gate mark sits under the parked veil
+    const gate = await frac(page, `${RAIL} [data-gate-mark]`);
+    const veil = await frac(page, `${RAIL} [data-band="parked"]`);
+    expect(Math.abs(veil!.top - gate!.top)).toBeLessThan(0.03);
+    expect(veil!.top + veil!.height).toBeGreaterThan(0.97);
+  });
+
+  test("a wrap is a hard end cap: all written, nothing dim below", async ({ page }) => {
+    await page.goto("/dev/timeline?state=wrapped");
+    await page.waitForSelector("section.card");
+    await expect(page.locator(`${RAIL}[data-wrapped="true"]`)).toHaveCount(1);
+    await expect(page.locator(`${RAIL} [data-cap]`)).toHaveCount(1);
+    await expect(page.locator(`${RAIL}[data-open]`)).toHaveCount(0);
+    await expect(page.locator('[data-pulse="true"]')).toHaveCount(0);
+    const cap = await frac(page, `${RAIL} [data-cap]`);
+    expect(cap!.top).toBeGreaterThan(0.95); // the cap IS the bottom: the rail is exactly what was written
+  });
+});
+
+test.describe("the rail under reduced motion", () => {
+  test.use({ reducedMotion: "reduce" });
+
+  test("the pulse is still there and nothing on the rail is animating", async ({ page }) => {
+    await page.goto("/dev/timeline?state=live");
+    await page.waitForSelector("section.card");
+    await expect(page.locator('[data-pulse="true"]')).toHaveCount(1);
+    await expect
+      .poll(async () =>
+        page.evaluate(() => {
+          const rail = document.querySelector('[data-testid="depth-rail"]')!;
+          return [rail, ...rail.querySelectorAll("*")].reduce((n, el) => n + el.getAnimations().length, 0);
+        }),
+      )
+      .toBe(0);
+  });
+});
+
+test.describe("the planning theatre", () => {
+  test("before the plan: a breathing proto-rail, no skeleton bars, no fake progress, no digits", async ({ page }) => {
+    await page.goto("/dev/timeline?state=planning");
+    await page.waitForSelector("section.card");
+    await expect(page.getByTestId("proto-rail")).toBeVisible();
+    await expect(page.locator(".shimmer")).toHaveCount(0);
+    const text = await page.locator("section.card").first().innerText();
+    expect(text).toMatch(/reading your stuff/);
+    // no fake progress: never a percent, never a counter (the theme's signature device — hex
+    // addresses, tickers — may carry digits; those are art direction, not measurement)
+    expect(text).not.toMatch(/%/);
+    expect(text).not.toMatch(/\b\d+\s*(\/|of)\s*\d+\b/);
+  });
+
+  test("the moment the plan lands: the persona says one line and the thread's stops tick in", async ({ page }) => {
+    await page.goto("/dev/timeline?state=planned");
+    await page.waitForSelector("section.card");
+    const reveal = page.getByTestId("plan-reveal");
+    await expect(reveal).toBeVisible();
+    await expect(reveal).toContainText("the night-shift SRE");
+    await expect(reveal).toContainText("the second ask free");
+    // the outline's stops, one by one, on the proto-rail — the same language the depth rail speaks
+    await expect(page.locator("[data-plan-stop]")).toHaveCount(4, { timeout: 6_000 });
+    await expect(reveal).toContainText("why a cache exists at all");
+    // never a counter on the reveal either
+    expect(await reveal.innerText()).not.toMatch(/\b\d+\s*(\/|of)\s*\d+\b/);
+  });
+});
+
 test.describe("session map", () => {
-  test("long-press the timeline → the thread, with where you are marked", async ({ page }) => {
+  test("long-press the rail → the thread as a vertical path, with where you are marked", async ({ page }) => {
     await page.goto("/dev/timeline");
     await page.waitForSelector("section.card");
     await goToSlide(page, 18); // third topic; the first two are behind us and seen
 
-    await longPress(page, '[data-testid="timeline"]');
+    await longPress(page, RAIL);
     const sheet = page.getByRole("dialog", { name: "the thread" });
     await expect(sheet).toBeVisible();
 
@@ -112,7 +245,9 @@ test.describe("session map", () => {
     await expect(page.locator('[data-map-row="current"]')).toHaveCount(1);
     await expect(page.locator("[data-branch]")).toHaveCount(1); // the detour hangs off its topic
     await expect(sheet).toContainText("you’re here");
-    // nothing in the sheet is a counter
+    // the one number allowed anywhere near this surface: time-as-effort, on demand, in the sheet
+    await expect(page.getByTestId("minutes-left")).toContainText(/~\d+ min left in this thread/);
+    // …and still never a counter
     expect(await sheet.innerText()).not.toMatch(/\b\d+\s*(\/|of)\s*\d+\b/);
 
     // a topic still ahead of the reader is inert — the map never jumps past what's written
@@ -128,7 +263,7 @@ test.describe("session map", () => {
   test("the sheet keeps the in-app refresh reachable", async ({ page }) => {
     await page.goto("/dev/timeline");
     await page.waitForSelector("section.card");
-    await longPress(page, '[data-testid="timeline"]');
+    await longPress(page, RAIL);
     await expect(page.getByRole("button", { name: "refresh this feed" })).toBeVisible();
   });
 });
@@ -142,6 +277,10 @@ test.describe("placeholders (bug: my slide turned into something else)", () => {
     page.on("pageerror", (e) => errors.push(e.message));
     const id = await createSession(page, "how a cache stampede takes a site down");
     await waitForCards(page, 3);
+    // let the opening batch finish landing — mock topics end parked at a fork, so its arrival means
+    // the deck is quiet. Walking earlier makes the in-flight batch land below the pin (correctly!)
+    // and the test would be measuring its own impatience instead of the invariant.
+    await expect.poll(() => page.locator('section.card[data-card-type="crossroads"]').count(), { timeout: 20_000 }).toBeGreaterThan(0);
 
     // Clone a real row so what lands later is a card the feed renders for real — and give the
     // clones idx keys derived from the FIRST row, so by `idx` alone they belong near the top of the
@@ -159,16 +298,29 @@ test.describe("placeholders (bug: my slide turned into something else)", () => {
     });
 
     // hold the deck still so the reader can actually reach the end of it, then land two cards
-    // exactly when we say so (the server's own frontier is irrelevant to this test)
+    // exactly when we say so. Answering a fork is no way to reach the placeholder any more — the
+    // choose itself writes the next topic and parks at the NEXT fork, so a chooser never stands on
+    // "catching up". Instead the fork stays unanswered and the held responses clear the gate the
+    // last real generate reported (mock topics end parked at one): what the client then believes —
+    // no fork in the way, a batch pending, zero runway — is exactly the state the tail exists for.
     let held = true;
     await page.route("**/api/sessions/*/generate", async (route) => {
-      const data = held
-        ? { batch: { id: "held", status: "done", frontierKey: "held", reason: "superseded" }, cards: [] }
-        : { batch: { id: "landed", status: "done", frontierKey: "landed" }, cards: later };
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data, error: null, meta: {} }) });
+      if (!held) {
+        const data = { batch: { id: "landed", status: "done", frontierKey: "landed" }, cards: later };
+        await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data, error: null, meta: {} }) });
+        return;
+      }
+      const res = await route.fetch();
+      const body = await res.json().catch(() => null);
+      if (!body?.data) return route.fulfill({ response: res });
+      body.data.cards = [];
+      body.data.batch = { ...body.data.batch, reason: "superseded" }; // never terminal: the loop keeps asking
+      if (body.data.frontier) body.data.frontier = { ...body.data.frontier, gate: null, live: null };
+      await route.fulfill({ response: res, body: JSON.stringify(body) });
     });
 
-    // walk to the end until the "catching up" placeholder is the card under the thumb
+    // walk to the end (past the fork — it's just a slide when nobody answers it) until the
+    // "catching up" placeholder is the card under the thumb
     await expect
       .poll(
         async () => {
@@ -207,9 +359,9 @@ test.describe("placeholders (bug: my slide turned into something else)", () => {
   });
 });
 
-test.describe("what the bar costs to keep honest", () => {
+test.describe("what the rail costs to keep honest", () => {
   test("scrolling for 20s never re-reads the session", async ({ page }) => {
-    // Every GET /api/sessions/:id is a full card scan plus a session read, and a bar kept live on a
+    // Every GET /api/sessions/:id is a full card scan plus a session read, and a rail kept live on a
     // clock pays that per reader, for as long as they read. The frontier rides back on the generate
     // the feed was already posting, so the only polls left are the bounded ones for a flip nothing
     // else can announce (still planning, re-planning) — and neither is running once the deck exists.
@@ -272,6 +424,33 @@ test.describe("crossroads", () => {
     await expect(page.locator('[data-slide-key="pseudo:catching_up"]')).toHaveCount(0);
   });
 
+  test("a live reader reaching an unanswered fork gets the fork as the end of the deck — no tail below it", async ({ page }) => {
+    await createSession(page, "how a cache stampede takes a site down");
+    await waitForCards(page, 3);
+
+    // generation stops at the topic boundary; walk to the fork WITHOUT answering it
+    await expect
+      .poll(
+        async () => {
+          const n = await slides(page).count();
+          await goToSlide(page, Math.min(n - 1, (await activeInfo(page)).index + 1));
+          return page.locator('section.card[data-card-type="crossroads"]').count();
+        },
+        { timeout: 45_000 },
+      )
+      .toBeGreaterThan(0);
+
+    const cross = page.locator('section.card[data-card-type="crossroads"]').first();
+    const idx = await cross.evaluate((el) => [...document.querySelectorAll("section.card")].indexOf(el));
+    await goToSlide(page, idx);
+    await page.waitForTimeout(3_000); // give a wrong tail every chance to appear
+
+    // the fork IS the last slide: nothing below it promises cards nobody is writing
+    await expect(page.locator('[data-slide-key="pseudo:catching_up"]')).toHaveCount(0);
+    const last = page.locator("section.card").last();
+    expect(await last.getAttribute("data-card-type")).toBe("crossroads");
+  });
+
   test("picking a direction posts the choice and the deck starts moving again", async ({ page }) => {
     await createSession(page, "how a cache stampede takes a site down");
     await waitForCards(page, 3);
@@ -288,90 +467,28 @@ test.describe("crossroads", () => {
       )
       .toBeGreaterThan(0);
 
+    // the fork's data-card-type is on the section even while its content is windowed out, so
+    // finding it is not the same as being able to tap it: keep scrolling it under the thumb until
+    // the feed has mounted the buttons (the observer needs a beat to move the render window)
     const cross = page.locator('section.card[data-card-type="crossroads"]').first();
-    const idx = await cross.evaluate((el) => [...document.querySelectorAll("section.card")].indexOf(el));
-    await goToSlide(page, idx);
+    const btn = cross.locator('[data-choice="continue"]');
+    await expect
+      .poll(
+        async () => {
+          const idx = await cross.evaluate((el) => [...document.querySelectorAll("section.card")].indexOf(el));
+          await goToSlide(page, idx);
+          return btn.isVisible();
+        },
+        { timeout: 20_000 },
+      )
+      .toBe(true);
     const before = await slides(page).count();
 
     const [req] = await Promise.all([
       page.waitForRequest((r) => r.method() === "POST" && r.url().includes("/choose")),
-      cross.locator('[data-choice="continue"]').click(),
+      btn.click(),
     ]);
     expect(JSON.parse(req.postData() ?? "{}").choice).toBe("continue");
     await expect.poll(async () => slides(page).count(), { timeout: 30_000 }).toBeGreaterThan(before);
-  });
-});
-
-/** Widths of the two bands inside one segment, in px — what the reader can actually see. */
-async function bands(page: Page, seg: number) {
-  const track = page.locator('[data-testid="timeline"] [data-segment]').nth(seg);
-  const read = await track.locator('[data-band="read"]').boundingBox();
-  const buffered = await track.locator('[data-band="buffered"]').boundingBox();
-  return { read: Math.round(read?.width ?? -1), buffered: Math.round(buffered?.width ?? -1) };
-}
-
-test.describe("the bar tells written apart from planned", () => {
-  test("a topic ahead of you shows what is already written, and one that is only a heading shows nothing", async ({ page }) => {
-    await page.goto("/dev/timeline?state=buffered");
-    await page.waitForSelector("section.card");
-    await expect(page.locator('[data-testid="timeline"] [data-segment]')).toHaveCount(4);
-    // deep into the second topic, so the current segment has read behind it and runway in front
-    await goToSlide(page, Math.floor((await slides(page).count()) * 0.75));
-    await expect(page.locator('[data-testid="timeline"] [data-segment="current"]')).toHaveCount(1);
-
-    // the topic the reader is in: written runway sitting ahead of where they've read to
-    const here = await bands(page, 1);
-    expect(here.buffered).toBeGreaterThan(here.read);
-    expect(here.read).toBeGreaterThan(0);
-
-    // one they have not reached: 4 cards counted by the server, none of them read
-    const ahead = await bands(page, 2);
-    expect(ahead.read).toBe(0);
-    expect(ahead.buffered).toBeGreaterThan(ahead.read);
-
-    // and one that is nothing but a heading so far — a bare track, no promise on it
-    expect(await bands(page, 3)).toEqual({ read: 0, buffered: 0 });
-
-    // still not a digit anywhere on it
-    expect(await page.locator('[data-testid="timeline"]').innerText()).not.toMatch(/\d/);
-  });
-
-  test("exactly one nib, on the topic being written right now", async ({ page }) => {
-    await page.goto("/dev/timeline?state=live");
-    await page.waitForSelector("section.card");
-    await expect(page.locator('[data-live="true"]')).toHaveCount(1);
-    const on = await page.locator('[data-testid="timeline"] [data-segment]')
-      .evaluateAll((els) => els.findIndex((e) => !!e.querySelector('[data-live="true"]')));
-    expect(on).toBe(2);
-  });
-
-  test("a fork pulses nothing and dims everything past it", async ({ page }) => {
-    await page.goto("/dev/timeline?state=gate");
-    await page.waitForSelector("section.card");
-    await expect(page.locator('[data-live="true"]')).toHaveCount(0);
-    await expect(page.locator('[data-testid="timeline"] [data-segment][data-gate="crossroads"]')).toHaveCount(1);
-    const dim = await page.locator('[data-testid="timeline"] [data-segment]')
-      .evaluateAll((els) => els.map((e) => Number(getComputedStyle(e).opacity)));
-    // the fork's own segment reads normally; the two behind it too. everything downstream fades.
-    expect(dim.slice(0, 2).every((o) => o === 1)).toBe(true);
-    expect(dim.slice(2).every((o) => o < 1)).toBe(true);
-  });
-});
-
-test.describe("the bar under reduced motion", () => {
-  test.use({ reducedMotion: "reduce" });
-
-  test("the nib is still there and nothing on the bar is animating", async ({ page }) => {
-    await page.goto("/dev/timeline?state=live");
-    await page.waitForSelector("section.card");
-    await expect(page.locator('[data-live="true"]')).toHaveCount(1);
-    await expect
-      .poll(async () =>
-        page.evaluate(() =>
-          [document.querySelector('[data-testid="timeline"]')!, ...document.querySelectorAll('[data-testid="timeline"] *')]
-            .reduce((n, el) => n + el.getAnimations().length, 0),
-        ),
-      )
-      .toBe(0);
   });
 });

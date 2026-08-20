@@ -93,6 +93,7 @@ export function useFeedCards({
   initialCards,
   initialHasMore,
   enabled,
+  holdGenerate = false,
   staticMode,
   beforeGenerate,
   onRunwayFull,
@@ -101,8 +102,12 @@ export function useFeedCards({
   initialCards: CardRow[];
   /** The server had more cards than initialCards (resume deep in a session). */
   initialHasMore: boolean;
-  /** Session is active → generation allowed. */
+  /** Session is active → the loop may run at all. */
   enabled: boolean;
+  /** A fork is parked on the reader: rows the server already wrote still DRAIN (the fork itself
+   *  may be one of them — a feed that can't fetch its own crossroads dead-ends without a word),
+   *  but nothing new is asked for. Their tap is what lifts this. */
+  holdGenerate?: boolean;
   staticMode: boolean;
   /** Awaited right before POST /generate — the feed flushes viewed/position so the server's runway math is current. */
   beforeGenerate?: () => Promise<void>;
@@ -127,6 +132,8 @@ export function useFeedCards({
   const serverHasMore = useRef(initialHasMore);
   const enabledRef = useRef(enabled);
   enabledRef.current = enabled && !staticMode;
+  const holdGenerateRef = useRef(holdGenerate);
+  holdGenerateRef.current = holdGenerate;
   const beforeGenerateRef = useRef(beforeGenerate);
   beforeGenerateRef.current = beforeGenerate;
   const onRunwayFullRef = useRef(onRunwayFull);
@@ -179,7 +186,13 @@ export function useFeedCards({
    * stay quiet: scrolling into the end of a wrapped deck must not re-ask forever.
    */
   const pump = useCallback(async (forced = false) => {
-    if (!enabledRef.current || inFlight.current) return;
+    if (!enabledRef.current) return;
+    if (inFlight.current) {
+      // a reader action that lands while a call is in flight must not be swallowed — the in-flight
+      // answer predates the action, so the ask re-runs the moment the call settles
+      if (forced) forcedQueued.current = true;
+      return;
+    }
     if (terminalRef.current) {
       if (!forced) return;
       // a forced ask IS the reader doing the thing that unsticks the deck, so the old answer is void
@@ -205,6 +218,12 @@ export function useFeedCards({
         const res = await api.get<ListCardsData>(`/api/sessions/${sessionId}/cards?${qs}`);
         serverHasMore.current = res.hasMore;
         got = res.cards;
+      }
+      if (got.length === 0 && holdGenerateRef.current) {
+        // everything written is in hand and a fork is waiting: asking for more is the one thing
+        // the fork exists to stop. No backoff either — nothing failed, the reader has the floor.
+        setFill("idle");
+        return;
       }
       if (got.length === 0) {
         await beforeGenerateRef.current?.().catch(() => {});
@@ -242,30 +261,51 @@ export function useFeedCards({
       backoff();
     } finally {
       inFlight.current = false;
+      if (forcedQueued.current) {
+        forcedQueued.current = false;
+        window.setTimeout(() => void pumpRef.current(true), 0);
+      }
     }
   }, [sessionId, lastIdx, mergeIn, schedule, backoff]);
   const pumpRef = useRef(pump);
   pumpRef.current = pump;
+  const forcedQueued = useRef(false);
 
   /** Tell the loop whether the feed is short on runway; pumps immediately when true. */
   const setWantMore = useCallback((want: boolean) => {
     wantMore.current = want;
-    if (want) void pumpRef.current();
-    else clearTimer();
+    // while a failure backoff timer is armed, the timer IS the retry — pumping immediately on
+    // every runway recompute would turn 2s → 4s → 8s into a hammer
+    if (want) {
+      if (!(failures.current > 0 && timer.current !== null)) void pumpRef.current();
+    } else clearTimer();
   }, []);
 
   /** Full re-sync from the server (status flip, refresh, re-plan). Prunes local rows the server no longer has. */
   const refetchAll = useCallback(async () => {
     if (staticMode) return;
-    const res = await api.get<ListCardsData>(`/api/sessions/${sessionId}/cards?limit=100`);
-    serverHasMore.current = res.hasMore;
-    // the server is the truth for the window it returned (a re-plan may have dropped unviewed
-    // runway); local rows beyond that window survive only if the server says there is more
-    const serverIds = new Set(res.cards.map((c) => c.id));
-    const lastServerIdx = res.cards.length ? res.cards[res.cards.length - 1].idx : null;
+    // page the WHOLE deck: one window of 100 ghost-pruned everything past row 100, so a long
+    // session lost its tail on every re-sync. the cap only guards against a runaway loop.
+    const all: CardRow[] = [];
+    let hasMore = true;
+    let after: string | null = null;
+    for (let pages = 0; hasMore && pages < 40; pages++) {
+      const qs = new URLSearchParams({ limit: "100" });
+      if (after) qs.set("after", after);
+      const res: ListCardsData = await api.get<ListCardsData>(`/api/sessions/${sessionId}/cards?${qs}`);
+      all.push(...res.cards);
+      hasMore = res.hasMore;
+      if (!res.cards.length) break;
+      after = res.cards[res.cards.length - 1].idx;
+    }
+    serverHasMore.current = hasMore;
+    // the server is the truth for everything it returned (a re-plan may have dropped unviewed
+    // runway); local rows beyond the fetched window survive only if the server says there is more
+    const serverIds = new Set(all.map((c) => c.id));
+    const lastServerIdx = all.length ? all[all.length - 1].idx : null;
     setCards((prev) => {
-      const beyond = prev.filter((c) => !serverIds.has(c.id) && res.hasMore && lastServerIdx !== null && c.idx > lastServerIdx);
-      return mergeCards(beyond, res.cards);
+      const beyond = prev.filter((c) => !serverIds.has(c.id) && hasMore && lastServerIdx !== null && c.idx > lastServerIdx);
+      return mergeCards(beyond, all);
     });
     failures.current = 0;
     // a full re-sync follows a dial / re-plan / status flip: the runway we were told was over may

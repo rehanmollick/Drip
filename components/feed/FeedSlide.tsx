@@ -42,6 +42,7 @@ export const FeedSlide = memo(function FeedSlide({
   observe,
   mounted,
   entered,
+  instant = false,
   active,
   interaction,
   streak,
@@ -53,6 +54,9 @@ export const FeedSlide = memo(function FeedSlide({
   observe: (el: HTMLElement | null, key: string) => void;
   mounted: boolean;
   entered: boolean;
+  /** the reader arrived on a fast flick: land SETTLED, no entrance choreography (decided once,
+   *  the moment the slide first entered — the key below never changes again after that). */
+  instant?: boolean;
   active: boolean;
   interaction?: Interaction | null;
   streak?: number;
@@ -79,7 +83,11 @@ export const FeedSlide = memo(function FeedSlide({
       data-card-type={slide.card.type}
     >
       {mounted && (
-        <div className="relative z-[1] flex h-full w-full flex-col">
+        // a fast flick lands on a settled card: remounting WITH entered=true at the moment of
+        // arrival makes the view render straight in its final state (CardFrame captures `entered`
+        // at mount). `instant` is sticky per slide, so this key changes exactly once, before any
+        // interaction state exists to lose.
+        <div key={instant ? "settled" : "rise"} className="relative z-[1] flex h-full w-full flex-col">
           <SafeCard resetKey={slide.key} fallbackView={<CardView card={FALLBACK} entered active={active} />}>
             {slide.kind === "predict_reveal" ? (
               <PredictRevealView card={slide.card} interaction={interaction ?? null} entered={entered} called={called} onAskAbout={handlers?.onAskAbout} />

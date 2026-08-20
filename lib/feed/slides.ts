@@ -35,10 +35,27 @@ export function dropUnviewedAfter(cards: readonly CardRow[], after: string | nul
   return cards.filter((c) => !(c.viewedAt === null && (after === null || compareIdx(c.idx, after) > 0)));
 }
 
+/**
+ * THE ORDER INVARIANT: the feed's `cards` state is always sorted by idx — useFeedCards only ever
+ * writes through sortCards/mergeCards, and patches/filters preserve order. Consumers on the hot
+ * path (toSlides, railModel, sessionMap) therefore do NOT re-sort on every recompute; outside
+ * production this checks the invariant and repairs (loudly) instead of rendering a shuffled deck.
+ */
+export function devSorted(cards: readonly CardRow[], who: string): readonly CardRow[] {
+  if (process.env.NODE_ENV === "production") return cards;
+  for (let i = 1; i < cards.length; i++) {
+    if (compareIdx(cards[i - 1].idx, cards[i].idx) > 0) {
+      console.warn(`[feed] ${who} was handed unsorted cards — the order invariant is broken upstream`);
+      return sortCards(cards);
+    }
+  }
+  return cards;
+}
+
 /** One card → one slide, except `predict` which expands into [question, reveal]. */
 export function toSlides(cards: readonly CardRow[]): Slide[] {
   const out: Slide[] = [];
-  for (const row of sortCards(cards)) {
+  for (const row of devSorted(cards, "toSlides")) {
     const card = row.payload as Card;
     out.push({ kind: "card", key: row.id, card, rowId: row.id, idx: row.idx });
     if (card.type === "predict") {

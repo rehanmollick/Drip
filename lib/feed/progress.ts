@@ -6,7 +6,7 @@ import { sortCards } from "./slides";
  * The two things the feed reads off its own rows: the streak behind a card, and whether the reader
  * called one. Both are nods, never scores.
  *
- * Where a topic stands — how much of it exists, how much is read — lives in lib/feed/timeline.ts
+ * Where a topic stands — how much of it exists, how much is read — lives in lib/feed/rail.ts
  * and is counted against the server's frontier, not against `estCards`. There used to be a third
  * estCards-floored fraction here; it disagreed with the bar it was meant to feed, so it is gone.
  */
