@@ -10,17 +10,18 @@ import { SAMPLE_THEME_TERMINAL_NOIR } from "@/lib/theme/defaults";
  * Depth-rail + session-map + planning-theatre fixture (no network). e2e/timeline.spec.ts drives it.
  *
  * Default: the showcase deck spread across the whole outline, with NO frontier — the rail says only
- * what the local rows can prove (they exist, so they draw solid; the outline's estimates continue
- * dim below). Scrolling/resting behaviour is exercised on this state.
+ * what the local rows can prove: they exist, they draw solid, and the rail is nothing else.
+ * Scrolling/resting behaviour is exercised on this state.
  *
  * `?state=` bolts on what each rail state needs:
  *   buffered  a finished topic, one you're inside with runway ahead, one written but unreached,
- *             and one that is nothing but a heading so far
- *   live      the same, plus a batch in flight — the written edge carries the pulse
- *   gate      parked at a fork: a gate mark, no pulse anywhere, downstream dimmed
- *   wrapped   the thread ended on request: the rail is all written, hard end cap, no dim zone
+ *             and one that is nothing but a heading so far — which takes NO rail at all
+ *   live      the same, plus a batch in flight — the bottom edge carries the pulse
+ *   gate      parked at a fork: a gate mark at the bottom edge, no pulse anywhere
+ *   wrapped   the thread ended on request: the rail is all written, hard end cap, no soft edge
  *   planning  the pre-plan theatre: proto-rail breathing, no fake progress
- *   planned   the reveal: persona line + outline stops ticking in (the plan just landed)
+ *   planned   the reveal: persona line + outline stops ticking in (the plan just landed —
+ *             a theatre act, nothing to do with rail geometry)
  */
 
 const SEEN = "2026-01-01T00:00:00.000Z";
@@ -84,9 +85,10 @@ function counted(session: SessionPublic, rows: CardRow[], fixture: Fixture) {
 
   const frontier: FrontierPublic = {
     // n0 is finished, n1 is what the writer is in, n2 has a stretch written but unreached, and n3
-    // is absent from the census entirely — nothing but a heading, which is how an unwritten node
-    // arrives. the four things the rail has to be able to draw differently
-    written: { n0: half, n1: rows.length - half, n2: 4 },
+    // is absent from the census entirely — nothing but a heading, which draws NOTHING on the rail.
+    // the gate fixture holds nothing past the fork: a crossroads stops the writer, so cards below
+    // it would be a census that cannot happen — and the mark must sit at the bottom edge
+    written: fixture === "gate" ? { n0: half, n1: rows.length - half } : { n0: half, n1: rows.length - half, n2: 4 },
     nodeIdx: 1,
     deeper: {},
     closed: fixture === "wrapped" ? ["n0", "n1"] : ["n0"],

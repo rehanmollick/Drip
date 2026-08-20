@@ -10,11 +10,15 @@ import type { Material, MapTopic } from "@/lib/feed/map";
  *
  * The whole thread at a glance, drawn as the SAME vertical path the rail is: every topic in order
  * down one line, the detours you took hanging off the topic they branched from, and a mark on where
- * you are right now. The materials are the rail's, appearing a second time — one idea, two places:
+ * you are right now. Three materials:
  *
  *   done      solid accent — you've been through it
  *   written   ghosted accent — it exists, waiting below
  *   planned   a dotted line and a hollow dot — a heading so far, nothing written
+ *
+ * Planned lives ONLY here. The ambient rail draws exactly what exists — this sheet, on demand and
+ * behind a long-press, is the one surface where a heading-without-cards gets to appear at all, as
+ * a clearly inert labelled row.
  *
  * Tap something you have already been through to go back to it; anything still ahead is inert —
  * the map orients you, it never skips you forward past what has been written. The in-app refresh
@@ -133,7 +137,7 @@ function Row({
   const written = material === "written";
   const color = here ? "var(--accent)" : state === "done" ? "var(--ink)" : "var(--ink-2)";
   // the path below this row: solid where you've been, ghosted where cards wait, dotted into a
-  // heading — the rail's three materials, spoken again
+  // heading — the sheet's three materials
   const connector =
     state === "done"
       ? "color-mix(in oklab, var(--accent) 55%, transparent)"
@@ -165,8 +169,8 @@ function Row({
           style={{
             width: here ? 9 : 7,
             height: here ? 9 : 7,
-            // the rail's materials: done/current solid, written-but-unreached ghosted, planned a
-            // hollow dotted ring — the same story the rail below the thumb tells
+            // done/current solid, written-but-unreached ghosted, planned a hollow dotted ring —
+            // the one place "planned" is allowed to look like anything
             background: here
               ? "var(--accent)"
               : state === "done"

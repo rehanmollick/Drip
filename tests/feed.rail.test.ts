@@ -35,11 +35,8 @@ function deck(spec: Array<[string, string | null] | [string, string | null, Card
 
 const many = (node: string, n: number) => Array.from({ length: n }, () => [node, null] as [string, null]);
 
-/** written length of a span, in rail units of its own slice. */
-const writtenFrac = (m: ReturnType<typeof railModel>, i: number) => {
-  const s = m.spans[i];
-  return s.to > s.from ? (s.writtenTo - s.from) / (s.to - s.from) : 0;
-};
+/** length of a span, as its slice of the whole rail. */
+const spanLen = (m: ReturnType<typeof railModel>, i: number) => m.spans[i].to - m.spans[i].from;
 
 describe("railModel: one vertical geometry", () => {
   it("is one span per outline node, in order, and the reader's span is marked current", () => {
@@ -48,19 +45,21 @@ describe("railModel: one vertical geometry", () => {
     expect(m.spans.map((s) => s.nodeId)).toEqual(["a", "b", "c"]);
     expect(m.spans.map((s) => s.state)).toEqual(["done", "current", "ahead"]);
     expect(m.title).toBe("what the scheduler sees");
-    // spans tile the whole rail, in order, with interior ticks at their boundaries
+    // spans tile the whole rail in order — and a topic with no cards yet has zero width, so only
+    // boundaries that exist among written cards become ticks
     expect(m.spans[0].from).toBe(0);
     expect(m.spans[2].to).toBeCloseTo(1);
-    expect(m.ticks).toHaveLength(2);
+    expect(spanLen(m, 2)).toBe(0);
+    expect(m.ticks).toHaveLength(1);
     expect(m.ticks[0]).toBeCloseTo(m.spans[0].to);
   });
 
-  it("sizes spans PROPORTIONALLY to their card counts — a big topic takes more rail than a small one", () => {
+  it("sizes spans PROPORTIONALLY to their WRITTEN card counts — a big topic takes more rail than a small one", () => {
     const cards = deck([...many("a", 8), ...many("b", 1)]);
     const m = railModel(cards, OUTLINE, uuid(9), { written: { a: 8, b: 1 }, closed: ["a"] });
-    const lenA = m.spans[0].to - m.spans[0].from;
-    const lenC = m.spans[2].to - m.spans[2].from;
-    expect(lenA).toBeGreaterThan(lenC * 1.5); // 8 written vs a 4-card estimate
+    expect(spanLen(m, 0) / spanLen(m, 1)).toBeCloseTo(8);
+    // the unwritten topic's 4-card estimate buys it nothing at all
+    expect(spanLen(m, 2)).toBe(0);
   });
 
   it("never reports a fraction outside 0..1, wherever the reader stands", () => {
@@ -99,53 +98,64 @@ describe("railModel: one vertical geometry", () => {
   });
 });
 
-describe("railModel: what is written vs what was merely planned (the honesty rules)", () => {
-  it("never draws an OPEN topic as fully written, however far past its estimate the writer has run", () => {
-    // 9 cards written into a 4-card estimate. the denominator is written+1, so the solid band
-    // stops short — "there is more of this coming" is the one thing an open topic must still say.
-    const cards = deck(many("a", 9));
-    const m = railModel(cards, OUTLINE, uuid(9), { written: { a: 9 } });
-    expect(writtenFrac(m, 0)).toBeCloseTo(0.9);
-    expect(m.spans[0].writtenTo).toBeLessThan(m.spans[0].to);
-    // …and closing it is the ONLY thing that fills it
-    const closed = railModel(cards, OUTLINE, uuid(9), { written: { a: 9 }, closed: ["a"] });
-    expect(closed.spans[0].writtenTo).toBeCloseTo(closed.spans[0].to);
+describe("railModel: the rail is exactly what exists (the honesty rules)", () => {
+  it("estimates never buy a single pixel of rail — the whole span is cards in hand or counted", () => {
+    // 2 cards against three 4-card estimates: the rail IS those 2 cards, nothing else
+    const cards = deck(many("a", 2));
+    const m = railModel(cards, OUTLINE, uuid(2));
+    expect(m.spans[0].to).toBeCloseTo(1);
+    expect(spanLen(m, 1)).toBe(0);
+    expect(spanLen(m, 2)).toBe(0);
+    // …and everything drawn exists, so the writing frontier is the bottom edge
+    expect(m.written).toBe(1);
   });
 
-  it("shows how much of a topic ahead already exists, without claiming the reader has read any of it", () => {
-    const outline = [OUTLINE[0], OUTLINE[1], { ...OUTLINE[2], estCards: 6 }];
+  it("never claims the thread is finished while a topic is still open — the honesty lives at the bottom edge now", () => {
+    // 9 cards written into a 4-card estimate: everything drawn exists, and the rail still says
+    // "it keeps going" — open, uncapped — because nothing closed the topic (its crossroads is unwritten)
+    const cards = deck(many("a", 9));
+    const m = railModel(cards, OUTLINE, uuid(9), { written: { a: 9 } });
+    expect(m.spans[0].writtenTo).toBeCloseTo(m.spans[0].to);
+    expect(m.open).toBe(true);
+    expect(m.wrapped).toBe(false);
+    // …and closing every node is the ONLY thing that seals the edge
+    const closed = railModel(cards, OUTLINE, uuid(9), { written: { a: 9 }, closed: ["a", "b", "c"] });
+    expect(closed.open).toBe(false);
+  });
+
+  it("a topic ahead with cards already written takes rail; one that is only a heading takes none", () => {
     const cards = deck([["a", null]]);
-    const m = railModel(cards, outline, uuid(1), { written: { a: 1, c: 3 } });
+    const m = railModel(cards, OUTLINE, uuid(1), { written: { a: 1, c: 3 } });
     expect(m.spans[2].state).toBe("ahead");
-    expect(writtenFrac(m, 2)).toBeCloseTo(0.5); // 3 written into a 6-card estimate
-    expect(m.thumb).toBeLessThan(m.spans[1].from); // the reader is still in the first topic
-    // a topic with nothing written is a bare planned stretch, not a faint promise
-    expect(writtenFrac(m, 1)).toBe(0);
+    expect(spanLen(m, 2)).toBeCloseTo(0.75); // 3 of the 4 existing cards
+    expect(spanLen(m, 1)).toBe(0); // a heading is not a promise
+    // the reader is still at the end of the first topic, not inside the one ahead
+    expect(m.thumb).toBeLessThanOrEqual(m.spans[2].from);
   });
 
   it("counts whichever of the census and our own rows saw more, and the thumb never overtakes the written edge of its span", () => {
     const cards = deck(many("a", 6));
     // the server is behind: it counted 2, we are holding 6
-    const m = railModel(cards, OUTLINE, uuid(6), { written: { a: 2 } });
-    expect(writtenFrac(m, 0)).toBeCloseTo(6 / 7);
+    const m = railModel(cards, OUTLINE, uuid(6), { written: { a: 2, b: 1 } });
+    expect(spanLen(m, 0) / spanLen(m, 1)).toBeCloseTo(6);
     expect(m.thumb).toBeLessThanOrEqual(m.spans[0].writtenTo);
   });
 
   it("without a census it still draws the rows in hand as existing — the deck is exact knowledge", () => {
     const cards = deck([["a", null], ["a", null], ["b", null]]);
     const m = railModel(cards, OUTLINE, uuid(3));
-    expect(writtenFrac(m, 0)).toBeGreaterThan(0);
-    expect(m.spans[0].writtenTo).toBeLessThan(m.spans[0].to); // a is open: never full
-    expect(writtenFrac(m, 2)).toBe(0);
+    expect(spanLen(m, 0)).toBeCloseTo(2 / 3);
+    expect(spanLen(m, 1)).toBeCloseTo(1 / 3);
+    expect(spanLen(m, 2)).toBe(0);
     expect(m.live).toBe(false);
     expect(m.gate).toBeNull();
   });
 
-  it("pulses only while a batch is truly in flight, at the writing frontier", () => {
+  it("pulses only while a batch is truly in flight, at the bottom edge of what exists", () => {
     const cards = deck([["a", null]]);
     const m = railModel(cards, OUTLINE, uuid(1), { live: { nodeIdx: 2 } });
     expect(m.live).toBe(true);
-    expect(m.written).toBeLessThan(1); // the frontier sits inside the open topic
+    expect(m.written).toBe(1); // the pulse rides the bottom edge — growth is the signal, not a path
     const idle = railModel(cards, OUTLINE, uuid(1));
     expect(idle.live).toBe(false);
   });
@@ -156,21 +166,29 @@ describe("railModel: what is written vs what was merely planned (the honesty rul
     expect(m.gate?.kind).toBe("crossroads");
     expect(m.live).toBe(false); // a pulse at a gate would be a promise nobody is keeping
     expect(m.wrapped).toBe(false);
+    // the gate is its own crisp mark — no soft "keeps going" edge while the thread is parked
+    expect(m.open).toBe(false);
     // the gate sits at the written edge of the fork's own span
     expect(m.gate!.at).toBeCloseTo(m.spans[1].writtenTo);
   });
 
-  it("a wrap is a hard end: the rail is exactly what was written, capped, nothing dim below", () => {
+  it("a fork with nothing written past it gates at the bottom edge of the rail", () => {
+    const cards = deck([["a", null], ["b", null], ["b", null, "crossroads"]]);
+    const m = railModel(cards, OUTLINE, uuid(3), { gate: "crossroads" });
+    expect(m.gate!.at).toBeCloseTo(1);
+  });
+
+  it("a wrap is a hard end: the rail is exactly what was written, capped, nothing below", () => {
     const cards = deck([...many("a", 4), ...many("b", 3)]);
     const m = railModel(cards, OUTLINE, uuid(7), { written: { a: 4, b: 3 }, closed: ["a", "b"], gate: "wrap" });
     expect(m.wrapped).toBe(true);
     expect(m.written).toBe(1);
     expect(m.open).toBe(false);
-    // the never-written topic takes no rail at all on a wrapped thread
-    expect(m.spans[2].to - m.spans[2].from).toBe(0);
+    // the never-written topic takes no rail at all
+    expect(spanLen(m, 2)).toBe(0);
   });
 
-  it("while the outline is open, the rail is open — the dim zone runs off the bottom", () => {
+  it("while the outline is open, the rail is open — the bottom edge stays soft", () => {
     const cards = deck(many("a", 2));
     expect(railModel(cards, OUTLINE, uuid(2)).open).toBe(true);
   });
@@ -207,10 +225,11 @@ describe("railModel: the reader", () => {
     expect(late.goal!.to).toBeCloseTo(late.spans[0].to);
   });
 
-  it("unitsAhead is the map sheet's effort math: everything below the thumb, written or estimated", () => {
+  it("unitsAhead is the map sheet's effort math: written cards below the thumb plus what open topics still owe", () => {
     const cards = deck(many("a", 2));
     const m = railModel(cards, OUTLINE, uuid(1));
-    expect(m.unitsAhead).toBeGreaterThan(0);
+    // 1 written card below + (4-2) + 4 + 4 still estimated across the open outline
+    expect(m.unitsAhead).toBe(11);
     const done = railModel(deck(many("a", 4)), [OUTLINE[0]], uuid(4), { written: { a: 4 }, closed: ["a"] });
     expect(done.unitsAhead).toBe(0);
   });

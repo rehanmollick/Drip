@@ -12,13 +12,15 @@ import type { RailModel } from "@/lib/feed/rail";
  *   solid accent          read — behind the thumb
  *   ● the thumb           the reader (never at zero: the plan itself was distance)
  *   half-lit solid        cards that EXIST below, exact
- *   dashed, dim           planned but unwritten — fades out at the bottom while the thread is open
  *
- * Topic boundaries are ticks, spans proportional to each topic's card count. The written/unwritten
- * boundary carries the pulse only while a batch is genuinely in flight (static under reduced
- * motion); a slow upward-drifting shimmer rides the waiting zone while it writes. A fork is a gate
- * mark where the rail stops — no pulse there, downstream dimmed until the reader picks. A wrap is
- * a hard end cap. A detour doubles the rail beside itself for the detour's span.
+ * The rail's whole span is cards that exist — no dashed continuation, no laid-out path for topics
+ * that are only headings yet. New rail appears when cards actually land (the arrival beat + the
+ * renormalising springs ARE the "more is coming" signal); while the thread is open the bottom edge
+ * fades out instead of promising anything. Topic boundaries are ticks, spans proportional to each
+ * topic's written card count. The bottom edge carries the pulse only while a batch is genuinely in
+ * flight (static under reduced motion); a slow upward-drifting shimmer rides the waiting zone
+ * while it writes. A fork is a gate mark where the rail stops — no pulse there, nothing below to
+ * dim. A wrap is a hard end cap. A detour doubles the rail beside itself for the detour's span.
  *
  * iOS-scrollbar discipline: a 2.5px hairline at low opacity at rest; swells to 5px and brightens
  * while scrolling, while writing, and for a beat when new cards land below. Long-press → the
@@ -87,7 +89,6 @@ export function DepthRail({
   held.current = { key: heldKey, thumb };
 
   const awake = bright || refreshing || model.live;
-  const gateAt = model.gate && !model.wrapped ? model.gate.at : null;
   const pct = (n: number) => `${(n * 100).toFixed(3)}%`;
 
   return (
@@ -124,25 +125,16 @@ export function DepthRail({
             className="relative h-full w-full"
             style={
               model.open
-                ? // the outline is still open: the dim zone runs off the bottom — "it keeps going"
+                ? // the thread is still open: the bottom edge fades out — "it keeps going", said
+                  // without laying out a single pixel of rail nobody has written
                   { maskImage: "linear-gradient(180deg, black 0%, black 86%, transparent 100%)", WebkitMaskImage: "linear-gradient(180deg, black 0%, black 86%, transparent 100%)" }
                 : undefined
             }
           >
-            {/* planned but unwritten: a dashed continuation, dimmer than anything that exists */}
-            <span
-              aria-hidden
-              data-band="planned"
-              className="absolute inset-x-0 rounded-full"
-              style={{
-                top: 0,
-                bottom: 0,
-                background: "repeating-linear-gradient(180deg, var(--line) 0px, var(--line) 4px, transparent 4px, transparent 10px)",
-                opacity: refreshing ? 0.3 : 0.7,
-              }}
-            />
+            {/* re-planning: the old geometry is stale, so only a faint neutral base line remains */}
+            {refreshing && <span aria-hidden className="absolute inset-x-0 rounded-full" style={{ top: 0, bottom: 0, background: "var(--line)", opacity: 0.35 }} />}
 
-            {/* cards that EXIST, span by span — exact, brighter than planned, dimmer than read */}
+            {/* cards that EXIST, span by span — exact, and the ONLY thing the rail is made of */}
             {!refreshing &&
               model.spans.map(
                 (s) =>
@@ -201,17 +193,7 @@ export function DepthRail({
               />
             )}
 
-            {/* everything downstream of an unanswered fork is not promised yet */}
-            {gateAt !== null && (
-              <span
-                aria-hidden
-                data-band="parked"
-                className="absolute inset-x-0"
-                style={{ top: pct(gateAt), bottom: 0, background: "color-mix(in oklab, var(--bg) 62%, transparent)" }}
-              />
-            )}
-
-            {/* topic boundaries: ticks, spans proportional to each topic's card count */}
+            {/* topic boundaries: ticks, spans proportional to each topic's written card count */}
             {model.ticks.map((t, i) => (
               <span
                 key={`${i}:${t}`} // two zero-width topics can share a boundary value — the index keeps keys unique

@@ -234,6 +234,20 @@ export const WORST_CARDS: Card[] = [
     difficulty: 3,
     terms: GLOSS,
   },
+  // schema-max diagram rulers, one per remaining variant (flow is id(10) above).
+  // 8 nodes at the 24/40 caps, 12 labelled edges at the 20 cap, tapNotes on every node.
+  ...(["boxes", "timeline", "compare", "cycle", "layers"] as const).map((variant, vi) => ({
+    id: id(23 + vi), type: "diagram" as const, topicNodeId: N, detourId: null, eyebrow: exact(28),
+    variant,
+    title: exact(48, `${variant} at the schema max eight nodes twelve edges`),
+    nodes: Array.from({ length: 8 }, (_, i) => ({ id: `n${i}`, label: exact(24, `node ${i} label text here`), sub: exact(40, `sub label ${i} for the node`), emphasis: i === 3 })),
+    edges: [
+      // a full chain plus skips and one back edge — 12 distinct pairs, every label at cap
+      ...Array.from({ length: 7 }, (_, i) => ({ from: `n${i}`, to: `n${i + 1}` })),
+      { from: "n0", to: "n2" }, { from: "n2", to: "n5" }, { from: "n4", to: "n7" }, { from: "n1", to: "n6" }, { from: "n7", to: "n1" },
+    ].map((e, i) => ({ ...e, label: exact(20, `edge ${i} label ok`) })),
+    tapNotes: Object.fromEntries(Array.from({ length: 8 }, (_, i) => [`n${i}`, exact(160)])),
+  })),
 ];
 
 export function worstRows(sessionId = DEV_SESSION_ID): CardRow[] {

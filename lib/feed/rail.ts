@@ -12,13 +12,16 @@ import { devSorted } from "./slides";
  *   ● thumb        the reader (never at 0 once the plan lands — the paste + plan + first cards
  *                  are distance already travelled)
  *   ▒▒ exists      cards WRITTEN and waiting below — exact, the deck is in hand or counted
- *   ── planned     dimmer continuation: the outline says it's coming, nothing is written yet
  *   1 ──────────── the bottom (fades out while the outline is still open; hard cap on a wrap)
  *
- * Spans are PROPORTIONAL to each topic's card count — the real written count where cards exist,
- * the outline estimate where they don't. The honesty rule from the old bar survives intact: while
- * a topic is OPEN its denominator is at least written+1, so its written band can never touch the
- * end of its span. Only membership of the server's `closed` list fills a span.
+ * The rail's whole span is cards that EXIST. Nothing else. A laid-out continuation for planned
+ * topics read as promised cards, so it is gone: a topic that is only a heading takes NO rail, and
+ * the rail growing as batches land — real arrival, animated — is the only "more is coming" the
+ * ambient surface gets to say. Planned topics live in the map sheet, on demand, as labelled rows.
+ *
+ * Spans are PROPORTIONAL to each topic's written card count. The honesty rule survives in the
+ * bottom edge: the rail never reads finished — never capped, always soft at the bottom — until
+ * every outline node is closed or the thread wrapped; an unanswered fork ends it in a gate mark.
  *
  * Pure + unit-tested (tests/feed.rail.test.ts). No numbers leave this file for the rail itself —
  * `unitsAhead` exists ONLY for the map sheet's on-demand "~N min left" line, never for ambient UI.
@@ -51,20 +54,20 @@ export type RailSpan = {
   nodeId: string;
   title: string;
   state: SegmentState;
-  /** 0..1 — this topic's slice of the whole rail, proportional to its card count. */
+  /** 0..1 — this topic's slice of the whole rail, proportional to its WRITTEN card count. */
   from: number;
   to: number;
-  /** 0..1 absolute — cards exist from `from` down to here. an OPEN span never reaches `to`. */
+  /** 0..1 absolute — equal to `to` now that the rail draws only what exists; kept so the renderer and the gate speak one vocabulary. */
   writtenTo: number;
 };
 
 export type RailModel = {
   spans: RailSpan[];
-  /** interior topic boundaries, 0..1 — the tick marks. */
+  /** interior topic boundaries among WRITTEN cards, 0..1 — the tick marks. */
   ticks: number[];
   /** the reader, 0..1. endowed: never 0 once anything exists. */
   thumb: number;
-  /** the writing frontier, 0..1 — where contiguous written rail ends. the pulse lives here. */
+  /** the writing frontier, 0..1 — the bottom edge of everything written. the pulse lives here. */
   written: number;
   /** a batch is in flight right now → the boundary between written and unwritten carries the pulse. */
   live: boolean;
@@ -72,7 +75,7 @@ export type RailModel = {
   gate: { kind: "crossroads" | "wrap"; at: number } | null;
   /** the thread ended on request — the rail is all written, capped, nothing dim below. */
   wrapped: boolean;
-  /** planned-but-unwritten rail exists below — the dim zone fades out at the bottom ("it keeps going"). */
+  /** the thread continues past what exists — the bottom edge fades out ("it keeps going") without laying out a path. */
   open: boolean;
   /** the reader is off the main thread: a second track doubles beside the main one for this span. */
   detour: { at: number; span: number } | null;
@@ -205,53 +208,41 @@ export function railModel(
   const closed = new Set(frontier?.closed ?? []);
   const wrapped = gateKind === "wrap";
 
-  // per topic, in the same units: how many cards its span is worth, and how many of those exist.
-  // the server's census and our own rows disagree constantly (it excludes scaffolding, we hold rows
-  // it hasn't re-counted); take whichever saw more so the band never flinches.
-  const units = outline.map((n, i) => {
-    const est = n.estCards ?? 0;
-    const written = Math.max(frontier?.written?.[n.id] ?? 0, local[i]);
-    const deeper = frontier?.deeper?.[n.id] ?? 0;
-    // the +1 is the whole point: an OPEN topic can never be drawn as fully written, however far
-    // past its estimate the writer has run. only a closed topic gets to touch the end of its span.
-    const total = closed.has(n.id) ? Math.max(written, 1) : Math.max(est + deeper, written + 1, 1);
-    // a wrapped thread has no "coming" — the rail is exactly what was written, capped
-    return wrapped ? { total: written, written } : { total, written };
-  });
+  // per topic: the rail is EXACTLY the cards that exist — no estimates, no continuation. the
+  // server's census and our own rows disagree constantly (it excludes scaffolding, we hold rows
+  // it hasn't re-counted); take whichever saw more so the band never flinches. a topic that is
+  // still only a heading takes NO rail — a laid-out path would read as promised cards, and the
+  // rail growing as batches land is the only "more is coming" the ambient surface gets to say.
+  const units = outline.map((n, i) => Math.max(frontier?.written?.[n.id] ?? 0, local[i]));
 
-  const totalUnits = units.reduce((s, u) => s + u.total, 0) || 1;
+  const hasUnits = units.some((u) => u > 0);
+  const totalUnits = units.reduce((s, u) => s + u, 0) || 1;
   let cum = 0;
   const spans: RailSpan[] = outline.map((n, i) => {
     const from = cum / totalUnits;
-    cum += units[i].total;
+    cum += units[i];
     const to = cum / totalUnits;
-    const frac = units[i].total > 0 ? units[i].written / units[i].total : 0;
     return {
       nodeId: n.id,
       title: n.title,
       state: i < currentIndex ? "done" : i === currentIndex ? "current" : "ahead",
       from,
       to,
-      writtenTo: clamp01(from + frac * (to - from)),
+      // everything drawn exists — writtenTo is where the gate and renderer read a span's edge
+      writtenTo: to,
     };
   });
 
   const ticks = spans.slice(0, -1).map((s) => s.to).filter((t) => t > 0 && t < 1);
 
-  // the writing frontier: written rail is contiguous from the top; it ends at the first span that
-  // isn't fully written. spans written further down (a census that ran ahead) still DRAW solid in
-  // place, but the pulse and the end-cap live at the contiguous edge.
-  let written = 0;
-  for (const s of spans) {
-    written = s.writtenTo;
-    if (s.writtenTo < s.to - 1e-9) break;
-  }
-  if (wrapped) written = 1;
+  // the writing frontier IS the bottom edge: the rail holds nothing but written cards, so the
+  // pulse and the end-cap live at the end of the track
+  const written = hasUnits ? 1 : 0;
 
-  // the reader, in the same units — behind/total keeps the thumb inside the honest denominator,
-  // so it can never overtake the written edge of its own span
+  // the reader, in the same units — behind/written keeps the thumb an exact position among
+  // existing cards; standing on the last card that exists means standing at the bottom
   const span = spans[currentIndex];
-  const readFrac = units[currentIndex].total > 0 ? clamp01(behind[currentIndex] / units[currentIndex].total) : 0;
+  const readFrac = units[currentIndex] > 0 ? clamp01(behind[currentIndex] / units[currentIndex]) : 0;
   let thumb = span.from + readFrac * (span.to - span.from);
   thumb = Math.min(thumb, span.writtenTo);
   // endowed progress: the paste + the plan + the first cards ARE distance travelled — the thumb
@@ -266,7 +257,9 @@ export function railModel(
     ? { kind: gateKind, at: wrapped ? 1 : spans[gateIndexOf(sorted, gateKind, index, currentIndex)].writtenTo }
     : null;
 
-  const open = !wrapped && spans.some((s) => s.writtenTo < s.to - 1e-9);
+  // finished is a claim only a close can make: while any outline node is still open the bottom
+  // edge stays soft. a gate is its own crisp mark, and a wrap is the end, full stop.
+  const open = !gateKind && !outline.every((n) => closed.has(n.id));
 
   // goal gradient: inside the last quarter of the current topic, the remaining sliver brightens
   const spanLen = span.to - span.from;
@@ -276,7 +269,18 @@ export function railModel(
   // the doubled track: the detour hangs beside where the reader branched off, sized like its cards
   const detour = onDetour ? { at: thumb, span: Math.max(0.02, detourUnits / totalUnits) } : null;
 
-  const unitsAhead = Math.max(0, Math.round((1 - thumb) * totalUnits));
+  // map-sheet effort math ONLY: what exists below the thumb, plus the outline's estimate of what
+  // each open topic still owes. estimates are allowed HERE — on demand, behind a long-press —
+  // never on the ambient rail.
+  const existsAhead = hasUnits ? Math.max(0, Math.round((1 - thumb) * totalUnits)) : 0;
+  const estRemaining = wrapped
+    ? 0
+    : outline.reduce((s, n, i) => {
+        if (closed.has(n.id)) return s;
+        const est = (n.estCards ?? 0) + (frontier?.deeper?.[n.id] ?? 0);
+        return s + Math.max(0, est - units[i]);
+      }, 0);
+  const unitsAhead = existsAhead + estRemaining;
 
   return {
     spans,

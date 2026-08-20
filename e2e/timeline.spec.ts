@@ -129,46 +129,51 @@ test.describe("the depth rail", () => {
   });
 });
 
-test.describe("the rail tells written apart from planned", () => {
-  test("existing cards draw solid, a heading-only topic stays a dashed nothing, and an open topic never reads finished", async ({ page }) => {
+test.describe("the rail shows only what exists", () => {
+  test("existing cards are the whole rail: no dashed continuation, and a heading-only topic takes no rail at all", async ({ page }) => {
     await page.goto("/dev/timeline?state=buffered");
     await page.waitForSelector("section.card");
-    // n0, n1 and n2 have cards; n3 is nothing but a heading — three exists bands, never four
+    // n0, n1 and n2 have cards; n3 is nothing but a heading — three exists bands, never four,
+    // and never a laid-out path implying cards nobody has written
     await expect(page.locator(`${RAIL} [data-band="exists"]`)).toHaveCount(3);
+    await expect(page.locator(`${RAIL} [data-band="planned"]`)).toHaveCount(0);
 
-    // the last topic's stretch of rail is purely the dashed planned band: no exists band overlaps it
+    // n3 owns no rail, so only the two boundaries among written topics are ticks
+    await expect(page.locator(`${RAIL} [data-tick]`)).toHaveCount(2);
+
+    // the exists bands tile the rail to its very bottom — the total span IS what exists
     const rail = await page.locator(RAIL).boundingBox();
-    const lastTick = await page.locator(`${RAIL} [data-tick]`).last().boundingBox();
-    const existsBoxes = await page.locator(`${RAIL} [data-band="exists"]`).evaluateAll((els) => els.map((e) => e.getBoundingClientRect().bottom));
-    for (const bottom of existsBoxes) expect(bottom).toBeLessThanOrEqual(lastTick!.y + 3);
-    expect(lastTick!.y).toBeLessThan(rail!.y + rail!.height); // there IS rail below it: the planned zone
+    const bottoms = await page.locator(`${RAIL} [data-band="exists"]`).evaluateAll((els) => els.map((e) => e.getBoundingClientRect().bottom));
+    expect(Math.max(...bottoms)).toBeGreaterThan(rail!.y + rail!.height - 3);
 
     // still not a digit anywhere on the ambient indicator
     expect((await page.locator(RAIL).innerText()).trim()).toBe("");
   });
 
-  test("exactly one pulse, on the writing frontier, only while a batch is in flight", async ({ page }) => {
+  test("exactly one pulse, at the bottom edge of what exists, only while a batch is in flight", async ({ page }) => {
     await page.goto("/dev/timeline?state=live");
     await page.waitForSelector("section.card");
     await expect(page.locator('[data-pulse="true"]')).toHaveCount(1);
     await expect(page.locator(`${RAIL}[data-live="true"]`)).toHaveCount(1);
+    // the pulse rides the written frontier — the bottom of the rail, where arrival will grow it
+    const pulse = await frac(page, '[data-pulse="true"]');
+    expect(pulse!.top).toBeGreaterThan(0.9);
 
     await page.goto("/dev/timeline?state=buffered");
     await page.waitForSelector("section.card");
     await expect(page.locator('[data-pulse="true"]')).toHaveCount(0);
   });
 
-  test("a fork is a gate: the rail stops, nothing pulses, downstream is dimmed", async ({ page }) => {
+  test("a fork is a gate at the bottom edge: nothing pulses, and there is nothing below to dim", async ({ page }) => {
     await page.goto("/dev/timeline?state=gate");
     await page.waitForSelector("section.card");
     await expect(page.locator('[data-pulse="true"]')).toHaveCount(0);
     await expect(page.locator(`${RAIL}[data-gate="crossroads"]`)).toHaveCount(1);
     await expect(page.locator(`${RAIL} [data-gate-mark]`)).toHaveCount(1);
-    // everything below the gate mark sits under the parked veil
+    // nothing exists past the fork, so the mark IS the end of the rail — no veil, no dim zone
+    await expect(page.locator(`${RAIL} [data-band="parked"]`)).toHaveCount(0);
     const gate = await frac(page, `${RAIL} [data-gate-mark]`);
-    const veil = await frac(page, `${RAIL} [data-band="parked"]`);
-    expect(Math.abs(veil!.top - gate!.top)).toBeLessThan(0.03);
-    expect(veil!.top + veil!.height).toBeGreaterThan(0.97);
+    expect(gate!.top + gate!.height).toBeGreaterThan(0.95);
   });
 
   test("a wrap is a hard end cap: all written, nothing dim below", async ({ page }) => {
@@ -490,5 +495,71 @@ test.describe("crossroads", () => {
     ]);
     expect(JSON.parse(req.postData() ?? "{}").choice).toBe("continue");
     await expect.poll(async () => slides(page).count(), { timeout: 30_000 }).toBeGreaterThan(before);
+  });
+});
+
+test.describe("wrap", () => {
+  test("choosing wrap ends the thread for good: force pumps write nothing, one ending, never a second fork", async ({ page }) => {
+    const id = await createSession(page, "how a cache stampede takes a site down");
+    await waitForCards(page, 3);
+
+    // generation stops at the topic boundary, so scrolling gets us to the fork
+    await expect
+      .poll(
+        async () => {
+          const n = await slides(page).count();
+          await goToSlide(page, Math.min(n - 1, (await activeInfo(page)).index + 1));
+          return page.locator('section.card[data-card-type="crossroads"]').count();
+        },
+        { timeout: 45_000 },
+      )
+      .toBeGreaterThan(0);
+
+    // scroll the fork under the thumb until its buttons are mounted (the render window needs a beat)
+    const cross = page.locator('section.card[data-card-type="crossroads"]').first();
+    const btn = cross.locator('[data-choice="wrap"]');
+    await expect
+      .poll(
+        async () => {
+          const idx = await cross.evaluate((el) => [...document.querySelectorAll("section.card")].indexOf(el));
+          await goToSlide(page, idx);
+          return btn.isVisible();
+        },
+        { timeout: 20_000 },
+      )
+      .toBe(true);
+
+    const [req] = await Promise.all([
+      page.waitForRequest((r) => r.method() === "POST" && r.url().includes("/choose")),
+      btn.click(),
+    ]);
+    expect(JSON.parse(req.postData() ?? "{}").choice).toBe("wrap");
+
+    // the ending lands exactly once
+    await expect.poll(async () => page.locator('section.card[data-card-type="wrap"]').count(), { timeout: 30_000 }).toBe(1);
+
+    const census = () =>
+      page.evaluate(() => [...document.querySelectorAll("section.card")].map((c) => c.getAttribute("data-card-type")));
+    const before = await census();
+
+    // force pumps: hammer the writer directly, racing style — an archived thread must shrug them all off
+    for (let i = 0; i < 6; i++) {
+      const res = await page.request.post(`/api/sessions/${id}/generate`, { data: {} });
+      expect(res.ok()).toBe(true);
+      const body = await res.json();
+      expect(body.data.cards, "a force pump wrote cards onto a wrapped thread").toEqual([]);
+      expect(body.data.batch.reason).toBe("wrapped");
+    }
+    await page.waitForTimeout(3_000); // give any late batch every chance to land in the feed
+
+    const after = await census();
+    expect(after, "the deck changed after the wrap — something kept writing").toEqual(before);
+    expect(after.filter((t) => t === "wrap")).toHaveLength(1);
+    expect(after.filter((t) => t === "crossroads"), "a second fork was offered after the ending").toHaveLength(1);
+    await expect(page.locator('[data-slide-key="pseudo:catching_up"]')).toHaveCount(0);
+
+    // the ending is the last word on the thread
+    const last = page.locator("section.card").last();
+    expect(await last.getAttribute("data-card-type")).toBe("wrap");
   });
 });
