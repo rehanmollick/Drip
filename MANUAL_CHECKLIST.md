@@ -9,7 +9,11 @@ Setup: push a branch → Vercel preview URL (HTTPS is required for the service w
 - [ ] Add to Home Screen → launches standalone, no Safari chrome, splash themed dark
 - [ ] Airplane mode mid-feed: viewed cards readable, one graceful "back online soon" frontier card, recovers on reconnect
 - [ ] Lock the phone for 5 minutes mid-card → recorded dwell ≤ 60s (check `cards.interaction.dwellMs`), no recap spam on return
-- [ ] Long-press the timeline hairline → the thread sheet opens; refresh works from it (pull-to-refresh doesn't exist standalone)
+- [ ] Long-press the right-edge depth rail → the thread sheet opens; refresh works from it (pull-to-refresh doesn't exist standalone)
+- [ ] The rail: swells while scrolling, fades at rest; thumb never starts at zero on a fresh session; pulse only while writing; a fork shows the gate mark and NO pulse; wrapped shows a hard end cap
+- [ ] Home shelf: each tile renders in its own session's palette + display font; state lines read right ("parked at a fork" on a session actually parked); the + button overlaps nothing
+- [ ] Planning: the narrated reveal plays (persona line, outline stops ticking in) — no skeleton bars, no fake progress
+- [ ] "how this works" opens from home and from a tile's long-press menu; every line reads feed-native on the phone
 - [ ] Timeline: segments fill as you scroll, a detour reads as off the main thread, crossing into a new topic names it then gets out of the way — and nothing anywhere is a counter
 - [ ] Thread sheet: a topic you've been through takes you back to it; one still ahead is inert
 - [ ] At a topic boundary the feed STOPS and asks (keep going / one more layer / ask something / wrap it up) — it must not keep generating past the fork

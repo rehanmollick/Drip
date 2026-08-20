@@ -141,3 +141,61 @@ Known and not fixed: `buildWriteSystem` is byte-stable across mode/recent/batchS
 four ~10k-token system prompts and misses the prompt cache on each flip. Pre-existing, and a
 deliberate trade: a narrowed schema means the writer *cannot* emit a concept, where a prompt-level
 ban is only a nudge that costs a retry when ignored.
+
+## v4 — the depth rail, home covers, and both audits paid down
+
+Started from the owner's list: a truthful position indicator he'd actually like the look of, a big
+UI/UX pass, no more placeholders, better session tiles, a better scroll, better prompts, research-
+backed teaching, a logic audit, and a user-visible list of what the AI does. Ran five research
+sweeps (distilled in RESEARCH.md) and two end-to-end code audits before designing anything.
+
+- **The top hairline is dead. The indicator is now a vertical DEPTH RAIL** on the right edge —
+  position maps to geometry in the axis the feed actually moves in. Solid above the thumb = read;
+  bright below = cards that exist; dashed fading = planned; the pulse sits at the written frontier
+  only while a batch is in flight; a fork is a gate mark with everything downstream dimmed (no
+  pulse — generation truly stops); wrapped is a hard end cap. Topic ticks get proportional spans
+  (impossible in 393px of width, trivial in 700px of height). Endowed start: the thumb never begins
+  at zero — the paste and the plan count as distance travelled (Nunes & Drèze). Ambient like an iOS
+  scrollbar: swells while scrolling, fades at rest. Long-press → the thread sheet, now styled as a
+  vertical path speaking the rail's language, carrying the app's only number ("~3 min left in this
+  thread", on demand, time-as-effort).
+- **Home tiles became covers.** Each tile is typeset in its own session's palette, texture and
+  display font — the shelf reads as a shelf of magazines. State lines in feed voice ("parked at a
+  fork", "fresh cards waiting", "wrapped — the thread's still there"), relative recency, a wordless
+  rail sliver for depth. The unexplained ring and gradient strip are gone; wrapped sessions show
+  again (they were filtered out entirely — "wrapped" tiles could never render); the FAB overlaps
+  nothing.
+- **Planning is theatre, not skeletons**: the palette surfaces, the persona introduces itself, the
+  outline ticks onto a proto-rail that becomes the rail. No grey rectangles, no fake progress.
+- **"how this works"** — a panel on home and in the tile menu: ~20 one-liners in feed voice, one per
+  real capability, enumerated from code ("how you answer quietly sets how hard it runs — lucky taps
+  barely move it, real ones do"; "it carries the plot the whole way — card 40 still knows what card
+  1 promised").
+- **The generation audit paid down**: the planner's spine now actually seeds the storyline (it was
+  computed, demanded at length, and thrown away); detours go through the variety governor like
+  everything else; a recap trigger survives a failed write; the frontier supersede check compares
+  the full key, not just the epoch; duplicate directives deduped (one owner per signal); the
+  crossroads button stops saying its topic twice, once truncated; checkpoint prediction reconciled
+  with what the governor actually kept.
+- **The feed audit paid down**: the catching-up tail can no longer render below an unanswered
+  crossroads; refetchAll pages past 100 rows; a deliberate map jump no longer reads as a confusion
+  scroll-back; a forced pump can't be swallowed by an in-flight one; WebKit's snap-point cache is
+  busted after every deck mutation (protects the pin on real devices); fast flicks land on settled
+  cards, slow arrivals get the cascade.
+- **Three research wins in the writer**: causal threading (each card opens off the previous one's
+  idea — a batch reads as an argument), bet-before-explain ordering (the pretesting effect done
+  feed-natively: the scored card sorts before the concept that resolves it, on the same anchor),
+  and a 1-in-5-with-jitter jackpot cadence (variable-ratio anticipation, Fiorillo 2003).
+- **Card polish**: emoji dial pills (🧒/🎓 — a graduation cap, in this app) replaced with
+  typographic chips; per-type optical anchoring so the dead bottom third works; body measure in ch;
+  contrast repair on planner themes (never reject, always nudge to AA/AAA); hooks push a size larger
+  when short.
+
+Verified: 819 unit / 42 e2e green (I re-ran the full gate myself after the workflow's own pass),
+live prose re-run against the new prompts — all three families pass, humanities now
+`spot → binary → diagram → open` with visible threading (the binary builds on the spot card's find)
+and nothing dropped. Screenshot review of every new surface at 393×852 DSF3.
+
+Known and open: the two standing human judgments (callback density on a real phone; composition
+airiness), the mock planner's 3 canned themes making a mock shelf look samey, and diagram SVGs
+top-anchoring in their fill area.

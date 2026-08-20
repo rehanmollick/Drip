@@ -39,7 +39,7 @@ If it feels like a course, it is wrong.
 - **Persistence:** `Store` interface (`lib/db/store.ts`). Supabase in production (`supabase/migrations`), local JSON store in `.data/` when Supabase env is absent (dev/tests only). Handle Supabase cold start: retry once after 3s behind the app-shell splash.
 - **Dwell timer integrity:** pause on `visibilitychange`/`pagehide`, resume on return, hard-cap any single dwell at 60s.
 - **iOS haptics: `navigator.vibrate` does not exist on iOS Safari. Do not use it, do not debug its absence.** Tactility = visual spring (scale 0.97 on press) + optional very quiet Web Audio ticks (init after first interaction, off by default).
-- **Standalone PWA is the real target.** `position: fixed` app shell, `100dvh` on the scroll container, `overscroll-behavior-y: contain`, explicit in-app refresh affordance (long-press the progress hairline). Test from the installed home-screen icon, not just the Safari tab.
+- **Standalone PWA is the real target.** `position: fixed` app shell, `100dvh` on the scroll container, `overscroll-behavior-y: contain`, explicit in-app refresh affordance (long-press the right-edge depth rail → the thread sheet). Test from the installed home-screen icon, not just the Safari tab.
 - **Use these libraries, do not reinvent:** `fractional-indexing`, `@mozilla/readability` + `jsdom`, `youtube-transcript`, `shiki` (server-side, css-variables theme), `next/font` (Google, self-hosted), `framer-motion`, `@tanstack/react-query`, `zod`.
 
 ## 2. Autonomous build gating
